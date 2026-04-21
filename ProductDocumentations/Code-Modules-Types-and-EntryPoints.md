@@ -230,6 +230,129 @@ Covered behavior:
 - valid test config loads correctly
 - contradictory replay settings are rejected
 
+## Package `stagehand/internal/recorder`
+
+### Files: `internal/recorder/doc.go`, `internal/recorder/schema.go`
+
+Purpose:
+
+- defines the canonical recording artifact schema for Stagehand runs
+- centralizes validation of run, interaction, event, and scrub-report structure
+- makes incomplete and corrupted run semantics explicit before storage and replay are implemented
+
+### Schema/version constant
+
+| Name                    | Type     | Meaning                                     |
+| ----------------------- | -------- | ------------------------------------------- |
+| `ArtifactSchemaVersion` | `string` | Current artifact schema version, `v1alpha1` |
+
+### Enum-like type aliases
+
+| Name                 | Underlying Type | Role                                                |
+| -------------------- | --------------- | --------------------------------------------------- |
+| `RunMode`            | `string`        | Artifact run mode                                   |
+| `RunStatus`          | `string`        | Artifact integrity/completion state                 |
+| `Protocol`           | `string`        | Captured protocol family                            |
+| `FallbackTier`       | `string`        | Replay fallback tier used for an interaction        |
+| `EventType`          | `string`        | Event kind inside an interaction                    |
+| `IntegrityIssueCode` | `string`        | Machine-readable reason a run is incomplete/corrupt |
+
+### Constant values
+
+#### `RunMode`
+
+- `RunModeRecord`
+- `RunModeReplay`
+- `RunModeHybrid`
+- `RunModePassthrough`
+
+#### `RunStatus`
+
+- `RunStatusComplete`
+- `RunStatusIncomplete`
+- `RunStatusCorrupted`
+
+#### `Protocol`
+
+- `ProtocolHTTP`
+- `ProtocolHTTPS`
+- `ProtocolSSE`
+- `ProtocolWebSocket`
+- `ProtocolPostgres`
+
+#### `FallbackTier`
+
+- `FallbackTierExact`
+- `FallbackTierNearestNeighbor`
+- `FallbackTierStateSynthesis`
+- `FallbackTierLLMSynthesis`
+
+#### `EventType`
+
+- `EventTypeRequestSent`
+- `EventTypeResponseReceived`
+- `EventTypeStreamChunk`
+- `EventTypeStreamEnd`
+- `EventTypeToolCallStart`
+- `EventTypeToolCallEnd`
+- `EventTypeError`
+- `EventTypeTimeout`
+
+#### `IntegrityIssueCode`
+
+- `IntegrityIssueRecorderShutdown`
+- `IntegrityIssueInterruptedWrite`
+- `IntegrityIssueMissingEndState`
+- `IntegrityIssueSchemaValidation`
+
+### Structs and their purposes
+
+| Struct            | Purpose                                       |
+| ----------------- | --------------------------------------------- |
+| `Run`             | Top-level persisted recording artifact        |
+| `Interaction`     | One ordered external operation within a run   |
+| `Request`         | Captured outbound request shape               |
+| `Event`           | Ordered atomic event within an interaction    |
+| `ExtractedEntity` | Semantic entity extracted from an interaction |
+| `ScrubReport`     | Scrubbing provenance for one interaction      |
+| `IntegrityIssue`  | Reason a run is incomplete or corrupted       |
+| `ValidationError` | Aggregated artifact-validation error type     |
+
+### Exported functions and methods
+
+| Function or Method        | Signature                                  | Purpose                               |
+| ------------------------- | ------------------------------------------ | ------------------------------------- |
+| `(Run) Validate`          | `func (r Run) Validate() error`            | Validates the full artifact structure |
+| `(Run) ReplayEligible`    | `func (r Run) ReplayEligible() bool`       | Returns true only for `complete` runs |
+| `(ValidationError) Error` | `func (e *ValidationError) Error() string` | Returns aggregated validation message |
+
+### Internal helpers
+
+These are package-private implementation helpers, not public API:
+
+- `(ValidationError).add`
+- `(ValidationError).addNested`
+- `(ValidationError).err`
+- `(Interaction).validate`
+- `(Request).validate`
+- `(Event).validate`
+- `(ExtractedEntity).validate`
+- `(ScrubReport).validate`
+- `(IntegrityIssue).validate`
+
+### Tests
+
+File: `internal/recorder/schema_test.go`
+
+Covered behavior:
+
+- complete artifacts validate successfully
+- incomplete and corrupted runs require integrity issues
+- complete runs cannot carry integrity issues
+- interaction and event ordering violations are rejected
+- scrub policy mismatch is rejected
+- artifact JSON round-trips and still validates
+
 ## Go Package Markers
 
 The following files currently exist only to claim package names and document planned purpose:
@@ -237,11 +360,12 @@ The following files currently exist only to claim package names and document pla
 | File                       | Package Purpose           | Current Implementation Depth              |
 | -------------------------- | ------------------------- | ----------------------------------------- |
 | `internal/analysis/doc.go` | analysis package          | marker only                               |
-| `internal/recorder/doc.go` | recorder package          | marker only                               |
 | `internal/runtime/doc.go`  | runtime package           | marker only                               |
 | `internal/services/doc.go` | service simulator package | marker only                               |
 | `internal/store/doc.go`    | store package             | marker only                               |
 | `internal/config/doc.go`   | config package            | marker only, real logic is in `config.go` |
+
+The recorder package is no longer marker-only because it now contains the artifact schema contract in `schema.go`.
 
 ## Python Code
 
@@ -371,7 +495,6 @@ Purpose:
 
 These items are planned in the repo layout but do not have implementation code yet:
 
-- recorder logic
 - runtime/session logic
 - scrub engine logic
 - store implementations

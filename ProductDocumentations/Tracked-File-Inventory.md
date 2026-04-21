@@ -53,10 +53,12 @@ Excluded from this inventory:
 | `internal/config/doc.go`           | Package marker for config package                                 | Implemented    |
 | `internal/config/config.go`        | Config schema definitions, defaults, YAML loading, and validation | Implemented    |
 | `internal/config/config_test.go`   | Tests for config defaults, loading, and validation rules          | Implemented    |
+| `internal/recorder/doc.go`         | Package marker for recorder package                               | Implemented    |
+| `internal/recorder/schema.go`      | Recording artifact schema types and validation                    | Implemented    |
+| `internal/recorder/schema_test.go` | Tests for artifact validation and JSON round-trip behavior        | Implemented    |
 | `internal/version/version.go`      | Shared artifact version constants and CLI message formatter       | Implemented    |
 | `internal/version/version_test.go` | Tests for version helper behavior                                 | Implemented    |
 | `internal/analysis/doc.go`         | Package marker for analysis package                               | Scaffold only  |
-| `internal/recorder/doc.go`         | Package marker for recorder package                               | Scaffold only  |
 | `internal/runtime/doc.go`          | Package marker for runtime package                                | Scaffold only  |
 | `internal/services/doc.go`         | Package marker for services package                               | Scaffold only  |
 | `internal/store/doc.go`            | Package marker for store package                                  | Scaffold only  |
@@ -136,6 +138,7 @@ These directories exist to stabilize repo layout but do not yet contain implemen
 | `docs/stagehand-v1-epic-milestone-map.md` | Epic-to-milestone mapping and blocker rules                           | Implemented    |
 | `docs/stagehand-v1-epic-breakdown.md`     | Story-level backlog and epic checklists                               | Implemented    |
 | `docs/config-schema.md`                   | Human-readable reference for `stagehand.yml` and `stagehand.test.yml` | Implemented    |
+| `docs/artifact-schema.md`                 | Human-readable reference for recording artifact schemas               | Implemented    |
 
 ## Product Documentation Files Under `ProductDocumentations/`
 

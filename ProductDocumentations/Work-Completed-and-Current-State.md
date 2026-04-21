@@ -115,6 +115,32 @@ Validated commands:
 - `go test -cover ./...`
 - `npm run ci:all`
 
+## 6. Recording Artifact Schema Contract
+
+Completed stories:
+
+- Story B2: Define run and event artifact schemas
+
+What was done:
+
+- implemented the canonical Go schema for `Run`, `Interaction`, `Event`, `ScrubReport`, and integrity issues
+- added explicit artifact version fields: `schema_version`, `sdk_version`, `runtime_version`, and `scrub_policy_version`
+- defined run states for `complete`, `incomplete`, and `corrupted`
+- added artifact validation rules for ordering, required fields, scrub provenance, and replay eligibility
+- added artifact schema reference documentation
+- added Go tests covering valid artifacts, invalid state combinations, ordering failures, and JSON round-trip behavior
+
+Current outcome:
+
+- recording artifacts now have an explicit contract instead of being implied by planning documents
+- later storage, SDK, and replay code can build against a stable recorder model
+
+Validated commands:
+
+- `go test ./internal/recorder -v`
+- `go test -cover ./...`
+- `npm run ci:all`
+
 ## Current Implemented Surface
 
 ## Go
@@ -126,10 +152,11 @@ Implemented:
 - unit tests for binary output behavior
 - config schema types
 - config loading and validation
+- recorder artifact schema types
+- recorder artifact validation
 
 Not yet implemented:
 
-- recorder
 - runtime
 - scrub engine
 - storage implementations
@@ -175,6 +202,7 @@ Implemented:
 - epic-to-milestone map
 - epic breakdown
 - config schema reference
+- artifact schema reference
 - product documentation set in `ProductDocumentations/`
 
 ## Current Quality Bar
@@ -185,6 +213,7 @@ The repo now has:
 - GitHub Actions CI
 - real Go tests
 - real config validation tests
+- real artifact validation tests
 - Python smoke tests
 - TypeScript smoke tests
 
@@ -194,12 +223,12 @@ This is still early-stage, but it is no longer just planning plus placeholders.
 
 The next major unfinished milestone items are:
 
-1. Story B2: define run and event artifact schemas
-2. Story B3: finalize validation fixtures and compatibility policy
-3. Story C: implement SQLite storage and migrations
-4. Story D: implement Python SDK first slice
-5. Story E: implement scrubbing engine core
-6. Story F: implement real CLI record/replay/inspect behavior
+1. Story B3: finalize validation fixtures and compatibility policy
+2. Story C: implement SQLite storage and migrations
+3. Story D: implement Python SDK first slice
+4. Story E: implement scrubbing engine core
+5. Story F: implement real CLI record/replay/inspect behavior
+6. Story P1: write threat model and security posture docs
 
 ## Current Risk Notes
 

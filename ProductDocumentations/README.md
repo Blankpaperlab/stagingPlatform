@@ -11,6 +11,11 @@ These documents describe:
 - what work has already been completed
 - what is scaffolded versus what is truly implemented
 
+Related implementation references under `docs/`:
+
+- `config-schema.md`
+- `artifact-schema.md`
+
 ## Document List
 
 ### `Tracked-File-Inventory.md`

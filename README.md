@@ -8,10 +8,17 @@ Current status:
 - Story A2 baseline CI automation added
 - Story A3 packaging shells added
 - Go toolchain installed locally and baseline Go build, vet, and test checks verified
+- Story B1 config schemas implemented and validated
+- Story B2 artifact schemas implemented and validated
 - Python and TypeScript SDK packages are skeletons only
 - Dashboard remains deferred in Plan A and is represented by a placeholder
 
 Primary planning docs live under `docs/`.
+
+Current schema references:
+
+- config schema: `docs/config-schema.md`
+- artifact schema: `docs/artifact-schema.md`
 
 Baseline local checks:
 

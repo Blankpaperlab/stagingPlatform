@@ -96,12 +96,12 @@ Use these statuses on your board:
 
 - Outcome: recording artifacts have stable structure and versioning metadata.
 - To do:
-  - [ ] define `Run` schema
-  - [ ] define `Interaction` schema
-  - [ ] define `Event` schema
-  - [ ] define `ScrubReport` schema
-  - [ ] add version fields: `schema_version`, `sdk_version`, `runtime_version`, `scrub_policy_version`
-  - [ ] define incomplete and corrupted run states
+  - [x] define `Run` schema
+  - [x] define `Interaction` schema
+  - [x] define `Event` schema
+  - [x] define `ScrubReport` schema
+  - [x] add version fields: `schema_version`, `sdk_version`, `runtime_version`, `scrub_policy_version`
+  - [x] define incomplete and corrupted run states
 
 ### Story B3: Define validation and compatibility rules
 
@@ -116,7 +116,7 @@ Use these statuses on your board:
 ### Epic B completion checklist
 
 - [x] config schemas are written
-- [ ] artifact schemas are written
+- [x] artifact schemas are written
 - [ ] validation fixtures pass
 - [ ] compatibility policy is documented
 
