@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stagehand"
+version = "0.1.0a0"
+description = "Local-first record and replay SDK for AI agent staging."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["agents", "testing", "replay", "staging"]
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2.2",
+  "pytest>=8.3.5",
+  "ruff>=0.11.8",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["stagehand*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
