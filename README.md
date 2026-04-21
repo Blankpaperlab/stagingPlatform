@@ -7,7 +7,7 @@ Current status:
 - Story A1 scaffold created
 - Story A2 baseline CI automation added
 - Story A3 packaging shells added
-- Go module files added manually because the `go` toolchain is not installed in this environment
+- Go toolchain installed locally and baseline Go build, vet, and test checks verified
 - Python and TypeScript SDK packages are skeletons only
 - Dashboard remains deferred in Plan A and is represented by a placeholder
 

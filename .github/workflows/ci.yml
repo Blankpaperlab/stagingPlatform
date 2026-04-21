@@ -32,8 +32,13 @@ jobs:
       - name: Lint
         run: go vet ./...
 
+      - name: Build
+        run: |
+          go build ./cmd/stagehand
+          go build ./cmd/stagehandd
+
       - name: Test
-        run: go test ./...
+        run: go test -cover ./...
 
   python:
     name: Python
