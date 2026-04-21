@@ -86,11 +86,11 @@ Use these statuses on your board:
 
 - Outcome: `stagehand.yml` and `stagehand.test.yml` have explicit fields, defaults, and validation rules.
 - To do:
-  - [ ] define config sections for record, replay, scrub, fallback, auth, error injection, and CI behavior
-  - [ ] define config defaults and required fields
-  - [ ] document which config values can vary by environment
-  - [ ] write sample config files
-  - [ ] define validation errors for invalid config
+  - [x] define config sections for record, replay, scrub, fallback, auth, error injection, and CI behavior
+  - [x] define config defaults and required fields
+  - [x] document which config values can vary by environment
+  - [x] write sample config files
+  - [x] define validation errors for invalid config
 
 ### Story B2: Define run and event artifact schemas
 
@@ -115,7 +115,7 @@ Use these statuses on your board:
 
 ### Epic B completion checklist
 
-- [ ] config schemas are written
+- [x] config schemas are written
 - [ ] artifact schemas are written
 - [ ] validation fixtures pass
 - [ ] compatibility policy is documented

@@ -1,0 +1,44 @@
+schema_version: v1alpha1
+
+record:
+  default_mode: record
+  storage_path: .stagehand/runs
+  capture:
+    max_body_bytes: 1048576
+    include_headers:
+      - content-type
+      - accept
+    redact_before_persist: true
+
+replay:
+  mode: exact
+  clock_mode: wall
+  allow_live_network: false
+
+scrub:
+  enabled: true
+  policy_version: v1
+  custom_rules_files: []
+  detectors:
+    email: true
+    phone: true
+    ssn: true
+    credit_card: true
+    jwt: true
+    api_key: true
+
+fallback:
+  allowed_tiers:
+    - exact
+    - nearest_neighbor
+    - state_synthesis
+  llm_synthesis:
+    enabled: false
+    provider_env: OPENAI_API_KEY
+    model: gpt-5-mini
+
+auth:
+  default_mode: permissive
+  service_modes:
+    stripe: strict-recorded
+    openai: permissive
