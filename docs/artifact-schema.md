@@ -23,7 +23,7 @@ It is intentionally separate from:
 
 - config schema in `docs/config-schema.md`
 - SQLite table layout, which can evolve independently
-- future import/export compatibility policy, which remains Story `B3`
+- validation and compatibility policy in `docs/schema-compatibility.md`
 
 ## Top-Level `Run`
 
@@ -291,12 +291,14 @@ The schema and validation logic live in:
 What is implemented now:
 
 - Go structs for the artifact contract
+- strict JSON loading with unknown-field rejection
 - validation for required fields and ordering
 - run-state rules for `complete`, `incomplete`, and `corrupted`
 - JSON round-trip test coverage
 
 What is intentionally deferred:
 
-- formal compatibility and migration policy
 - external JSON Schema file
 - import/export CLI commands
+
+Fixture-backed validation coverage for this schema lives under `internal/recorder/testdata/`.

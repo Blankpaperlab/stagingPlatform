@@ -1,0 +1,56 @@
+{
+  "schema_version": "v1alpha1",
+  "sdk_version": "0.1.0-alpha.0",
+  "runtime_version": "0.1.0-alpha.0",
+  "scrub_policy_version": "v1",
+  "run_id": "run_fixture_001",
+  "session_name": "onboarding-flow",
+  "mode": "record",
+  "status": "complete",
+  "started_at": "2026-04-21T10:00:00Z",
+  "ended_at": "2026-04-21T10:00:00.402Z",
+  "interactions": [
+    {
+      "run_id": "run_fixture_001",
+      "interaction_id": "int_47",
+      "sequence": 47,
+      "service": "openai",
+      "operation": "chat.completions.create",
+      "protocol": "https",
+      "streaming": true,
+      "request": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "method": "POST",
+        "headers": {
+          "content-type": ["application/json"]
+        },
+        "body": {
+          "model": "gpt-5.4"
+        }
+      },
+      "events": [
+        { "sequence": 1, "t_ms": 0, "sim_t_ms": 0, "type": "request_sent" },
+        {
+          "sequence": 2,
+          "t_ms": 234,
+          "sim_t_ms": 234,
+          "type": "stream_chunk",
+          "data": { "delta": "Hello" }
+        },
+        {
+          "sequence": 3,
+          "t_ms": 402,
+          "sim_t_ms": 402,
+          "type": "stream_end",
+          "data": { "finish_reason": "stop" }
+        }
+      ],
+      "scrub_report": {
+        "redacted_paths": ["request.headers.authorization"],
+        "scrub_policy_version": "v1",
+        "session_salt_id": "salt_fixture"
+      },
+      "latency_ms": 402
+    }
+  ]
+}

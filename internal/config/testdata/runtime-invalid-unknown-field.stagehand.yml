@@ -1,0 +1,4 @@
+schema_version: v1alpha1
+record:
+  storage_path: .stagehand/runs
+  unexpected_field: true

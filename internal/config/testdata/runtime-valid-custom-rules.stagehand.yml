@@ -1,0 +1,12 @@
+schema_version: v1alpha1
+record:
+  storage_path: .stagehand/runs
+scrub:
+  policy_version: v1
+  custom_rules:
+    - name: customer-email-mask
+      pattern: request.body.customer.email
+      action: mask
+    - name: query-token-hash
+      pattern: request.query.token
+      action: hash

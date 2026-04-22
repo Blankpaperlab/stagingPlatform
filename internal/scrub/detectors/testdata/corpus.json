@@ -1,0 +1,124 @@
+[
+  {
+    "name": "email positive",
+    "text": "Contact alice@example.com for onboarding.",
+    "want": [
+      {
+        "kind": "email",
+        "value": "alice@example.com"
+      }
+    ]
+  },
+  {
+    "name": "email negative malformed domain",
+    "text": "This is not valid: alice@example",
+    "want": []
+  },
+  {
+    "name": "jwt positive",
+    "text": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFsaWNlIn0.c2lnbmF0dXJl",
+    "want": [
+      {
+        "kind": "jwt",
+        "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFsaWNlIn0.c2lnbmF0dXJl"
+      }
+    ]
+  },
+  {
+    "name": "jwt negative semantic version",
+    "text": "Release 1.2.3 is out now.",
+    "want": []
+  },
+  {
+    "name": "phone positive us format",
+    "text": "Call me at +1 (415) 555-2671 after lunch.",
+    "want": [
+      {
+        "kind": "phone",
+        "value": "+1 (415) 555-2671"
+      }
+    ]
+  },
+  {
+    "name": "phone negative too short",
+    "text": "Reference code 555-1212 is not a full phone number.",
+    "want": []
+  },
+  {
+    "name": "ssn positive",
+    "text": "Employee SSN 123-45-6789 needs redaction.",
+    "want": [
+      {
+        "kind": "ssn",
+        "value": "123-45-6789"
+      }
+    ]
+  },
+  {
+    "name": "ssn negative invalid area",
+    "text": "Ignore placeholder 000-12-3456 in docs.",
+    "want": []
+  },
+  {
+    "name": "credit card positive",
+    "text": "Charge 4242 4242 4242 4242 for the test card.",
+    "want": [
+      {
+        "kind": "credit_card",
+        "value": "4242 4242 4242 4242"
+      }
+    ]
+  },
+  {
+    "name": "credit card negative non luhn",
+    "text": "Fake number 4242 4242 4242 4243 should not match.",
+    "want": []
+  },
+  {
+    "name": "api key positive stripe prefix",
+    "text": "Use __STRIPE_KEY__ in staging.",
+    "want": [
+      {
+        "kind": "api_key",
+        "value": "__STRIPE_KEY__"
+      }
+    ]
+  },
+  {
+    "name": "api key positive openai project prefix",
+    "text": "Use __OPENAI_PROJECT_KEY__ for replay.",
+    "want": [
+      {
+        "kind": "api_key",
+        "value": "__OPENAI_PROJECT_KEY__"
+      }
+    ]
+  },
+  {
+    "name": "api key negative short prefix",
+    "text": "Short token sk-12345 should not match.",
+    "want": []
+  },
+  {
+    "name": "multi detector positive",
+    "text": "Email alice@example.com, call +14155552671, and never paste 4111-1111-1111-1111 or __GITHUB_TOKEN__.",
+    "want": [
+      {
+        "kind": "email",
+        "value": "alice@example.com"
+      },
+      {
+        "kind": "phone",
+        "value": "+14155552671"
+      },
+      {
+        "kind": "credit_card",
+        "value": "4111-1111-1111-1111"
+      },
+      {
+        "kind": "api_key",
+        "value": "__GITHUB_TOKEN__"
+      }
+    ]
+  }
+]

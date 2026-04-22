@@ -1,0 +1,9 @@
+schema_version: v1alpha1
+record:
+  storage_path: .stagehand/runs
+scrub:
+  policy_version: v1
+  custom_rules:
+    - name: override-auth
+      pattern: request.headers.authorization
+      action: preserve

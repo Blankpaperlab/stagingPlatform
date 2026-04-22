@@ -98,6 +98,104 @@ fallback:
 	}
 }
 
+func TestLoadRejectsDisabledScrubProtections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stagehand.yml")
+	content := `
+schema_version: v1alpha1
+scrub:
+  enabled: false
+  policy_version: v1
+  detectors:
+    email: false
+`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() expected scrub protection validation failure")
+	}
+
+	errText := err.Error()
+	for _, want := range []string{
+		"scrub.enabled",
+		"scrub.detectors.email",
+	} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("validation error %q missing from %v", want, err)
+		}
+	}
+}
+
+func TestLoadConfigSupportsCustomScrubRules(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stagehand.yml")
+	content := `
+schema_version: v1alpha1
+scrub:
+  policy_version: v1
+  custom_rules:
+    - name: customer-email-mask
+      pattern: request.body.customer.email
+      action: mask
+    - name: support-id-preserve
+      pattern: request.body.ticket.support_id
+      action: preserve
+`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	rules, err := cfg.Scrub.Rules()
+	if err != nil {
+		t.Fatalf("Scrub.Rules() error = %v", err)
+	}
+
+	if len(rules) != 4 {
+		t.Fatalf("len(Scrub.Rules()) = %d, want 4", len(rules))
+	}
+
+	if rules[2].Name != "customer-email-mask" || rules[3].Name != "support-id-preserve" {
+		t.Fatalf("merged custom rule names = [%q, %q], want customer-email-mask/support-id-preserve", rules[2].Name, rules[3].Name)
+	}
+}
+
+func TestLoadRejectsConflictingCustomScrubRules(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stagehand.yml")
+	content := `
+schema_version: v1alpha1
+scrub:
+  policy_version: v1
+  custom_rules:
+    - name: override-auth
+      pattern: request.headers.authorization
+      action: preserve
+`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() expected validation failure")
+	}
+
+	if !strings.Contains(err.Error(), "conflicts with built-in rule") {
+		t.Fatalf("Load() error = %v, want built-in conflict validation", err)
+	}
+}
+
 func TestLoadTestConfigAndValidateRules(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stagehand.test.yml")

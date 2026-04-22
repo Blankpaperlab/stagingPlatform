@@ -1,0 +1,11 @@
+schema_version: v1alpha1
+session: prompt-flow
+replay:
+  mode: prompt_replay
+  forbid_live_network: true
+ci:
+  fail_on:
+    - behavior_diff
+  report_format: terminal
+  artifact_name: stagehand-run
+  max_fallback_tier: nearest_neighbor

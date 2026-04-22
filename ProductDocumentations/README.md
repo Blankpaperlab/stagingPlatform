@@ -15,6 +15,10 @@ Related implementation references under `docs/`:
 
 - `config-schema.md`
 - `artifact-schema.md`
+- `schema-compatibility.md`
+- `scrub-detector-library.md`
+- `scrub-session-hashing.md`
+- `sqlite-local-store.md`
 
 ## Document List
 

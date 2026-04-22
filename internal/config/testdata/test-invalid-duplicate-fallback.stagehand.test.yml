@@ -1,0 +1,12 @@
+schema_version: v1alpha1
+session: onboarding-flow
+fallback:
+  disallowed_tiers:
+    - llm_synthesis
+    - llm_synthesis
+ci:
+  fail_on:
+    - behavior_diff
+  report_format: github-markdown
+  artifact_name: stagehand-run
+  max_fallback_tier: nearest_neighbor

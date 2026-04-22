@@ -1,0 +1,3 @@
+schema_version: v1alpha2
+record:
+  storage_path: .stagehand/runs

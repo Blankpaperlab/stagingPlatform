@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 
+	"stagehand/internal/scrub"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -116,7 +118,14 @@ type ScrubConfig struct {
 	Enabled          bool           `yaml:"enabled"`
 	PolicyVersion    string         `yaml:"policy_version"`
 	CustomRulesFiles []string       `yaml:"custom_rules_files"`
+	CustomRules      []ScrubRule    `yaml:"custom_rules"`
 	Detectors        DetectorConfig `yaml:"detectors"`
+}
+
+type ScrubRule struct {
+	Name    string `yaml:"name"`
+	Pattern string `yaml:"pattern"`
+	Action  string `yaml:"action"`
 }
 
 type DetectorConfig struct {
@@ -244,6 +253,7 @@ func DefaultConfig() Config {
 		Scrub: ScrubConfig{
 			Enabled:       true,
 			PolicyVersion: "v1",
+			CustomRules:   []ScrubRule{},
 			Detectors: DetectorConfig{
 				Email:      true,
 				Phone:      true,
@@ -369,11 +379,53 @@ func (c Config) Validate() error {
 		verr.add("scrub.policy_version is required")
 	}
 
+	if !c.Scrub.Enabled {
+		verr.add("scrub.enabled must be true in v1")
+	}
+
+	if !c.Scrub.Detectors.Email {
+		verr.add("scrub.detectors.email must be true in v1")
+	}
+	if !c.Scrub.Detectors.Phone {
+		verr.add("scrub.detectors.phone must be true in v1")
+	}
+	if !c.Scrub.Detectors.SSN {
+		verr.add("scrub.detectors.ssn must be true in v1")
+	}
+	if !c.Scrub.Detectors.CreditCard {
+		verr.add("scrub.detectors.credit_card must be true in v1")
+	}
+	if !c.Scrub.Detectors.JWT {
+		verr.add("scrub.detectors.jwt must be true in v1")
+	}
+	if !c.Scrub.Detectors.APIKey {
+		verr.add("scrub.detectors.api_key must be true in v1")
+	}
+
 	for _, file := range c.Scrub.CustomRulesFiles {
 		if strings.TrimSpace(file) == "" {
 			verr.add("scrub.custom_rules_files cannot contain empty values")
 			break
 		}
+	}
+	if len(c.Scrub.CustomRulesFiles) > 0 {
+		verr.add("scrub.custom_rules_files is reserved and must be empty in v1; use scrub.custom_rules")
+	}
+
+	for idx, rule := range c.Scrub.CustomRules {
+		if strings.TrimSpace(rule.Name) == "" {
+			verr.add("scrub.custom_rules[%d].name is required", idx)
+		}
+		if strings.TrimSpace(rule.Pattern) == "" {
+			verr.add("scrub.custom_rules[%d].pattern is required", idx)
+		}
+		if strings.TrimSpace(rule.Action) == "" {
+			verr.add("scrub.custom_rules[%d].action is required", idx)
+		}
+	}
+
+	if _, err := c.Scrub.Rules(); err != nil {
+		verr.add("%v", err)
 	}
 
 	validateTierSequence("fallback.allowed_tiers", c.Fallback.AllowedTiers, verr)
@@ -407,6 +459,19 @@ func (c Config) Validate() error {
 	}
 
 	return verr.err()
+}
+
+func (c ScrubConfig) Rules() ([]scrub.Rule, error) {
+	custom := make([]scrub.Rule, len(c.CustomRules))
+	for idx, rule := range c.CustomRules {
+		custom[idx] = scrub.Rule{
+			Name:    rule.Name,
+			Pattern: rule.Pattern,
+			Action:  scrub.Action(rule.Action),
+		}
+	}
+
+	return scrub.MergeRules(scrub.DefaultRules(), custom)
 }
 
 func (c TestConfig) Validate() error {

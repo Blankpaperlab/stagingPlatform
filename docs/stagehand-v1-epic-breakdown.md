@@ -107,18 +107,18 @@ Use these statuses on your board:
 
 - Outcome: schema validation is testable and future compatibility has an explicit policy.
 - To do:
-  - [ ] choose schema format or validation strategy
-  - [ ] add schema validation fixtures
-  - [ ] define minor-version compatibility rules
-  - [ ] define migration expectations for major versions
-  - [ ] document what changes are allowed without a schema version bump
+  - [x] choose schema format or validation strategy
+  - [x] add schema validation fixtures
+  - [x] define minor-version compatibility rules
+  - [x] define migration expectations for major versions
+  - [x] document what changes are allowed without a schema version bump
 
 ### Epic B completion checklist
 
 - [x] config schemas are written
 - [x] artifact schemas are written
-- [ ] validation fixtures pass
-- [ ] compatibility policy is documented
+- [x] validation fixtures pass
+- [x] compatibility policy is documented
 
 ## Epic C: SQLite Store and Migrations
 
@@ -132,37 +132,37 @@ Use these statuses on your board:
 
 - Outcome: the local database supports runs, interactions, events, assertions, baselines, and salts.
 - To do:
-  - [ ] create initial schema migration
-  - [ ] add tables required by Plan A local mode
-  - [ ] add indexes for run lookup and interaction ordering
-  - [ ] add migration runner
-  - [ ] add rollback strategy or explicit non-goal note
+  - [x] create initial schema migration
+  - [x] add tables required by Plan A local mode
+  - [x] add indexes for run lookup and interaction ordering
+  - [x] add migration runner
+  - [x] add rollback strategy or explicit non-goal note
 
 ### Story C2: Implement store interface
 
 - Outcome: recorder and runtime can persist and query artifacts through a stable interface.
 - To do:
-  - [ ] implement create/read/update operations for runs
-  - [ ] implement write/read operations for interactions and events
-  - [ ] implement scrub salt persistence
-  - [ ] implement baseline lookup and write paths
-  - [ ] implement atomic write boundary per interaction
+  - [x] implement create/read/update operations for runs
+  - [x] implement write/read operations for interactions and events
+  - [x] implement scrub salt persistence
+  - [x] implement baseline lookup and write paths
+  - [x] implement atomic write boundary per interaction
 
 ### Story C3: Add storage contract tests
 
 - Outcome: store behavior is validated before Postgres ever enters the picture.
 - To do:
-  - [ ] write contract tests for run creation and completion state transitions
-  - [ ] write contract tests for interaction ordering
-  - [ ] write contract tests for corrupted/incomplete run handling
-  - [ ] write contract tests for deletion behavior
+  - [x] write contract tests for run creation and completion state transitions
+  - [x] write contract tests for interaction ordering
+  - [x] write contract tests for corrupted/incomplete run handling
+  - [x] write contract tests for deletion behavior
 
 ### Epic C completion checklist
 
-- [ ] migrations run from a clean repo
-- [ ] store interface is implemented
-- [ ] contract tests pass
-- [ ] local deletion behavior is defined
+- [x] migrations run from a clean repo
+- [x] store interface is implemented
+- [x] contract tests pass
+- [x] local deletion behavior is defined
 
 ## Epic D: Python SDK First Slice
 
@@ -176,36 +176,36 @@ Use these statuses on your board:
 
 - Outcome: users can initialize Stagehand with one line.
 - To do:
-  - [ ] implement `stagehand.init(session, mode, config_path=None)`
-  - [ ] add runtime guard against double initialization
-  - [ ] add mode handling for `record`, `replay`, and `passthrough`
-  - [ ] expose run/session metadata to the recorder
+  - [x] implement `stagehand.init(session, mode, config_path=None)`
+  - [x] add runtime guard against double initialization
+  - [x] add mode handling for `record`, `replay`, and `passthrough`
+  - [x] expose run/session metadata to the recorder
 
 ### Story D2: Add HTTP interception
 
 - Outcome: network requests can be captured without user code rewrites.
 - To do:
-  - [ ] intercept `httpx`
-  - [ ] preserve request metadata, timing, and response metadata
-  - [ ] normalize captured data into the core interaction schema
-  - [ ] ensure errors and timeouts are captured as events, not dropped
+  - [x] intercept `httpx`
+  - [x] preserve request metadata, timing, and response metadata
+  - [x] normalize captured data into the core interaction schema
+  - [x] ensure errors and timeouts are captured as events, not dropped
 
 ### Story D3: Add OpenAI-aware capture and replay hooks
 
 - Outcome: OpenAI exact replay works for the first demo.
 - To do:
-  - [ ] detect OpenAI request shape
-  - [ ] capture SSE chunks in order
-  - [ ] preserve tool-call boundaries if present
-  - [ ] route replay responses back through the same calling surface
-  - [ ] add integration test against a sample Python agent
+  - [x] detect OpenAI request shape
+  - [x] capture SSE chunks in order
+  - [x] preserve tool-call boundaries if present
+  - [x] route replay responses back through the same calling surface
+  - [x] add integration test against a sample Python agent
 
 ### Epic D completion checklist
 
-- [ ] Python init API works
-- [ ] `httpx` capture works
-- [ ] OpenAI exact replay works offline
-- [ ] integration test demonstrates the first demo flow
+- [x] Python init API works
+- [x] `httpx` capture works
+- [x] OpenAI exact replay works offline
+- [x] integration test demonstrates the first demo flow
 
 ## Epic E: Scrubbing Engine Core
 
@@ -219,49 +219,49 @@ Use these statuses on your board:
 
 - Outcome: JSON bodies, headers, and query parameters can be scrubbed through rules.
 - To do:
-  - [ ] implement payload traversal
-  - [ ] implement rule matching by path
-  - [ ] support `drop`, `mask`, `hash`, and `preserve`
-  - [ ] add request header handling for auth and cookies
-  - [ ] generate scrub reports from the applied rules
+  - [x] implement payload traversal
+  - [x] implement rule matching by path
+  - [x] support `drop`, `mask`, `hash`, and `preserve`
+  - [x] add request header handling for auth and cookies
+  - [x] generate scrub reports from the applied rules
 
 ### Story E2: Build detector library
 
 - Outcome: free-text and shape-independent secrets can be caught.
 - To do:
-  - [ ] add email detector
-  - [ ] add JWT detector
-  - [ ] add phone detector
-  - [ ] add SSN detector
-  - [ ] add Luhn-validated card detector
-  - [ ] add common API key prefix detector
-  - [ ] add test corpus with positive and negative cases
+  - [x] add email detector
+  - [x] add JWT detector
+  - [x] add phone detector
+  - [x] add SSN detector
+  - [x] add Luhn-validated card detector
+  - [x] add common API key prefix detector
+  - [x] add test corpus with positive and negative cases
 
 ### Story E3: Add session-scoped deterministic hashing
 
 - Outcome: the same sensitive value is replaced consistently inside one session.
 - To do:
-  - [ ] generate per-session salts
-  - [ ] encrypt salts at rest
-  - [ ] implement deterministic hash replacement helpers
-  - [ ] ensure different sessions do not share replacements
-  - [ ] test replay behavior against scrubbed identifiers
+  - [x] generate per-session salts
+  - [x] encrypt salts at rest
+  - [x] implement deterministic hash replacement helpers
+  - [x] ensure different sessions do not share replacements
+  - [x] test replay behavior against scrubbed identifiers
 
 ### Story E4: Add user-configurable scrub rules
 
 - Outcome: teams can extend scrubbing with org-specific rules.
 - To do:
-  - [ ] define custom scrub rule format in config
-  - [ ] merge custom rules with defaults
-  - [ ] validate conflicting rules
-  - [ ] document custom rule examples
+  - [x] define custom scrub rule format in config
+  - [x] merge custom rules with defaults
+  - [x] validate conflicting rules
+  - [x] document custom rule examples
 
 ### Epic E completion checklist
 
-- [ ] standard secrets are not persisted in plaintext
-- [ ] session hashing is deterministic within a session
-- [ ] scrub reports are generated
-- [ ] custom scrub rules are supported
+- [x] standard secrets are not persisted in plaintext
+- [x] session hashing is deterministic within a session
+- [x] scrub reports are generated
+- [x] custom scrub rules are supported
 
 ## Epic F: CLI First Slice
 
@@ -1092,4 +1092,4 @@ If execution starts now, open these first:
 4. `B2` Define run and event artifact schemas
 5. `P1` Write threat model and security posture docs
 
-Do not start `D2` or `D3` before `E1` exists in at least a minimal form.
+Do not persist `D2` captures as durable artifacts before `E1` exists in at least a minimal form. In-memory interception can land earlier, but stored recordings must not bypass scrubbing.

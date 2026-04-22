@@ -1,7 +1,11 @@
 package recorder
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -204,6 +208,44 @@ func (e *ValidationError) err() error {
 	return e
 }
 
+func Load(path string) (Run, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Run{}, fmt.Errorf("read artifact %q: %w", path, err)
+	}
+
+	run, err := Decode(data)
+	if err != nil {
+		return Run{}, fmt.Errorf("load artifact %q: %w", path, err)
+	}
+
+	return run, nil
+}
+
+func Decode(data []byte) (Run, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+
+	var run Run
+	if err := decoder.Decode(&run); err != nil {
+		return Run{}, fmt.Errorf("decode artifact: %w", err)
+	}
+
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return Run{}, fmt.Errorf("decode artifact: trailing data is not allowed")
+		}
+
+		return Run{}, fmt.Errorf("decode artifact: %w", err)
+	}
+
+	if err := run.Validate(); err != nil {
+		return Run{}, err
+	}
+
+	return run, nil
+}
+
 func (r Run) Validate() error {
 	verr := &ValidationError{}
 
@@ -286,6 +328,10 @@ func (r Run) Validate() error {
 
 func (r Run) ReplayEligible() bool {
 	return r.Status == RunStatusComplete
+}
+
+func (i Interaction) Validate(expectedRunID, expectedScrubPolicyVersion string) error {
+	return i.validate(expectedRunID, expectedScrubPolicyVersion)
 }
 
 func (i Interaction) validate(expectedRunID, expectedScrubPolicyVersion string) error {

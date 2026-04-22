@@ -9,6 +9,8 @@ This document defines the current V1 config contract for:
 
 The Go source of truth is `internal/config/config.go`.
 
+Validation and compatibility policy for this schema is defined in `docs/schema-compatibility.md`.
+
 ## File Roles
 
 ### `stagehand.yml`
@@ -64,12 +66,46 @@ Test-runner behavior:
 
 ### `scrub`
 
-| Field                | Required | Default | Validation                                                            |
-| -------------------- | -------- | ------- | --------------------------------------------------------------------- |
-| `enabled`            | no       | `true`  | boolean                                                               |
-| `policy_version`     | no       | `v1`    | must be non-empty                                                     |
-| `custom_rules_files` | no       | `[]`    | cannot contain empty entries                                          |
-| `detectors.*`        | no       | `true`  | booleans for `email`, `phone`, `ssn`, `credit_card`, `jwt`, `api_key` |
+| Field                | Required | Default | Validation                                                                            |
+| -------------------- | -------- | ------- | ------------------------------------------------------------------------------------- |
+| `enabled`            | no       | `true`  | must remain `true` in V1                                                              |
+| `policy_version`     | no       | `v1`    | must be non-empty                                                                     |
+| `custom_rules`       | no       | `[]`    | validated rule list, merged after built-in defaults                                   |
+| `custom_rules_files` | no       | `[]`    | reserved in V1, must remain empty                                                     |
+| `detectors.*`        | no       | `true`  | `email`, `phone`, `ssn`, `credit_card`, `jwt`, and `api_key` must remain `true` in V1 |
+
+#### `scrub.custom_rules[*]`
+
+| Field     | Required | Validation                           |
+| --------- | -------- | ------------------------------------ |
+| `name`    | yes      | non-empty, unique among custom rules |
+| `pattern` | yes      | non-empty, unique among custom rules |
+| `action`  | yes      | `drop`, `mask`, `hash`, `preserve`   |
+
+Rule-merge behavior:
+
+- custom rules are appended after built-in defaults
+- custom rules cannot reuse the exact pattern of a built-in rule
+- custom rules cannot duplicate another custom rule's exact `name` or `pattern`
+- scrub cannot be disabled in the standard V1 persisted-recording path
+- the built-in detector set cannot be disabled in V1 because persisted recording must not store standard secrets in plaintext
+
+Example:
+
+```yaml
+scrub:
+  policy_version: v1
+  custom_rules:
+    - name: customer-email-mask
+      pattern: request.body.customer.email
+      action: mask
+    - name: support-id-preserve
+      pattern: request.body.ticket.support_id
+      action: preserve
+    - name: query-token-hash
+      pattern: request.query.token
+      action: hash
+```
 
 ### `fallback`
 
@@ -170,7 +206,7 @@ Rules cannot mix `inject.library` with explicit `status/body`.
 These fields are expected to vary by environment and should not be treated as globally fixed constants:
 
 - `record.storage_path`
-- `scrub.custom_rules_files`
+- `scrub.custom_rules`
 - `fallback.llm_synthesis.provider_env`
 - `fallback.llm_synthesis.model`
 - `auth.service_modes`
@@ -200,3 +236,5 @@ Committed sample files:
 - `stagehand.test.yml`
 
 These files are intended to be the human-readable reference configuration for the current schema.
+
+Fixture-backed validation coverage for this schema lives under `internal/config/testdata/`.

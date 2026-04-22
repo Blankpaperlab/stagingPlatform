@@ -141,6 +141,274 @@ Validated commands:
 - `go test -cover ./...`
 - `npm run ci:all`
 
+## 7. Schema Validation Fixtures and Compatibility Policy
+
+Completed stories:
+
+- Story B3: Define validation and compatibility rules
+
+What was done:
+
+- chose a code-first validation strategy instead of external schema files as the primary validator
+- added fixture-based schema tests for config and artifact validation
+- added strict artifact loading with unknown-field rejection
+- documented current alpha exact-match behavior for schema versions
+- documented minor-version compatibility rules, major-version migration expectations, and no-bump change rules
+
+Current outcome:
+
+- schema validation behavior is now fixture-backed instead of relying only on inline tests
+- compatibility promises are explicit and intentionally conservative
+- the repo now documents what is and is not allowed when schema contracts change
+
+Validated commands:
+
+- `go test ./internal/config -v`
+- `go test ./internal/recorder -v`
+- `go test -cover ./...`
+- `npm run ci:all`
+
+## 8. SQLite Schema and Migration Runner
+
+Completed stories:
+
+- Story C1: Define SQLite schema and migrations
+
+What was done:
+
+- added the initial embedded SQLite migration for local mode
+- created tables for runs, interactions, events, assertions, baselines, and scrub salts
+- added indexes for run lookup and interaction/event ordering
+- implemented a migration runner with a `schema_migrations` metadata table
+- documented forward-only migration behavior and the explicit non-goal of down migrations in V1
+- added SQLite migration tests for fresh setup and idempotent reruns
+
+Current outcome:
+
+- the repo now has a real local storage bootstrap path instead of a placeholder store directory
+- later store CRUD work can build on an actual migrated schema
+
+Validated commands:
+
+- `go test ./internal/store/sqlite -v`
+- `go test -cover ./...`
+- `npm run ci:all`
+
+## 9. SQLite Store Interface
+
+Completed stories:
+
+- Story C2: Implement store interface
+
+What was done:
+
+- added a shared store contract in `internal/store/store.go`
+- added a SQLite-backed store implementation in `internal/store/sqlite/store.go`
+- implemented create, read, and update operations for top-level runs
+- implemented write and read paths for interactions and ordered events
+- implemented scrub salt persistence and retrieval
+- implemented baseline write, lookup, and latest-baseline selection paths
+- added an explicit transaction boundary for interaction plus event writes
+- added explicit support for `running` run lifecycle state in the store layer
+- added validation so invalid interactions are rejected before persistence
+- added Go tests for CRUD behavior, atomic rollback, not-found mapping, and baseline/salt lookup behavior
+
+Current outcome:
+
+- recorder and later runtime code now have a concrete local persistence interface to build against
+- the local store no longer stops at migrations; it can now hydrate and persist the main artifact shapes used by the first record/replay slice
+- the store can persist in-progress runs honestly instead of pretending every run is already a terminal artifact
+
+## 10. Storage Contract Tests
+
+Completed stories:
+
+- Story C3: Add storage contract tests
+
+What was done:
+
+- added a reusable backend-agnostic store contract suite under `internal/store/contracttest`
+- defined contract coverage for lifecycle transitions, interaction ordering, incomplete/corrupted terminal runs, and deletion behavior
+- added SQLite execution of the shared contract suite
+- pulled local deletion semantics into the store interface with `DeleteRun` and `DeleteSession`
+- documented concrete local deletion rules so future backends have a target behavior to match
+
+Current outcome:
+
+- store behavior is now specified by executable contract tests instead of only SQLite-specific examples
+- Postgres can later be validated against the same suite rather than inventing new behavior
+- local deletion behavior is now defined at the storage layer instead of being deferred prose
+
+## 11. Python Bootstrap
+
+Completed stories:
+
+- Story D1: Implement Python bootstrap
+
+What was done:
+
+- replaced the placeholder Python `init()` with a real bootstrap entrypoint
+- added explicit mode handling for `record`, `replay`, and `passthrough`
+- added a process-local runtime singleton with double-initialization protection
+- generated per-init run metadata including `run_id`, session, mode, and version data
+- added runtime access helpers so later recorder/interception code can read bootstrap state
+- added optional config-path resolution with explicit path support and default `stagehand.yml` autodiscovery
+- added Python tests covering valid bootstrap, invalid modes, empty sessions, config resolution, runtime access, and double init rejection
+
+Current outcome:
+
+- the Python SDK is no longer a pure scaffold
+- later interception and recorder hooks now have a real bootstrap/runtime surface to build on
+- one-line initialization works for the first time in the Python package
+
+## 12. Python `httpx` Interception
+
+Completed stories:
+
+- Story D2: Add HTTP interception
+
+What was done:
+
+- added sync and async `httpx` interception at the client `send` layer
+- added a Python-side normalized interaction model aligned to the core artifact shape
+- added an in-memory capture buffer owned by the runtime singleton
+- captured request metadata, latency, response metadata, and response bodies where safely available
+- captured timeout and generic request failures as explicit events instead of dropping them
+- added Python tests for sync, async, timeout, error, and artifact-shaped export behavior
+
+Current outcome:
+
+- Python agent traffic through `httpx` can now be captured without changing user call sites
+- the runtime exposes normalized interactions for later recorder persistence work
+- the current D2 output is intentionally pre-scrub and in-memory only; it is not yet the persisted recording path
+
+## 13. OpenAI-Aware Capture and Exact Replay
+
+Completed stories:
+
+- Story D3: Add OpenAI-aware capture and replay hooks
+
+What was done:
+
+- added OpenAI request-shape detection for chat-completions create calls
+- upgraded streaming capture to parse OpenAI SSE blocks in order
+- preserved tool-call boundaries as explicit `tool_call_start` and `tool_call_end` events
+- added seeded exact replay for OpenAI requests in Python replay mode
+- routed replayed responses back through the same `httpx` `send` and `stream` calling surface
+- added a concrete replay-miss error for unseeded OpenAI replay calls
+- added a minimal example onboarding agent and integration test that proves offline replay
+
+Current outcome:
+
+- the first demo loop now exists for Python and OpenAI: capture once, seed replay, rerun offline through the same client API
+- exact replay currently depends on in-memory seeded interactions, not persisted stored artifacts
+- this is enough to prove the wedge before recorder persistence and scrubbing are wired into the same path
+
+## 14. Structural Scrub Pipeline
+
+Completed stories:
+
+- Story E1: Build structural scrub pipeline
+
+What was done:
+
+- added a Go scrub package under `internal/scrub`
+- implemented path-based structural rule matching with exact and wildcard support
+- implemented `drop`, `mask`, `hash`, and `preserve` actions
+- added default request-header rules for `authorization` and `cookie`
+- scrubbed request headers, query parameters, request bodies, and event payloads
+- generated concrete `ScrubReport.redacted_paths` entries from applied rules
+- added tests for wildcard matching, preserve overrides, deterministic hashing, and invalid complex-object masking
+
+Current outcome:
+
+- Stagehand now has a real pre-persistence structural scrubber instead of only a scrub-report schema
+- the minimum security boundary for dropping auth and cookie headers is implemented in Go
+- detector-driven mutation and config-loaded custom rules now build on top of this base pipeline
+
+## 15. Detector Library
+
+Completed stories:
+
+- Story E2: Build detector library
+
+What was done:
+
+- added a dedicated Go detector package under `internal/scrub/detectors`
+- added detectors for email, JWT, phone numbers, SSNs, Luhn-validated credit cards, and common API-key prefixes
+- added semantic validation so JWT and card matches are not purely regex-based
+- added ordered match output with deduplication across detector overlaps
+- added a corpus file with positive and negative cases for every detector kind
+- added Go tests for corpus coverage, match ordering, and duplicate suppression
+
+Current outcome:
+
+- Stagehand now has a reusable free-text detector layer for shape-independent secrets and PII
+- the detector package is now wired into the Go scrub pipeline for automatic payload mutation
+- Python durable capture still needs to route through the recorder-side persisted writer
+
+## 16. Session-Scoped Deterministic Hashing
+
+Completed stories:
+
+- Story E3: Add session-scoped deterministic hashing
+
+What was done:
+
+- added a Go session-salt manager under `internal/scrub/session_salt`
+- added per-session 32-byte salt generation
+- added AES-GCM encryption before salt persistence in the local store
+- added deterministic replacement helpers used by hash-based scrubbing
+- made email-like hashed values replay-safe by keeping an email-shaped replacement
+- added tests proving same-session stability, cross-session separation, and replay identifier parity
+
+Current outcome:
+
+- Stagehand now has a real session-scoped hashing model instead of plain `sha256(salt || value)` helpers
+- stored scrub salts are encrypted at rest in local mode
+- the scrub pipeline can now preserve equality of scrubbed identifiers within one session, which is necessary for replay fidelity
+
+## 17. User-Configurable Scrub Rules
+
+Completed stories:
+
+- Story E4: Add user-configurable scrub rules
+
+What was done:
+
+- added inline `scrub.custom_rules` to the runtime config schema
+- added merge logic so custom rules are appended after built-in defaults
+- rejected custom rules that try to reuse built-in exact patterns
+- rejected duplicate custom-rule names and patterns
+- added config tests, fixture tests, and scrub merge tests
+- documented custom rule examples in the config and scrub docs
+
+Current outcome:
+
+- teams can now add org-specific structural scrub rules without editing code
+- built-in auth and cookie protections remain non-overridable in V1
+- external custom rule files remain deferred; inline config is the supported path
+
+## 18. Safe Persisted Recording Path
+
+Completed work:
+
+- closed the Epic `E` gap for plaintext secret persistence in the standard local durable recording path
+
+What was done:
+
+- added `internal/recording.Writer` as the recorder-side persisted write path
+- made the persisted writer require scrub to stay enabled for V1 durable recording
+- made the runtime config reject disabling standard detectors in V1
+- wired structural rules, detector-driven mutation, encrypted session salts, and store writes into one path
+- added end-to-end tests that inspect raw SQLite JSON rows directly and prove standard secrets are not persisted in plaintext
+
+Current outcome:
+
+- the normal Go durable recording path now scrubs before SQLite persistence instead of relying on callers to remember to do it
+- standard secrets such as emails, JWTs, phone numbers, SSNs, cards, API keys, auth headers, and cookies are no longer written to SQLite in plaintext through that path
+- the low-level store remains intentionally dumb, but the recorder-side persisted writer now owns the safety guarantee
+
 ## Current Implemented Surface
 
 ## Go
@@ -152,14 +420,32 @@ Implemented:
 - unit tests for binary output behavior
 - config schema types
 - config loading and validation
+- config fixture validation tests
 - recorder artifact schema types
 - recorder artifact validation
+- recorder fixture validation tests
+- structural scrub pipeline
+- structural scrub pipeline tests
+- detector library
+- detector library corpus tests
+- session-salt manager
+- session-salt manager tests
+- recorder-side safe persisted writer
+- end-to-end raw-SQLite secrecy tests
+- custom scrub rule merge helpers
+- custom scrub rule merge tests
+- SQLite migration runner
+- SQLite schema migration tests
+- shared store interface
+- SQLite store implementation
+- SQLite store behavior tests
+- reusable store contract test suite
+- SQLite contract-test runner
 
 Not yet implemented:
 
 - runtime
 - scrub engine
-- storage implementations
 - simulators
 - assertion engine
 - diff engine
@@ -170,14 +456,20 @@ Implemented:
 
 - package metadata
 - version constants
-- placeholder `init()`
-- smoke tests
+- bootstrap `init()`
+- runtime metadata and singleton access helpers
+- `httpx` sync and async interception
+- normalized in-memory interaction capture
+- OpenAI request detection
+- OpenAI SSE capture with tool-call boundary events
+- OpenAI exact replay from seeded captured interactions
+- Python bootstrap tests
+- Python interception tests
 
 Not yet implemented:
 
-- request interception
-- OpenAI integration
-- replay integration
+- direct Python wiring into the persisted scrubbing-backed recording path
+- persisted OpenAI replay fixture loading from stored run artifacts
 
 ## TypeScript
 
@@ -203,6 +495,11 @@ Implemented:
 - epic breakdown
 - config schema reference
 - artifact schema reference
+- schema compatibility reference
+- structural scrub pipeline reference
+- session hashing reference
+- SQLite local store reference
+- detector library reference
 - product documentation set in `ProductDocumentations/`
 
 ## Current Quality Bar
@@ -214,6 +511,12 @@ The repo now has:
 - real Go tests
 - real config validation tests
 - real artifact validation tests
+- real schema fixture validation tests
+- real scrub pipeline tests
+- real session-salt manager tests
+- real SQLite migration tests
+- real SQLite store tests
+- real reusable storage contract tests
 - Python smoke tests
 - TypeScript smoke tests
 
@@ -223,17 +526,21 @@ This is still early-stage, but it is no longer just planning plus placeholders.
 
 The next major unfinished milestone items are:
 
-1. Story B3: finalize validation fixtures and compatibility policy
-2. Story C: implement SQLite storage and migrations
-3. Story D: implement Python SDK first slice
-4. Story E: implement scrubbing engine core
-5. Story F: implement real CLI record/replay/inspect behavior
-6. Story P1: write threat model and security posture docs
+1. Story F: implement real CLI record/replay/inspect behavior
+2. Story P1: write threat model and security posture docs
+3. connect Python replay seeding to persisted run artifacts instead of in-memory handoff
+4. connect the Python capture buffer to the recorder-side safe persisted writer
+5. source the session-salt master key from a real runtime secret instead of test/local construction
 
 ## Current Risk Notes
 
 - many internal directories are still layout placeholders only
 - there is no recorder or replay engine yet
+- Python `httpx` capture currently uses placeholder scrub provenance until it is wired into the recorder-side safe persisted writer
+- the Go scrub pipeline is implemented but not yet wired into persisted Python capture
+- session-salt encryption exists in Go local mode, but the final runtime master-key source is not wired yet
+- inline custom scrub rules are supported, but external custom rule files are still deferred
+- OpenAI replay currently relies on seeded in-memory interactions instead of the future persisted artifact loader
 - sample config files are defined before their downstream consumers exist
 - Python package builds generate local artifacts, but those are not part of the tracked source
 - the dashboard remains intentionally deferred
@@ -247,13 +554,18 @@ The repository currently has:
 - real Go build/test enforcement
 - real config schemas
 - real sample config files
+- real local SQLite store interface
+- real Python `httpx` interception
+- real Python OpenAI exact replay for the first demo
+- real Go structural scrub pipeline
+- real Go detector library for free-text secret and PII detection
+- real Go session-scoped deterministic hashing with encrypted local salt persistence
+- real recorder-side scrub-before-persist writes with raw-SQLite proof that standard secrets are not stored in plaintext
 
 It does not yet have the core product loop of:
 
-- record
-- scrub
-- persist
-- replay
+- user-facing record flow from SDK/CLI into persisted artifacts
+- replay from persisted artifacts through the runtime
 - inspect
 
 That loop remains the next meaningful implementation target.

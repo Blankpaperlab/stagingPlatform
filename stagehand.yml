@@ -18,7 +18,7 @@ replay:
 scrub:
   enabled: true
   policy_version: v1
-  custom_rules_files: []
+  custom_rules: []
   detectors:
     email: true
     phone: true
