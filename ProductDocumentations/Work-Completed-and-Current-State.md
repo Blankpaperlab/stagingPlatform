@@ -409,6 +409,105 @@ Current outcome:
 - standard secrets such as emails, JWTs, phone numbers, SSNs, cards, API keys, auth headers, and cookies are no longer written to SQLite in plaintext through that path
 - the low-level store remains intentionally dumb, but the recorder-side persisted writer now owns the safety guarantee
 
+## 19. CLI `record` Managed Subprocess Flow
+
+Completed stories:
+
+- Story F1: Implement `record`
+
+What was done:
+
+- replaced the placeholder CLI scaffold with a real subcommand entrypoint for `stagehand record`
+- added root help text and record-specific help text
+- added `--session` and `--config` support
+- changed the command contract so `record` requires a managed command after `--`
+- resolved the runtime config and local SQLite path from the configured storage directory
+- created a `running` run record in storage before subprocess execution
+- launched a managed child process with Stagehand environment wiring and a capture-bundle output path
+- loaded the exported interaction bundle from disk and persisted it through `internal/recording.Writer`
+- finalized the run to `complete` or `corrupted` depending on subprocess and persistence outcome
+- added tests for help output, required flag validation, missing-command rejection, subprocess capture import, scrubbed persistence, and JSON result output
+
+Current outcome:
+
+- the Go CLI now performs real work instead of just creating run metadata
+- users can run a Stagehand-aware child process, capture interactions, scrub them, and persist a real recording run without touching SQLite directly
+- the current boundary is explicit: the child process must export a capture bundle through the SDK; proxy-driven transparent capture is still future work
+
+## 20. CLI `replay` Managed Exact-Replay Flow
+
+Completed stories:
+
+- Story F2: Implement `replay`
+
+What was done:
+
+- added a real `stagehand replay` subcommand to the Go CLI
+- added replay-specific help text and flag parsing
+- added support for loading a stored run by `--run-id`
+- changed the command contract so `replay` requires a managed command after `--`
+- changed session lookup so `--session` resolves the latest replayable `complete` run instead of the latest broken run
+- added a minimal exact-replay source summarizer under `internal/runtime/replay`
+- wrote the source run interactions to a replay-seed bundle and passed that file to the child process
+- launched a managed child process in replay mode and captured its replay output bundle
+- persisted the replayed interactions as a new replay-mode run through `internal/recording.Writer`
+- returned machine-readable JSON output naming both source and replay run IDs, plus interaction counts, services, and fallback tiers
+- added concrete replay errors for invalid selector usage, missing runs, and non-replay-eligible artifacts
+- added store support and tests for latest-run-by-session lookup
+- added CLI tests for replay by run ID, replay by session, missing-command rejection, and replay persistence behavior
+
+Current outcome:
+
+- the Go CLI now runs a real replay workflow instead of just printing a summary for a stored run
+- users can seed a Stagehand-aware child process from a stored complete run and persist the replay result as a separate replay-mode run
+- this is still exact replay, not simulator-backed fallback/runtime behavior, but it is now a real managed execution path
+
+## 21. CLI `inspect`
+
+Completed stories:
+
+- Story F3: Implement `inspect`
+
+What was done:
+
+- added a real `stagehand inspect` subcommand to the Go CLI
+- added selector support for `--run-id` and `--session`
+- added store support for loading the latest run record for a session across all lifecycle states
+- rendered ordered interactions directly from SQLite without requiring artifact hydration
+- rendered service, operation, protocol, latency, and fallback tier per interaction
+- rendered nested interaction trees from `parent_interaction_id`
+- added `--show-bodies` to expand request bodies and event payloads on demand
+- rendered integrity issues and uppercased lifecycle status so incomplete and corrupted runs are obvious
+- added tests for selector validation, nested tree rendering, body expansion, and failed-run inspection by session
+
+Current outcome:
+
+- users can inspect successful and failed runs from the terminal without querying SQLite directly
+- failed runs no longer require replay eligibility to be debugged
+- the first usable local record/replay/inspect CLI loop now exists
+
+## 22. TypeScript Bootstrap Runtime
+
+Completed stories:
+
+- Story G1: Implement TypeScript bootstrap
+
+What was done:
+
+- replaced the placeholder TypeScript `init()` with a real bootstrap/runtime module
+- added `init({ session, mode, configPath? })`
+- added `initFromEnv()` for CLI-managed subprocess workflows
+- added singleton runtime guards plus explicit `AlreadyInitializedError`, `InvalidModeError`, and `NotInitializedError`
+- added runtime metadata including session, mode, run ID, config path, SDK version, artifact version, and initialization timestamp
+- aligned config autodiscovery behavior with Python by resolving `stagehand.yml` from the current working directory when present
+- added TypeScript tests covering valid bootstrap, env-driven bootstrap, invalid mode rejection, empty-session rejection, missing config rejection, and runtime access before initialization
+
+Current outcome:
+
+- the TypeScript SDK is no longer scaffold-only at the bootstrap layer
+- Node users now have the same basic init/runtime semantics as Python users before request interception work starts
+- Story `G2` remains the next TypeScript-specific implementation step
+
 ## Current Implemented Surface
 
 ## Go
@@ -432,6 +531,14 @@ Implemented:
 - session-salt manager tests
 - recorder-side safe persisted writer
 - end-to-end raw-SQLite secrecy tests
+- CLI `record` managed subprocess command
+- CLI `record` tests
+- CLI `replay` managed subprocess command
+- CLI `replay` tests
+- CLI `inspect` command
+- CLI `inspect` tests
+- shared CLI workflow helpers for command execution, bundle import/export, and local master-key loading
+- exact replay source summarizer
 - custom scrub rule merge helpers
 - custom scrub rule merge tests
 - SQLite migration runner
@@ -457,19 +564,22 @@ Implemented:
 - package metadata
 - version constants
 - bootstrap `init()`
+- bootstrap `init_from_env()`
 - runtime metadata and singleton access helpers
 - `httpx` sync and async interception
 - normalized in-memory interaction capture
+- capture-bundle export helpers
 - OpenAI request detection
 - OpenAI SSE capture with tool-call boundary events
 - OpenAI exact replay from seeded captured interactions
+- env-driven replay bundle loading for CLI-managed subprocess replay
 - Python bootstrap tests
 - Python interception tests
 
 Not yet implemented:
 
-- direct Python wiring into the persisted scrubbing-backed recording path
-- persisted OpenAI replay fixture loading from stored run artifacts
+- direct Python-to-SQLite persistence without the current CLI/import boundary
+- direct Python loading of stored SQLite run artifacts without the current CLI-provided replay bundle
 
 ## TypeScript
 
@@ -477,14 +587,16 @@ Implemented:
 
 - package metadata
 - version constants
-- placeholder `init()`
-- smoke tests
+- bootstrap `init()`
+- bootstrap `initFromEnv()`
+- runtime metadata and singleton access helpers
+- TypeScript bootstrap tests
 
 Not yet implemented:
 
 - request interception
 - provider integrations
-- replay integration
+- replay integration beyond env-driven bootstrap wiring
 
 ## Docs and Planning
 
@@ -526,21 +638,20 @@ This is still early-stage, but it is no longer just planning plus placeholders.
 
 The next major unfinished milestone items are:
 
-1. Story F: implement real CLI record/replay/inspect behavior
-2. Story P1: write threat model and security posture docs
-3. connect Python replay seeding to persisted run artifacts instead of in-memory handoff
-4. connect the Python capture buffer to the recorder-side safe persisted writer
-5. source the session-salt master key from a real runtime secret instead of test/local construction
+1. Story P1: write threat model and security posture docs
+2. replace the current CLI/SDK file-bundle handoff with a more direct recording boundary where appropriate
+3. extend replay beyond exact seeded interactions into fuller runtime or simulator behavior
+4. source the session-salt master key from a real runtime secret instead of test/local construction
 
 ## Current Risk Notes
 
 - many internal directories are still layout placeholders only
-- there is no recorder or replay engine yet
-- Python `httpx` capture currently uses placeholder scrub provenance until it is wired into the recorder-side safe persisted writer
-- the Go scrub pipeline is implemented but not yet wired into persisted Python capture
+- the current replay engine is still exact-match only and does not yet provide full simulator-backed fallback/runtime behavior
+- Python `httpx` capture still carries placeholder scrub provenance while the SDK-side direct persistence path remains unfinished
+- persisted Python traffic currently goes through the CLI/import bundle boundary rather than a direct SDK-to-store path
 - session-salt encryption exists in Go local mode, but the final runtime master-key source is not wired yet
 - inline custom scrub rules are supported, but external custom rule files are still deferred
-- OpenAI replay currently relies on seeded in-memory interactions instead of the future persisted artifact loader
+- OpenAI replay inside the Python SDK still relies on seeded interactions; the CLI now supplies those seeds from persisted runs through a bundle file
 - sample config files are defined before their downstream consumers exist
 - Python package builds generate local artifacts, but those are not part of the tracked source
 - the dashboard remains intentionally deferred
@@ -561,11 +672,12 @@ The repository currently has:
 - real Go detector library for free-text secret and PII detection
 - real Go session-scoped deterministic hashing with encrypted local salt persistence
 - real recorder-side scrub-before-persist writes with raw-SQLite proof that standard secrets are not stored in plaintext
+- real CLI `record` command that runs a managed subprocess and persists scrubbed captured interactions
+- real CLI `replay` command that seeds a managed subprocess from a stored run and persists the replay result
+- real Python env bootstrap and bundle export/import support for the CLI-managed workflow
 
 It does not yet have the core product loop of:
 
-- user-facing record flow from SDK/CLI into persisted artifacts
-- replay from persisted artifacts through the runtime
-- inspect
+- full simulator-backed replay beyond the current exact managed replay path
 
 That loop remains the next meaningful implementation target.

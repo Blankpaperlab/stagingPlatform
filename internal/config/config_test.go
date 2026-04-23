@@ -196,6 +196,39 @@ scrub:
 	}
 }
 
+func TestLoadConfigNormalizesMixedCaseHeaderScrubRules(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stagehand.yml")
+	content := `
+schema_version: v1alpha1
+scrub:
+  policy_version: v1
+  custom_rules:
+    - name: customer-email-header-mask
+      pattern: request.headers.X-Customer-Email
+      action: mask
+`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	rules, err := cfg.Scrub.Rules()
+	if err != nil {
+		t.Fatalf("Scrub.Rules() error = %v", err)
+	}
+
+	got := rules[len(rules)-1].Pattern
+	if got != "request.headers.x-customer-email" {
+		t.Fatalf("normalized header pattern = %q, want %q", got, "request.headers.x-customer-email")
+	}
+}
+
 func TestLoadTestConfigAndValidateRules(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stagehand.test.yml")

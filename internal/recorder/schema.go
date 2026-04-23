@@ -96,6 +96,12 @@ var (
 		FallbackTierStateSynthesis,
 		FallbackTierLLMSynthesis,
 	}
+	terminalEventTypes = []EventType{
+		EventTypeResponseReceived,
+		EventTypeError,
+		EventTypeTimeout,
+		EventTypeStreamEnd,
+	}
 )
 
 type Run struct {
@@ -409,6 +415,16 @@ func (i Interaction) validate(expectedRunID, expectedScrubPolicyVersion string) 
 		lastSimTMS = event.SimTMS
 
 		verr.addNested(fmt.Sprintf("events[%d]", idx), event.validate())
+	}
+
+	if len(i.Events) > 0 && !slices.Contains(terminalEventTypes, i.Events[len(i.Events)-1].Type) {
+		verr.add(
+			"events must end with a terminal event (%q, %q, %q, %q)",
+			EventTypeResponseReceived,
+			EventTypeError,
+			EventTypeTimeout,
+			EventTypeStreamEnd,
+		)
 	}
 
 	for idx, entity := range i.ExtractedEntities {

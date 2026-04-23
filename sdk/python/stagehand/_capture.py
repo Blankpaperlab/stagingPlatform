@@ -4,7 +4,7 @@ import base64
 import json
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Final
+from typing import Any, Callable, Final
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -213,7 +213,7 @@ class CaptureBuffer:
 
     def snapshot(self) -> tuple[CapturedInteraction, ...]:
         with self._lock:
-            return tuple(self._interactions)
+            return tuple(sorted(self._interactions, key=lambda interaction: interaction.sequence))
 
     def record_replay_interaction(
         self,
@@ -221,15 +221,14 @@ class CaptureBuffer:
         *,
         fallback_tier: str = "exact",
     ) -> CapturedInteraction:
-        sequence, interaction_id = self._next_identity()
-        replayed = interaction.clone_for_run(
-            run_id=self._run_id,
-            interaction_id=interaction_id,
-            sequence=sequence,
-            fallback_tier=fallback_tier,
+        return self._append_interaction(
+            lambda sequence, interaction_id: interaction.clone_for_run(
+                run_id=self._run_id,
+                interaction_id=interaction_id,
+                sequence=sequence,
+                fallback_tier=fallback_tier,
+            )
         )
-        self._append(replayed)
-        return replayed
 
     def record_httpx_response(
         self,
@@ -251,8 +250,7 @@ class CaptureBuffer:
                 "body": _normalize_httpx_response_body(response, streamed=streamed),
             },
         )
-        interaction = self._build_interaction(
-            request=request,
+        return self._build_interaction(
             normalized_request=normalized_request,
             elapsed_ms=elapsed_ms,
             events=(
@@ -261,8 +259,6 @@ class CaptureBuffer:
             ),
             streaming=streamed,
         )
-        self._append(interaction)
-        return interaction
 
     def record_openai_stream_response(
         self,
@@ -288,15 +284,12 @@ class CaptureBuffer:
             ),
         ]
         events.extend(_build_openai_stream_events(raw_chunks=raw_chunks, initial_t_ms=elapsed_ms))
-        interaction = self._build_interaction(
-            request=request,
+        return self._build_interaction(
             normalized_request=normalized_request,
             elapsed_ms=elapsed_ms,
             events=tuple(events),
             streaming=True,
         )
-        self._append(interaction)
-        return interaction
 
     def record_httpx_failure(
         self,
@@ -318,8 +311,7 @@ class CaptureBuffer:
                 "message": str(error),
             },
         )
-        interaction = self._build_interaction(
-            request=request,
+        return self._build_interaction(
             normalized_request=normalized_request,
             elapsed_ms=elapsed_ms,
             events=(
@@ -328,46 +320,45 @@ class CaptureBuffer:
             ),
             streaming=False,
         )
-        self._append(interaction)
-        return interaction
-
-    def _append(self, interaction: CapturedInteraction) -> None:
-        with self._lock:
-            self._interactions.append(interaction)
 
     def _build_interaction(
         self,
         *,
-        request: Any,
         normalized_request: CapturedRequest,
         elapsed_ms: int,
         events: tuple[CapturedEvent, ...],
         streaming: bool,
     ) -> CapturedInteraction:
-        sequence, interaction_id = self._next_identity()
-        return CapturedInteraction(
-            run_id=self._run_id,
-            interaction_id=interaction_id,
-            sequence=sequence,
-            service=_detect_service(normalized_request.url),
-            operation=detect_operation(
-                normalized_request.method,
-                normalized_request.url,
-                normalized_request.body,
-            ),
-            protocol=_detect_protocol(normalized_request.url),
-            request=normalized_request,
-            events=events,
-            scrub_report=self._scrub_report,
-            streaming=streaming,
-            latency_ms=elapsed_ms,
+        return self._append_interaction(
+            lambda sequence, interaction_id: CapturedInteraction(
+                run_id=self._run_id,
+                interaction_id=interaction_id,
+                sequence=sequence,
+                service=_detect_service(normalized_request.url),
+                operation=detect_operation(
+                    normalized_request.method,
+                    normalized_request.url,
+                    normalized_request.body,
+                ),
+                protocol=_detect_protocol(normalized_request.url),
+                request=normalized_request,
+                events=events,
+                scrub_report=self._scrub_report,
+                streaming=streaming,
+                latency_ms=elapsed_ms,
+            )
         )
 
-    def _next_identity(self) -> tuple[int, str]:
+    def _append_interaction(
+        self,
+        factory: Callable[[int, str], CapturedInteraction],
+    ) -> CapturedInteraction:
         with self._lock:
             sequence = self._next_sequence
             self._next_sequence += 1
-        return sequence, f"int_{uuid4().hex[:12]}"
+            interaction = factory(sequence, f"int_{uuid4().hex[:12]}")
+            self._interactions.append(interaction)
+            return interaction
 
 
 def _normalize_httpx_request(request: Any) -> CapturedRequest:

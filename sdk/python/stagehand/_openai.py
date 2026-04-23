@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict, deque
 from dataclasses import dataclass
+from threading import Lock
 from typing import Any, Iterable
 from urllib.parse import urlsplit
 
@@ -15,6 +16,34 @@ class ReplayMissError(RuntimeError):
     """Raised when replay mode cannot find an exact OpenAI interaction match."""
 
 
+class ReplayFailureError(RuntimeError):
+    """Raised when exact replay matches an interaction that recorded a terminal failure."""
+
+    def __init__(
+        self,
+        *,
+        interaction: CapturedInteraction,
+        terminal_event_type: str,
+        error_class: str | None = None,
+        detail: str | None = None,
+    ) -> None:
+        self.interaction = interaction
+        self.terminal_event_type = terminal_event_type
+        self.error_class = error_class
+        self.detail = detail
+
+        parts = [
+            "matched OpenAI replay interaction ended with",
+            terminal_event_type,
+        ]
+        if error_class:
+            parts.append(error_class)
+        if detail:
+            parts.append(f"({detail})")
+
+        super().__init__(" ".join(parts))
+
+
 @dataclass(frozen=True, slots=True)
 class ExactReplayMatch:
     interaction: CapturedInteraction
@@ -23,25 +52,28 @@ class ExactReplayMatch:
 class OpenAIReplayStore:
     def __init__(self) -> None:
         self._entries: dict[str, deque[CapturedInteraction]] = defaultdict(deque)
+        self._lock = Lock()
 
     def seed(self, interactions: Iterable[CapturedInteraction]) -> int:
         count = 0
-        for interaction in interactions:
-            if interaction.service != "openai":
-                continue
-            self._entries[_request_key_from_interaction(interaction)].append(interaction)
-            count += 1
+        with self._lock:
+            for interaction in interactions:
+                if interaction.service != "openai":
+                    continue
+                self._entries[_request_key_from_interaction(interaction)].append(interaction)
+                count += 1
         return count
 
     def pop_match(self, request: httpx.Request) -> ExactReplayMatch:
         key = request_key_from_httpx_request(request)
-        matches = self._entries.get(key)
-        if not matches:
-            raise ReplayMissError(
-                f"no exact replay match for OpenAI request {request.method} {request.url}"
-            )
+        with self._lock:
+            matches = self._entries.get(key)
+            if not matches:
+                raise ReplayMissError(
+                    f"no exact replay match for OpenAI request {request.method} {request.url}"
+                )
 
-        return ExactReplayMatch(interaction=matches.popleft())
+            return ExactReplayMatch(interaction=matches.popleft())
 
 
 def is_openai_request(request: httpx.Request) -> bool:

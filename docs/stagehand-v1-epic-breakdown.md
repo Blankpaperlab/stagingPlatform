@@ -275,36 +275,42 @@ Use these statuses on your board:
 
 - Outcome: the CLI can start and manage a recording run.
 - To do:
-  - [ ] define command flags and help text
-  - [ ] support session name and config file inputs
-  - [ ] create run records in storage
-  - [ ] mark run completion or failure cleanly
+  - [x] define command flags and help text
+  - [x] support session name and config file inputs
+  - [x] create run records in storage
+  - [x] mark run completion or failure cleanly
+- Current implementation note:
+  `record` now launches a managed subprocess, imports its exported interaction bundle, persists interactions through the scrub-before-persist writer, and finalizes the run in SQLite.
 
 ### Story F2: Implement `replay`
 
 - Outcome: a stored run can be replayed locally against the simulator/runtime path.
 - To do:
-  - [ ] load run by ID or session
-  - [ ] route replay through exact-match logic
-  - [ ] surface replay errors with concrete messages
-  - [ ] emit machine-readable result output
+  - [x] load run by ID or session
+  - [x] route replay through exact-match logic
+  - [x] surface replay errors with concrete messages
+  - [x] emit machine-readable result output
+- Current implementation note:
+  `replay` now loads a stored complete run, seeds a managed subprocess through a replay bundle, persists the replayed interactions as a new replay-mode run, and emits machine-readable JSON output.
 
 ### Story F3: Implement `inspect`
 
 - Outcome: users can debug a run without querying SQLite directly.
 - To do:
-  - [ ] render ordered interactions
-  - [ ] show service, operation, latency, fallback tier
-  - [ ] show nested interaction tree
-  - [ ] add basic body expansion control
-  - [ ] mark incomplete or corrupted runs clearly
+  - [x] render ordered interactions
+  - [x] show service, operation, latency, fallback tier
+  - [x] show nested interaction tree
+  - [x] add basic body expansion control
+  - [x] mark incomplete or corrupted runs clearly
+- Current implementation note:
+  `inspect` renders the latest run by session or an explicit run ID from SQLite, shows lifecycle status and integrity issues, and supports `--show-bodies` for expanded request and event payload output.
 
 ### Epic F completion checklist
 
-- [ ] `record` works
-- [ ] `replay` works
-- [ ] `inspect` is usable on failed runs
-- [ ] command help and output formats are documented
+- [x] `record` works
+- [x] `replay` works
+- [x] `inspect` is usable on failed runs
+- [x] command help and output formats are documented
 
 ## Epic G: TypeScript SDK First Slice
 
@@ -318,10 +324,12 @@ Use these statuses on your board:
 
 - Outcome: Node users get an equivalent init surface.
 - To do:
-  - [ ] define SDK init API mirroring Python behavior
-  - [ ] implement mode handling
-  - [ ] propagate session and run metadata
-  - [ ] align config loading behavior with Python
+  - [x] define SDK init API mirroring Python behavior
+  - [x] implement mode handling
+  - [x] propagate session and run metadata
+  - [x] align config loading behavior with Python
+- Current implementation note:
+  the TypeScript SDK now has `init`, `initFromEnv`, singleton runtime guards, run/session metadata, and `stagehand.yml` autodiscovery parity with the Python bootstrap. HTTP interception is still Story `G2`.
 
 ### Story G2: Add request interception
 
@@ -343,7 +351,7 @@ Use these statuses on your board:
 
 ### Epic G completion checklist
 
-- [ ] TS SDK init works
+- [x] TS SDK init works
 - [ ] `fetch` and `undici` are covered
 - [ ] parity tests exist
 - [ ] major config behavior matches Python

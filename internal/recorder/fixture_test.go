@@ -18,6 +18,22 @@ func TestArtifactFixtures(t *testing.T) {
 			path: "testdata/valid-run.json",
 		},
 		{
+			name: "valid response_received artifact fixture",
+			path: "testdata/valid-response-received-run.json",
+		},
+		{
+			name: "valid timeout artifact fixture",
+			path: "testdata/valid-timeout-run.json",
+		},
+		{
+			name: "valid error artifact fixture",
+			path: "testdata/valid-error-run.json",
+		},
+		{
+			name: "valid streaming terminal artifact fixture",
+			path: "testdata/valid-stream-terminal-run.json",
+		},
+		{
 			name: "invalid artifact with unknown field",
 			path: "testdata/invalid-unknown-field.json",
 			wantErrParts: []string{
@@ -36,6 +52,20 @@ func TestArtifactFixtures(t *testing.T) {
 			path: "testdata/invalid-schema-version.json",
 			wantErrParts: []string{
 				"schema_version must be",
+			},
+		},
+		{
+			name: "invalid artifact without terminal event",
+			path: "testdata/invalid-missing-terminal-event.json",
+			wantErrParts: []string{
+				"events must end with a terminal event",
+			},
+		},
+		{
+			name: "invalid artifact with out of order interaction sequence",
+			path: "testdata/invalid-out-of-order-interaction-sequence.json",
+			wantErrParts: []string{
+				"interactions[1].sequence must be strictly increasing",
 			},
 		},
 	}

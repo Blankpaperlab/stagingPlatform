@@ -108,7 +108,8 @@ func NewPipeline(opts Options) (*Pipeline, error) {
 
 	compiledRules := make([]compiledRule, 0, len(opts.Rules))
 	for idx, rule := range opts.Rules {
-		if strings.TrimSpace(rule.Pattern) == "" {
+		normalizedPattern := normalizeRulePattern(rule.Pattern)
+		if strings.TrimSpace(normalizedPattern) == "" {
 			verr.add("rules[%d].pattern is required", idx)
 			continue
 		}
@@ -118,9 +119,9 @@ func NewPipeline(opts Options) (*Pipeline, error) {
 			continue
 		}
 
-		re, err := compilePattern(rule.Pattern)
+		re, err := compilePattern(normalizedPattern)
 		if err != nil {
-			verr.add("rules[%d].pattern %q is invalid: %v", idx, rule.Pattern, err)
+			verr.add("rules[%d].pattern %q is invalid: %v", idx, normalizedPattern, err)
 			continue
 		}
 
@@ -131,10 +132,10 @@ func NewPipeline(opts Options) (*Pipeline, error) {
 
 		compiledRules = append(compiledRules, compiledRule{
 			name:        rule.Name,
-			pattern:     rule.Pattern,
+			pattern:     normalizedPattern,
 			action:      rule.Action,
 			re:          re,
-			specificity: patternSpecificity(rule.Pattern),
+			specificity: patternSpecificity(normalizedPattern),
 			order:       idx,
 		})
 	}

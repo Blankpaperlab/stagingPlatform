@@ -1,0 +1,75 @@
+{
+  "schema_version": "v1alpha1",
+  "sdk_version": "0.1.0-alpha.0",
+  "runtime_version": "0.1.0-alpha.0",
+  "scrub_policy_version": "v1",
+  "run_id": "run_fixture_invalid_order_001",
+  "session_name": "invalid-order-flow",
+  "mode": "record",
+  "status": "complete",
+  "started_at": "2026-04-21T10:25:00Z",
+  "ended_at": "2026-04-21T10:25:00.300Z",
+  "interactions": [
+    {
+      "run_id": "run_fixture_invalid_order_001",
+      "interaction_id": "int_invalid_order_002",
+      "sequence": 2,
+      "service": "stripe",
+      "operation": "POST /v1/customers",
+      "protocol": "https",
+      "streaming": false,
+      "request": {
+        "url": "https://api.stripe.com/v1/customers",
+        "method": "POST"
+      },
+      "events": [
+        { "sequence": 1, "t_ms": 0, "sim_t_ms": 0, "type": "request_sent" },
+        {
+          "sequence": 2,
+          "t_ms": 100,
+          "sim_t_ms": 100,
+          "type": "response_received",
+          "data": { "status_code": 200 }
+        }
+      ],
+      "scrub_report": {
+        "redacted_paths": [],
+        "scrub_policy_version": "v1",
+        "session_salt_id": "salt_fixture_invalid_order"
+      },
+      "latency_ms": 100
+    },
+    {
+      "run_id": "run_fixture_invalid_order_001",
+      "interaction_id": "int_invalid_order_001",
+      "sequence": 1,
+      "service": "openai",
+      "operation": "chat.completions.create",
+      "protocol": "https",
+      "streaming": false,
+      "request": {
+        "url": "https://api.openai.com/v1/chat/completions",
+        "method": "POST"
+      },
+      "events": [
+        { "sequence": 1, "t_ms": 0, "sim_t_ms": 0, "type": "request_sent" },
+        {
+          "sequence": 2,
+          "t_ms": 120,
+          "sim_t_ms": 120,
+          "type": "timeout",
+          "data": {
+            "error_class": "ReadTimeout",
+            "message": "timed out"
+          }
+        }
+      ],
+      "scrub_report": {
+        "redacted_paths": [],
+        "scrub_policy_version": "v1",
+        "session_salt_id": "salt_fixture_invalid_order"
+      },
+      "latency_ms": 120
+    }
+  ]
+}

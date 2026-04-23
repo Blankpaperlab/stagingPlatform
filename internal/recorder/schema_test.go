@@ -93,6 +93,71 @@ func TestRunValidateRejectsScrubPolicyMismatch(t *testing.T) {
 	}
 }
 
+func TestInteractionValidateAcceptsFailureTerminalEvents(t *testing.T) {
+	testCases := []struct {
+		name      string
+		eventType EventType
+	}{
+		{name: "timeout", eventType: EventTypeTimeout},
+		{name: "error", eventType: EventTypeError},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := validRun()
+			run.Interactions[0].Streaming = false
+			run.Interactions[0].Events = []Event{
+				{
+					Sequence: 1,
+					TMS:      0,
+					SimTMS:   0,
+					Type:     EventTypeRequestSent,
+				},
+				{
+					Sequence: 2,
+					TMS:      25,
+					SimTMS:   25,
+					Type:     tc.eventType,
+					Data: map[string]any{
+						"error_class": "ReadTimeout",
+						"message":     "timed out",
+					},
+				},
+			}
+
+			if err := run.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestInteractionValidateRequiresTerminalEvent(t *testing.T) {
+	run := validRun()
+	run.Interactions[0].Events = []Event{
+		{
+			Sequence: 1,
+			TMS:      0,
+			SimTMS:   0,
+			Type:     EventTypeRequestSent,
+		},
+		{
+			Sequence: 2,
+			TMS:      10,
+			SimTMS:   10,
+			Type:     EventTypeToolCallStart,
+			Data: map[string]any{
+				"name": "lookup_workspace",
+			},
+		},
+	}
+
+	err := run.Validate()
+	if err == nil || !strings.Contains(err.Error(), "events must end with a terminal event") {
+		t.Fatalf("Validate() expected terminal event failure, got %v", err)
+	}
+}
+
 func TestRunJSONRoundTrip(t *testing.T) {
 	run := validRun()
 

@@ -32,7 +32,9 @@ var validRunLifecycleStatuses = []RunLifecycleStatus{
 type ArtifactStore interface {
 	CreateRun(ctx context.Context, run RunRecord) error
 	GetRunRecord(ctx context.Context, runID string) (RunRecord, error)
+	GetLatestRunRecord(ctx context.Context, sessionName string) (RunRecord, error)
 	GetRun(ctx context.Context, runID string) (recorder.Run, error)
+	GetLatestRun(ctx context.Context, sessionName string) (recorder.Run, error)
 	UpdateRun(ctx context.Context, run RunRecord) error
 	DeleteRun(ctx context.Context, runID string) error
 	DeleteSession(ctx context.Context, sessionName string) error

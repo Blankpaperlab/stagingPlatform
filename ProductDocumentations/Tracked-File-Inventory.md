@@ -37,12 +37,15 @@ Excluded from this inventory:
 
 ## Go Command Entrypoints
 
-| File                          | Purpose                                 | Current Status                                  |
-| ----------------------------- | --------------------------------------- | ----------------------------------------------- |
-| `cmd/stagehand/main.go`       | CLI binary entrypoint                   | Implemented as scaffold with tested output path |
-| `cmd/stagehand/main_test.go`  | Tests for the CLI binary output path    | Implemented                                     |
-| `cmd/stagehandd/main.go`      | Local daemon binary entrypoint          | Implemented as scaffold with tested output path |
-| `cmd/stagehandd/main_test.go` | Tests for the daemon binary output path | Implemented                                     |
+| File                            | Purpose                                                                                | Current Status                                  |
+| ------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `cmd/stagehand/main.go`         | CLI binary entrypoint with `record`, `replay`, and `inspect` commands                  | Implemented                                     |
+| `cmd/stagehand/inspect.go`      | Terminal inspect renderer and run-loading helpers for stored runs                      | Implemented                                     |
+| `cmd/stagehand/workflow.go`     | Shared managed-command, capture-bundle, and writer helpers for CLI record/replay flows | Implemented                                     |
+| `cmd/stagehand/main_test.go`    | Tests for CLI help, record flow, and replay flow                                       | Implemented                                     |
+| `cmd/stagehand/inspect_test.go` | Tests for inspect selector validation, nested rendering, and failed-run inspection     | Implemented                                     |
+| `cmd/stagehandd/main.go`        | Local daemon binary entrypoint                                                         | Implemented as scaffold with tested output path |
+| `cmd/stagehandd/main_test.go`   | Tests for the daemon binary output path                                                | Implemented                                     |
 
 ## Go Internal Packages
 
@@ -56,6 +59,8 @@ Excluded from this inventory:
 | `internal/config/fixture_test.go`             | Fixture-driven tests for config schema validation                          | Implemented    |
 | `internal/recording/writer.go`                | Recorder-side safe persisted writer that scrubs before store writes        | Implemented    |
 | `internal/recording/writer_test.go`           | End-to-end tests for scrub-before-persist behavior and raw DB safety       | Implemented    |
+| `internal/runtime/replay/exact.go`            | Exact-replay eligibility check and machine-readable replay result builder  | Implemented    |
+| `internal/runtime/replay/exact_test.go`       | Direct tests for exact-replay eligibility and replay result summarization  | Implemented    |
 | `internal/recorder/doc.go`                    | Package marker for recorder package                                        | Implemented    |
 | `internal/recorder/schema.go`                 | Recording artifact schema types and validation                             | Implemented    |
 | `internal/recorder/schema_test.go`            | Tests for artifact validation and JSON round-trip behavior                 | Implemented    |
@@ -101,7 +106,6 @@ These directories exist to stabilize repo layout but do not yet contain implemen
 - `internal/runtime/errorinject`
 - `internal/runtime/fallback`
 - `internal/runtime/queue`
-- `internal/runtime/replay`
 - `internal/runtime/snapshots`
 - `internal/scrub/rules`
 - `internal/sessions`
@@ -116,31 +120,32 @@ These directories exist to stabilize repo layout but do not yet contain implemen
 
 ## Python SDK Files
 
-| File                                          | Purpose                                                           | Current Status |
-| --------------------------------------------- | ----------------------------------------------------------------- | -------------- |
-| `sdk/python/README.md`                        | Python SDK package note                                           | Implemented    |
-| `sdk/python/pyproject.toml`                   | Python package metadata, dev dependencies, pytest and Ruff config | Implemented    |
-| `sdk/python/stagehand/__init__.py`            | Python SDK package entrypoint exporting bootstrap/runtime APIs    | Implemented    |
-| `sdk/python/stagehand/_capture.py`            | Python in-memory interaction normalization and capture buffer     | Implemented    |
-| `sdk/python/stagehand/_httpx.py`              | Python `httpx` sync and async interception patching               | Implemented    |
-| `sdk/python/stagehand/_openai.py`             | Python OpenAI request detection and exact replay matching         | Implemented    |
-| `sdk/python/stagehand/_runtime.py`            | Python bootstrap runtime singleton, metadata, and init logic      | Implemented    |
-| `sdk/python/stagehand/_version.py`            | Python SDK package and artifact version placeholders              | Implemented    |
-| `sdk/python/tests/conftest.py`                | Test fixture resetting Python bootstrap singleton between tests   | Implemented    |
-| `sdk/python/tests/__init__.py`                | Python test package marker                                        | Implemented    |
-| `sdk/python/tests/test_httpx_interception.py` | Python tests for sync, async, timeout, and error interception     | Implemented    |
-| `sdk/python/tests/test_smoke.py`              | Python tests for bootstrap init behavior and runtime access       | Implemented    |
+| File                                          | Purpose                                                                                    | Current Status |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------ | -------------- |
+| `sdk/python/README.md`                        | Python SDK package note and current env-driven workflow summary                            | Implemented    |
+| `sdk/python/pyproject.toml`                   | Python package metadata, dev dependencies, pytest and Ruff config                          | Implemented    |
+| `sdk/python/stagehand/__init__.py`            | Python SDK package entrypoint exporting bootstrap/runtime APIs                             | Implemented    |
+| `sdk/python/stagehand/_capture.py`            | Python in-memory interaction normalization and capture buffer                              | Implemented    |
+| `sdk/python/stagehand/_httpx.py`              | Python `httpx` sync and async interception patching                                        | Implemented    |
+| `sdk/python/stagehand/_openai.py`             | Python OpenAI request detection and exact replay matching                                  | Implemented    |
+| `sdk/python/stagehand/_runtime.py`            | Python bootstrap runtime singleton, metadata, env wiring, and bundle export/import helpers | Implemented    |
+| `sdk/python/stagehand/_version.py`            | Python SDK package and artifact version placeholders                                       | Implemented    |
+| `sdk/python/tests/conftest.py`                | Test fixture resetting Python bootstrap singleton between tests                            | Implemented    |
+| `sdk/python/tests/__init__.py`                | Python test package marker                                                                 | Implemented    |
+| `sdk/python/tests/test_httpx_interception.py` | Python tests for sync, async, timeout, error interception, and bundle export/replay wiring | Implemented    |
+| `sdk/python/tests/test_smoke.py`              | Python tests for bootstrap init behavior, runtime access, and env bootstrap                | Implemented    |
 
 ## TypeScript SDK Files
 
-| File                               | Purpose                                                                | Current Status          |
-| ---------------------------------- | ---------------------------------------------------------------------- | ----------------------- |
-| `sdk/typescript/README.md`         | TypeScript SDK package note                                            | Implemented             |
-| `sdk/typescript/package.json`      | TypeScript package metadata, exports, and scripts                      | Implemented             |
-| `sdk/typescript/tsconfig.json`     | TypeScript compiler configuration                                      | Implemented             |
-| `sdk/typescript/src/index.ts`      | TypeScript SDK entrypoint with placeholder `init()` and exported types | Implemented as scaffold |
-| `sdk/typescript/src/index.test.ts` | TypeScript smoke test for placeholder `init()` behavior                | Implemented             |
-| `sdk/typescript/src/version.ts`    | TypeScript SDK and artifact version placeholders                       | Implemented             |
+| File                               | Purpose                                                              | Current Status |
+| ---------------------------------- | -------------------------------------------------------------------- | -------------- |
+| `sdk/typescript/README.md`         | TypeScript SDK package note and current bootstrap status             | Implemented    |
+| `sdk/typescript/package.json`      | TypeScript package metadata, exports, and scripts                    | Implemented    |
+| `sdk/typescript/tsconfig.json`     | TypeScript compiler configuration                                    | Implemented    |
+| `sdk/typescript/src/index.ts`      | TypeScript SDK entrypoint exporting the bootstrap/runtime public API | Implemented    |
+| `sdk/typescript/src/index.test.ts` | TypeScript tests for bootstrap init behavior and runtime access      | Implemented    |
+| `sdk/typescript/src/runtime.ts`    | TypeScript bootstrap singleton, metadata, env wiring, and init logic | Implemented    |
+| `sdk/typescript/src/version.ts`    | TypeScript SDK and artifact version placeholders                     | Implemented    |
 
 ## Dashboard and Examples
 

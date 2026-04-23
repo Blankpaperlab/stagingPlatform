@@ -11,7 +11,9 @@ func MergeRules(defaults []Rule, custom []Rule) ([]Rule, error) {
 	defaultsByPattern := make(map[string]Rule, len(defaults))
 	defaultsByName := make(map[string]Rule, len(defaults))
 	for _, rule := range defaults {
-		defaultsByPattern[rule.Pattern] = rule
+		normalized := normalizeRulePattern(rule.Pattern)
+		rule.Pattern = normalized
+		defaultsByPattern[normalized] = rule
 		if strings.TrimSpace(rule.Name) != "" {
 			defaultsByName[rule.Name] = rule
 		}
@@ -20,6 +22,9 @@ func MergeRules(defaults []Rule, custom []Rule) ([]Rule, error) {
 	seenCustomNames := map[string]int{}
 	seenCustomPatterns := map[string]int{}
 	for idx, rule := range custom {
+		rule.Pattern = normalizeRulePattern(rule.Pattern)
+		custom[idx] = rule
+
 		if strings.TrimSpace(rule.Name) == "" {
 			verr.add("custom rules[%d].name is required", idx)
 		}
@@ -74,4 +79,14 @@ func MustMergeRules(defaults []Rule, custom []Rule) []Rule {
 	}
 
 	return merged
+}
+
+func normalizeRulePattern(pattern string) string {
+	trimmed := strings.TrimSpace(pattern)
+	lowered := strings.ToLower(trimmed)
+	const requestHeaderPrefix = "request.headers."
+	if strings.HasPrefix(lowered, requestHeaderPrefix) {
+		return requestHeaderPrefix + lowered[len(requestHeaderPrefix):]
+	}
+	return trimmed
 }

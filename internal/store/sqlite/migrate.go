@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	driverName        = "sqlite"
-	migrationsTable   = "schema_migrations"
-	defaultBusyTimout = 5000
+	driverName         = "sqlite"
+	migrationsTable    = "schema_migrations"
+	defaultBusyTimeout = 5000
 )
 
 //go:embed migrations/*.sql
@@ -46,9 +46,12 @@ func Open(path string) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 
+	// Foreign-key enforcement is configured per SQLite connection, not once per file.
+	// V1 intentionally keeps a single shared connection so ON DELETE CASCADE semantics
+	// stay reliable for local-store deletion paths without hidden pool-dependent drift.
 	pragmas := []string{
 		"PRAGMA foreign_keys = ON;",
-		fmt.Sprintf("PRAGMA busy_timeout = %d;", defaultBusyTimout),
+		fmt.Sprintf("PRAGMA busy_timeout = %d;", defaultBusyTimeout),
 		"PRAGMA journal_mode = WAL;",
 	}
 

@@ -274,6 +274,113 @@ func TestStoreWritesAndLooksUpBaselines(t *testing.T) {
 	}
 }
 
+func TestStoreGetsLatestRunBySession(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	first := validRunRecord()
+	second := validRunRecord()
+	second.RunID = "run_store_002"
+	second.StartedAt = first.StartedAt.Add(10 * time.Minute)
+	endedAt := second.StartedAt.Add(250 * time.Millisecond)
+	second.EndedAt = &endedAt
+
+	if err := sqliteStore.CreateRun(context.Background(), first); err != nil {
+		t.Fatalf("CreateRun(first) error = %v", err)
+	}
+	if err := sqliteStore.CreateRun(context.Background(), second); err != nil {
+		t.Fatalf("CreateRun(second) error = %v", err)
+	}
+
+	latest, err := sqliteStore.GetLatestRun(context.Background(), first.SessionName)
+	if err != nil {
+		t.Fatalf("GetLatestRun() error = %v", err)
+	}
+
+	if latest.RunID != second.RunID {
+		t.Fatalf("GetLatestRun().RunID = %q, want %q", latest.RunID, second.RunID)
+	}
+}
+
+func TestStoreGetLatestRunIgnoresNonCompleteLatestRuns(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	complete := validRunRecord()
+	if err := sqliteStore.CreateRun(context.Background(), complete); err != nil {
+		t.Fatalf("CreateRun(complete) error = %v", err)
+	}
+
+	corrupted := validRunRecord()
+	corrupted.RunID = "run_store_corrupted_latest"
+	corrupted.Status = store.RunLifecycleStatusCorrupted
+	corrupted.StartedAt = complete.StartedAt.Add(10 * time.Minute)
+	corruptedEndedAt := corrupted.StartedAt.Add(250 * time.Millisecond)
+	corrupted.EndedAt = &corruptedEndedAt
+	corrupted.IntegrityIssues = []recorder.IntegrityIssue{
+		{
+			Code:    recorder.IntegrityIssueRecorderShutdown,
+			Message: "simulated failure",
+		},
+	}
+	if err := sqliteStore.CreateRun(context.Background(), corrupted); err != nil {
+		t.Fatalf("CreateRun(corrupted) error = %v", err)
+	}
+
+	latest, err := sqliteStore.GetLatestRun(context.Background(), complete.SessionName)
+	if err != nil {
+		t.Fatalf("GetLatestRun() error = %v", err)
+	}
+
+	if latest.RunID != complete.RunID {
+		t.Fatalf("GetLatestRun().RunID = %q, want replayable run %q", latest.RunID, complete.RunID)
+	}
+}
+
+func TestStoreGetsLatestRunRecordBySessionAcrossStatuses(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	older := validRunRecord()
+	if err := sqliteStore.CreateRun(context.Background(), older); err != nil {
+		t.Fatalf("CreateRun(older) error = %v", err)
+	}
+
+	latest := validRunRecord()
+	latest.RunID = "run_store_latest_record_001"
+	latest.Status = store.RunLifecycleStatusCorrupted
+	latest.StartedAt = older.StartedAt.Add(10 * time.Minute)
+	endedAt := latest.StartedAt.Add(250 * time.Millisecond)
+	latest.EndedAt = &endedAt
+	latest.IntegrityIssues = []recorder.IntegrityIssue{
+		{
+			Code:    recorder.IntegrityIssueRecorderShutdown,
+			Message: "simulated failure",
+		},
+	}
+	if err := sqliteStore.CreateRun(context.Background(), latest); err != nil {
+		t.Fatalf("CreateRun(latest) error = %v", err)
+	}
+
+	gotRecord, err := sqliteStore.GetLatestRunRecord(context.Background(), older.SessionName)
+	if err != nil {
+		t.Fatalf("GetLatestRunRecord() error = %v", err)
+	}
+
+	if gotRecord.RunID != latest.RunID {
+		t.Fatalf("GetLatestRunRecord().RunID = %q, want latest run record %q", gotRecord.RunID, latest.RunID)
+	}
+	if gotRecord.Status != store.RunLifecycleStatusCorrupted {
+		t.Fatalf("GetLatestRunRecord().Status = %q, want %q", gotRecord.Status, store.RunLifecycleStatusCorrupted)
+	}
+}
+
 func TestStoreRejectsBaselineForRunningRun(t *testing.T) {
 	t.Parallel()
 
@@ -330,6 +437,39 @@ func TestStoreMapsNotFound(t *testing.T) {
 
 	if _, err := sqliteStore.GetScrubSalt(context.Background(), "missing-session"); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetScrubSalt() error = %v, want store.ErrNotFound", err)
+	}
+}
+
+func TestDeleteSessionRemovesBaselinesViaRunCascade(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	run := validRunRecord()
+	run.RunID = "run_store_delete_session_cascade_001"
+	run.SessionName = "cascade-session"
+	if err := sqliteStore.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+
+	baseline := store.Baseline{
+		BaselineID:  "base_delete_session_cascade_001",
+		SessionName: run.SessionName,
+		SourceRunID: run.RunID,
+		GitSHA:      "abc123",
+		CreatedAt:   run.StartedAt.Add(1 * time.Minute),
+	}
+	if err := sqliteStore.PutBaseline(context.Background(), baseline); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+
+	if err := sqliteStore.DeleteSession(context.Background(), run.SessionName); err != nil {
+		t.Fatalf("DeleteSession() error = %v", err)
+	}
+
+	if _, err := sqliteStore.GetBaseline(context.Background(), baseline.BaselineID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetBaseline() after DeleteSession error = %v, want store.ErrNotFound", err)
 	}
 }
 

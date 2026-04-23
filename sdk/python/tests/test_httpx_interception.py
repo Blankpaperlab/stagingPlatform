@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 from pathlib import Path
 
 import httpx
@@ -252,6 +253,55 @@ def test_openai_replay_returns_exact_stream_through_same_httpx_surface() -> None
     assert replayed_interaction.streaming is True
 
 
+def test_openai_replay_returns_exact_non_stream_response() -> None:
+    record_runtime = stagehand.init(session="demo-non-stream-record", mode="record")
+
+    def record_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=201,
+            headers={"content-type": "application/json", "x-stagehand-replay": "exact"},
+            json={"id": "resp_456", "ok": True},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(record_handler)) as client:
+        recorded_response = client.post(
+            "https://api.openai.com/v1/chat/completions",
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "say hello"}],
+            },
+        )
+
+    assert recorded_response.status_code == 201
+    assert recorded_response.json() == {"id": "resp_456", "ok": True}
+
+    recorded_interactions = record_runtime.captured_interactions()
+    _reset_for_tests()
+
+    replay_runtime = stagehand.init(session="demo-non-stream-replay", mode="replay")
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("replay should not call the underlying transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        replayed_response = client.post(
+            "https://api.openai.com/v1/chat/completions",
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "say hello"}],
+            },
+        )
+
+    assert replayed_response.status_code == 201
+    assert replayed_response.headers["x-stagehand-replay"] == "exact"
+    assert replayed_response.json() == {"id": "resp_456", "ok": True}
+
+    replayed_interaction = replay_runtime.captured_interactions()[0]
+    assert replayed_interaction.fallback_tier == "exact"
+    assert replayed_interaction.streaming is False
+
+
 def test_openai_replay_miss_raises_concrete_error() -> None:
     stagehand.init(session="demo", mode="replay")
 
@@ -267,6 +317,288 @@ def test_openai_replay_miss_raises_concrete_error() -> None:
                     "messages": [{"role": "user", "content": "unseeded"}],
                 },
             )
+
+
+def test_openai_replay_timeout_raises_typed_failure() -> None:
+    record_runtime = stagehand.init(session="demo-timeout-record", mode="record")
+
+    def record_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("upstream timed out", request=request)
+
+    with pytest.raises(httpx.ReadTimeout):
+        with httpx.Client(transport=httpx.MockTransport(record_handler)) as client:
+            client.post(
+                "https://api.openai.com/v1/chat/completions",
+                json={
+                    "model": "gpt-5.4",
+                    "messages": [{"role": "user", "content": "say hello"}],
+                },
+            )
+
+    recorded_interactions = record_runtime.captured_interactions()
+    _reset_for_tests()
+
+    replay_runtime = stagehand.init(session="demo-timeout-replay", mode="replay")
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("replay should not call the underlying transport")
+
+    with pytest.raises(stagehand.ReplayFailureError, match="timeout ReadTimeout") as exc_info:
+        with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+            client.post(
+                "https://api.openai.com/v1/chat/completions",
+                json={
+                    "model": "gpt-5.4",
+                    "messages": [{"role": "user", "content": "say hello"}],
+                },
+            )
+
+    assert exc_info.value.terminal_event_type == "timeout"
+    replayed_interaction = replay_runtime.captured_interactions()[0]
+    assert replayed_interaction.fallback_tier == "exact"
+    assert replayed_interaction.events[1].type == "timeout"
+
+
+def test_openai_replay_error_raises_typed_failure() -> None:
+    record_runtime = stagehand.init(session="demo-error-record", mode="record")
+
+    def record_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with pytest.raises(httpx.ConnectError):
+        with httpx.Client(transport=httpx.MockTransport(record_handler)) as client:
+            client.post(
+                "https://api.openai.com/v1/chat/completions",
+                json={
+                    "model": "gpt-5.4",
+                    "messages": [{"role": "user", "content": "say hello"}],
+                },
+            )
+
+    recorded_interactions = record_runtime.captured_interactions()
+    _reset_for_tests()
+
+    replay_runtime = stagehand.init(session="demo-error-replay", mode="replay")
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("replay should not call the underlying transport")
+
+    with pytest.raises(stagehand.ReplayFailureError, match="error ConnectError") as exc_info:
+        with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+            client.post(
+                "https://api.openai.com/v1/chat/completions",
+                json={
+                    "model": "gpt-5.4",
+                    "messages": [{"role": "user", "content": "say hello"}],
+                },
+            )
+
+    assert exc_info.value.terminal_event_type == "error"
+    replayed_interaction = replay_runtime.captured_interactions()[0]
+    assert replayed_interaction.fallback_tier == "exact"
+    assert replayed_interaction.events[1].type == "error"
+
+
+def test_runtime_can_write_capture_bundle(tmp_path: Path) -> None:
+    stagehand.init(session="demo", mode="record")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=200, json={"ok": True})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        client.post(
+            "https://api.openai.com/v1/chat/completions",
+            json={"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    bundle_path = tmp_path / "capture.json"
+    written = stagehand.get_runtime().write_capture_bundle(bundle_path)
+    payload = json.loads(Path(written).read_text(encoding="utf-8"))
+
+    assert payload["bundle_version"] == "v1alpha1"
+    assert payload["metadata"]["session"] == "demo"
+    assert len(payload["interactions"]) == 1
+
+
+def test_replay_bundle_env_is_loaded_during_init(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "replay.json"
+    bundle_path.write_text(
+        json.dumps(
+            {
+                "bundle_version": "v1alpha1",
+                "interactions": [
+                    {
+                        "run_id": "run_seed",
+                        "interaction_id": "int_seed_001",
+                        "sequence": 1,
+                        "service": "openai",
+                        "operation": "chat.completions.create",
+                        "protocol": "https",
+                        "streaming": True,
+                        "request": {
+                            "url": "https://api.openai.com/v1/chat/completions",
+                            "method": "POST",
+                            "body": {
+                                "model": "gpt-5.4",
+                                "stream": True,
+                                "messages": [{"role": "user", "content": "say hello"}],
+                            },
+                        },
+                        "events": [
+                            {
+                                "sequence": 1,
+                                "t_ms": 0,
+                                "sim_t_ms": 0,
+                                "type": "request_sent",
+                            },
+                            {
+                                "sequence": 2,
+                                "t_ms": 1,
+                                "sim_t_ms": 1,
+                                "type": "response_received",
+                                "data": {
+                                    "status_code": 200,
+                                    "headers": {"content-type": ["text/event-stream"]},
+                                    "body": {"capture_status": "stream"},
+                                },
+                            },
+                            {
+                                "sequence": 3,
+                                "t_ms": 1,
+                                "sim_t_ms": 1,
+                                "type": "stream_chunk",
+                                "data": {
+                                    "chunk": 'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"},"index":0}]}\n\n',
+                                    "payload": {
+                                        "id": "chatcmpl-1",
+                                        "choices": [{"delta": {"content": "Hello"}, "index": 0}],
+                                    },
+                                },
+                            },
+                            {
+                                "sequence": 4,
+                                "t_ms": 2,
+                                "sim_t_ms": 2,
+                                "type": "stream_end",
+                                "data": {"chunk": "data: [DONE]\n\n"},
+                            },
+                        ],
+                        "scrub_report": {
+                            "scrub_policy_version": "v0-unredacted",
+                            "session_salt_id": "salt_pending",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STAGEHAND_REPLAY_INPUT", str(bundle_path))
+
+    stagehand.init(session="demo", mode="replay")
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("replay bundle should prevent transport use")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        with client.stream(
+            "POST",
+            "https://api.openai.com/v1/chat/completions",
+            json={
+                "model": "gpt-5.4",
+                "stream": True,
+                "messages": [{"role": "user", "content": "say hello"}],
+            },
+        ) as response:
+            lines = [line for line in response.iter_lines() if line]
+
+    assert lines == [
+        'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"},"index":0}]}',
+        "data: [DONE]",
+    ]
+
+
+def test_openai_replay_handles_stream_terminal_without_response_received() -> None:
+    stagehand.init(session="demo-stream-terminal", mode="replay")
+    assert (
+        stagehand.seed_replay_interactions(
+            [
+                {
+                    "run_id": "run_seed",
+                    "interaction_id": "int_seed_001",
+                    "sequence": 1,
+                    "service": "openai",
+                    "operation": "chat.completions.create",
+                    "protocol": "https",
+                    "streaming": True,
+                    "request": {
+                        "url": "https://api.openai.com/v1/chat/completions",
+                        "method": "POST",
+                        "body": {
+                            "model": "gpt-5.4",
+                            "stream": True,
+                            "messages": [{"role": "user", "content": "say hello"}],
+                        },
+                    },
+                    "events": [
+                        {
+                            "sequence": 1,
+                            "t_ms": 0,
+                            "sim_t_ms": 0,
+                            "type": "request_sent",
+                        },
+                        {
+                            "sequence": 2,
+                            "t_ms": 1,
+                            "sim_t_ms": 1,
+                            "type": "stream_chunk",
+                            "data": {
+                                "chunk": 'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"},"index":0}]}\n\n',
+                            },
+                        },
+                        {
+                            "sequence": 3,
+                            "t_ms": 2,
+                            "sim_t_ms": 2,
+                            "type": "stream_end",
+                            "data": {"chunk": "data: [DONE]\n\n"},
+                        },
+                    ],
+                    "scrub_report": {
+                        "scrub_policy_version": "v0-unredacted",
+                        "session_salt_id": "salt_pending",
+                    },
+                }
+            ]
+        )
+        == 1
+    )
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("replay should not call the underlying transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        with client.stream(
+            "POST",
+            "https://api.openai.com/v1/chat/completions",
+            json={
+                "model": "gpt-5.4",
+                "stream": True,
+                "messages": [{"role": "user", "content": "say hello"}],
+            },
+        ) as response:
+            lines = [line for line in response.iter_lines() if line]
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/event-stream"
+    assert lines == [
+        'data: {"id":"chatcmpl-1","choices":[{"delta":{"content":"Hello"},"index":0}]}',
+        "data: [DONE]",
+    ]
 
 
 def test_sample_onboarding_agent_replays_offline() -> None:

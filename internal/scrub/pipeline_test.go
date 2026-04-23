@@ -136,6 +136,120 @@ func TestScrubInteractionPreserveRuleOverridesBroaderWildcard(t *testing.T) {
 	}
 }
 
+func TestScrubInteractionMixedCaseHeaderPatternMatchesLowercasedHeaderPath(t *testing.T) {
+	pipeline := mustNewPipeline(t, Options{
+		PolicyVersion: "v1",
+		SessionSaltID: "salt_test",
+		HashSalt:      []byte("session-salt"),
+		Rules: []Rule{
+			{
+				Name:    "customer-email-header-mask",
+				Pattern: "request.headers.X-Customer-Email",
+				Action:  ActionMask,
+			},
+		},
+	})
+
+	interaction := baseInteraction()
+	interaction.Request.Headers["X-Customer-Email"] = []string{"alice@example.com"}
+
+	scrubbed, err := pipeline.ScrubInteraction(interaction)
+	if err != nil {
+		t.Fatalf("ScrubInteraction() error = %v", err)
+	}
+
+	if got := scrubbed.Request.Headers["X-Customer-Email"][0]; got == "alice@example.com" {
+		t.Fatalf("X-Customer-Email header = %q, want masked value", got)
+	}
+
+	wantPaths := []string{"request.headers.x-customer-email"}
+	if !slices.Equal(scrubbed.ScrubReport.RedactedPaths, wantPaths) {
+		t.Fatalf("ScrubReport.RedactedPaths = %#v, want %#v", scrubbed.ScrubReport.RedactedPaths, wantPaths)
+	}
+}
+
+func TestScrubInteractionUserAuthorizationHeaderRuleMatchesLowercaseHeader(t *testing.T) {
+	pipeline := mustNewPipeline(t, Options{
+		PolicyVersion: "v1",
+		SessionSaltID: "salt_test",
+		HashSalt:      []byte("session-salt"),
+		Rules: []Rule{
+			{
+				Name:    "authorization-header-mask",
+				Pattern: "request.headers.Authorization",
+				Action:  ActionMask,
+			},
+		},
+	})
+
+	interaction := baseInteraction()
+
+	scrubbed, err := pipeline.ScrubInteraction(interaction)
+	if err != nil {
+		t.Fatalf("ScrubInteraction() error = %v", err)
+	}
+
+	if got := scrubbed.Request.Headers["authorization"][0]; got == "Bearer sk-live-secret" {
+		t.Fatalf("authorization header = %q, want masked value", got)
+	}
+
+	wantPaths := []string{"request.headers.authorization"}
+	if !slices.Equal(scrubbed.ScrubReport.RedactedPaths, wantPaths) {
+		t.Fatalf("ScrubReport.RedactedPaths = %#v, want %#v", scrubbed.ScrubReport.RedactedPaths, wantPaths)
+	}
+}
+
+func TestScrubInteractionLowercaseAndMixedCaseHeaderRulesBehaveIdentically(t *testing.T) {
+	lowercasePipeline := mustNewPipeline(t, Options{
+		PolicyVersion: "v1",
+		SessionSaltID: "salt_test",
+		HashSalt:      []byte("session-salt"),
+		Rules: []Rule{
+			{
+				Name:    "authorization-header-mask-lowercase",
+				Pattern: "request.headers.authorization",
+				Action:  ActionMask,
+			},
+		},
+	})
+
+	mixedCasePipeline := mustNewPipeline(t, Options{
+		PolicyVersion: "v1",
+		SessionSaltID: "salt_test",
+		HashSalt:      []byte("session-salt"),
+		Rules: []Rule{
+			{
+				Name:    "authorization-header-mask-mixed-case",
+				Pattern: "request.headers.Authorization",
+				Action:  ActionMask,
+			},
+		},
+	})
+
+	interaction := baseInteraction()
+
+	lowercaseScrubbed, err := lowercasePipeline.ScrubInteraction(interaction)
+	if err != nil {
+		t.Fatalf("lowercase ScrubInteraction() error = %v", err)
+	}
+	mixedCaseScrubbed, err := mixedCasePipeline.ScrubInteraction(interaction)
+	if err != nil {
+		t.Fatalf("mixed-case ScrubInteraction() error = %v", err)
+	}
+
+	if got, want := mixedCaseScrubbed.Request.Headers["authorization"], lowercaseScrubbed.Request.Headers["authorization"]; !slices.Equal(got, want) {
+		t.Fatalf("masked authorization header = %#v, want %#v", got, want)
+	}
+
+	if !slices.Equal(mixedCaseScrubbed.ScrubReport.RedactedPaths, lowercaseScrubbed.ScrubReport.RedactedPaths) {
+		t.Fatalf(
+			"mixed-case redacted paths = %#v, want %#v",
+			mixedCaseScrubbed.ScrubReport.RedactedPaths,
+			lowercaseScrubbed.ScrubReport.RedactedPaths,
+		)
+	}
+}
+
 func TestScrubInteractionHashIsDeterministicWithinPipeline(t *testing.T) {
 	pipeline := mustNewPipeline(t, Options{
 		PolicyVersion: "v1",

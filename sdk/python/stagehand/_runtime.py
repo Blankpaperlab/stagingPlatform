@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import atexit
+import json
+import os
+import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +18,12 @@ from ._openai import OpenAIReplayStore
 from ._version import ARTIFACT_VERSION, __version__
 
 DEFAULT_CONFIG_FILENAME: Final[str] = "stagehand.yml"
+BUNDLE_VERSION: Final[str] = "v1alpha1"
+ENV_SESSION: Final[str] = "STAGEHAND_SESSION"
+ENV_MODE: Final[str] = "STAGEHAND_MODE"
+ENV_CONFIG_PATH: Final[str] = "STAGEHAND_CONFIG_PATH"
+ENV_CAPTURE_OUTPUT: Final[str] = "STAGEHAND_CAPTURE_OUTPUT"
+ENV_REPLAY_INPUT: Final[str] = "STAGEHAND_REPLAY_INPUT"
 
 StagehandMode: TypeAlias = Literal["record", "replay", "passthrough"]
 
@@ -88,6 +99,16 @@ class StagehandRuntime:
     def captured_interaction_dicts(self) -> list[dict[str, Any]]:
         return [interaction.to_dict() for interaction in self.captured_interactions()]
 
+    def capture_bundle_dict(self) -> dict[str, Any]:
+        return {
+            "bundle_version": BUNDLE_VERSION,
+            "metadata": self.recorder_metadata(),
+            "interactions": self.captured_interaction_dicts(),
+        }
+
+    def write_capture_bundle(self, path: str | Path) -> str:
+        return _write_capture_bundle(path, self.capture_bundle_dict())
+
     def seed_replay_interactions(
         self,
         interactions: Iterable[CapturedInteraction | dict[str, Any]],
@@ -137,8 +158,20 @@ def init(session: str, mode: str, config_path: str | Path | None = None) -> Stag
             capture_buffer=runtime._capture_buffer,
             replay_store=runtime._openai_replay_store,
         )
+        _configure_env_integrations(runtime)
         _current_runtime = runtime
         return runtime
+
+
+def init_from_env() -> StagehandRuntime:
+    session = os.environ.get(ENV_SESSION)
+    mode = os.environ.get(ENV_MODE)
+    config_path = os.environ.get(ENV_CONFIG_PATH)
+
+    if session is None or mode is None:
+        raise ValueError(f"{ENV_SESSION} and {ENV_MODE} must be set for stagehand.init_from_env()")
+
+    return init(session=session, mode=mode, config_path=config_path)
 
 
 def get_runtime() -> StagehandRuntime:
@@ -163,6 +196,62 @@ def _reset_for_tests() -> None:
     with _runtime_lock:
         uninstall_httpx_interception()
         _current_runtime = None
+
+
+def _configure_env_integrations(runtime: StagehandRuntime) -> None:
+    replay_input = os.environ.get(ENV_REPLAY_INPUT)
+    if runtime.mode == "replay" and replay_input:
+        runtime.seed_replay_interactions(_load_replay_bundle(replay_input))
+
+    capture_output = os.environ.get(ENV_CAPTURE_OUTPUT)
+    if capture_output:
+        atexit.register(_write_capture_bundle_on_exit, runtime, capture_output)
+
+
+def _write_capture_bundle_on_exit(runtime: StagehandRuntime, path: str) -> None:
+    try:
+        runtime.write_capture_bundle(path)
+    except Exception as exc:
+        print(
+            f"stagehand: failed to write capture bundle to {path}: {exc.__class__.__name__}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+
+
+def _load_replay_bundle(path: str | Path) -> list[dict[str, Any]]:
+    raw = Path(path).read_text(encoding="utf-8")
+    payload = json.loads(raw)
+
+    if isinstance(payload, list):
+        return [dict(item) for item in payload]
+
+    interactions = payload.get("interactions")
+    if not isinstance(interactions, list):
+        raise ValueError(f"replay bundle at {path!s} does not contain an interactions list")
+
+    return [dict(item) for item in interactions]
+
+
+def _write_capture_bundle(path: str | Path, payload: dict[str, Any]) -> str:
+    target = Path(path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile(
+        "w",
+        delete=False,
+        dir=target.parent,
+        encoding="utf-8",
+        prefix=target.name + ".",
+        suffix=".tmp",
+    ) as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+        temp_path = Path(handle.name)
+
+    temp_path.replace(target)
+    return str(target.resolve())
 
 
 def _normalize_session(session: str) -> str:

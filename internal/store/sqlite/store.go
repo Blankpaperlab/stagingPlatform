@@ -103,7 +103,25 @@ func (s *Store) GetRun(ctx context.Context, runID string) (recorder.Run, error) 
 	return run, nil
 }
 
+func (s *Store) GetLatestRun(ctx context.Context, sessionName string) (recorder.Run, error) {
+	runID, err := s.getLatestRunID(ctx, sessionName)
+	if err != nil {
+		return recorder.Run{}, err
+	}
+
+	return s.GetRun(ctx, runID)
+}
+
 func (s *Store) GetRunRecord(ctx context.Context, runID string) (store.RunRecord, error) {
+	return s.getRunRecord(ctx, runID)
+}
+
+func (s *Store) GetLatestRunRecord(ctx context.Context, sessionName string) (store.RunRecord, error) {
+	runID, err := s.getLatestRunRecordID(ctx, sessionName)
+	if err != nil {
+		return store.RunRecord{}, err
+	}
+
 	return s.getRunRecord(ctx, runID)
 }
 
@@ -199,11 +217,6 @@ func (s *Store) DeleteSession(ctx context.Context, sessionName string) error {
 	if runCount == 0 && saltCount == 0 {
 		_ = tx.Rollback()
 		return fmt.Errorf("delete session %q: %w", sessionName, store.ErrNotFound)
-	}
-
-	if _, err := tx.ExecContext(ctx, `DELETE FROM baselines WHERE session_name = ?`, sessionName); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("delete baselines for session %q: %w", sessionName, err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM runs WHERE session_name = ?`, sessionName); err != nil {
@@ -728,6 +741,51 @@ func (s *Store) getBaselineByQuery(ctx context.Context, query, value string) (st
 	baseline.CreatedAt = parsedCreatedAt
 
 	return baseline, nil
+}
+
+func (s *Store) getLatestRunID(ctx context.Context, sessionName string) (string, error) {
+	var runID string
+
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT run_id
+		FROM runs
+		WHERE session_name = ? AND status = ?
+		ORDER BY started_at DESC, run_id DESC
+		LIMIT 1`,
+		sessionName,
+		string(store.RunLifecycleStatusComplete),
+	).Scan(&runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("latest run lookup %q: %w", sessionName, store.ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("latest run lookup %q: %w", sessionName, err)
+	}
+
+	return runID, nil
+}
+
+func (s *Store) getLatestRunRecordID(ctx context.Context, sessionName string) (string, error) {
+	var runID string
+
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT run_id
+		FROM runs
+		WHERE session_name = ?
+		ORDER BY started_at DESC, run_id DESC
+		LIMIT 1`,
+		sessionName,
+	).Scan(&runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("latest run record lookup %q: %w", sessionName, store.ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("latest run record lookup %q: %w", sessionName, err)
+	}
+
+	return runID, nil
 }
 
 func (s *Store) ensureRunExists(ctx context.Context, runID string) error {

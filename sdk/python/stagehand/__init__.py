@@ -1,6 +1,6 @@
 """Stagehand Python SDK package."""
 
-from ._openai import ReplayMissError
+from ._openai import ReplayFailureError, ReplayMissError
 from ._version import ARTIFACT_VERSION, __version__
 from ._runtime import (
     AlreadyInitializedError,
@@ -10,6 +10,7 @@ from ._runtime import (
     StagehandRuntime,
     get_runtime,
     init,
+    init_from_env,
     is_initialized,
     seed_replay_interactions,
 )
@@ -19,12 +20,14 @@ __all__ = [
     "AlreadyInitializedError",
     "InvalidModeError",
     "NotInitializedError",
+    "ReplayFailureError",
     "ReplayMissError",
     "RuntimeMetadata",
     "StagehandRuntime",
     "__version__",
     "get_runtime",
     "init",
+    "init_from_env",
     "is_initialized",
     "seed_replay_interactions",
 ]

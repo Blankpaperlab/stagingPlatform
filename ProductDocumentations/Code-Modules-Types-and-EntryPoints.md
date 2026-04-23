@@ -57,14 +57,27 @@ Covered behavior:
 Purpose:
 
 - current CLI binary entrypoint
-- uses `run(io.Writer)` so output is testable
+- implements root help plus managed `record`, `replay`, and `inspect` command dispatch
+- uses a testable `run(args, stdout, stderr)` path
 
 ### Functions
 
-| Function | Signature                     | Purpose                                                                  |
-| -------- | ----------------------------- | ------------------------------------------------------------------------ |
-| `main`   | `func main()`                 | Writes CLI output to `os.Stdout` and exits with failure if writing fails |
-| `run`    | `func run(w io.Writer) error` | Core testable output path for the CLI scaffold                           |
+| Function             | Signature                                                                                                                 | Purpose                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `main`               | `func main()`                                                                                                             | Executes the CLI with process args and exits non-zero on failure                    |
+| `run`                | `func run(args []string, stdout io.Writer, stderr io.Writer) error`                                                       | Parses the root command and dispatches subcommands                                  |
+| `runRecord`          | `func runRecord(args []string, stdout io.Writer, _ io.Writer) (runErr error)`                                             | Runs a managed subprocess, imports its capture bundle, and persists a recording run |
+| `runReplay`          | `func runReplay(args []string, stdout io.Writer, _ io.Writer) error`                                                      | Loads a stored run, seeds a managed subprocess, and persists a replay run           |
+| `inspectHelpText`    | `func inspectHelpText() string`                                                                                           | Returns help text for the `inspect` subcommand                                      |
+| `finalizeRun`        | `func finalizeRun(ctx context.Context, artifactStore store.ArtifactStore, runRecord store.RunRecord, runErr error) error` | Marks a run `complete` or `corrupted` cleanly                                       |
+| `newRunRecord`       | `func newRunRecord(session string, cfg config.Config) (store.RunRecord, error)`                                           | Builds a new `running` run record for CLI workflows                                 |
+| `generateRunID`      | `func generateRunID() (string, error)`                                                                                    | Generates a random run identifier                                                   |
+| `sqliteDatabasePath` | `func sqliteDatabasePath(storagePath string) string`                                                                      | Resolves the SQLite file path from the configured storage path                      |
+| `writeRootHelp`      | `func writeRootHelp(w io.Writer)`                                                                                         | Writes root CLI help                                                                |
+| `rootHelpText`       | `func rootHelpText() string`                                                                                              | Returns root help text                                                              |
+| `recordHelpText`     | `func recordHelpText() string`                                                                                            | Returns help text for the `record` subcommand                                       |
+| `replayHelpText`     | `func replayHelpText() string`                                                                                            | Returns help text for the `replay` subcommand                                       |
+| `loadReplayRun`      | `func loadReplayRun(ctx context.Context, artifactStore store.ArtifactStore, runID, session string) (recorder.Run, error)` | Loads one replay source by run ID or the latest replayable stored run for a session |
 
 ### Tests
 
@@ -72,7 +85,119 @@ File: `cmd/stagehand/main_test.go`
 
 Covered behavior:
 
-- `run()` writes the expected scaffold message
+- root help is shown when no command is provided
+- `record` rejects missing required session input
+- `record` rejects a missing managed command
+- `record` runs a managed helper process, imports its capture bundle, persists scrubbed interactions, and emits JSON
+- `replay` rejects invalid selector combinations
+- `replay` rejects a missing managed command
+- `replay` loads a persisted run by ID, seeds a managed helper process, persists the replay run, and emits JSON
+- `replay` loads the latest replayable run by session and ignores newer corrupted runs
+- `inspect` validates selector usage
+- file-like storage paths are preserved when resolving SQLite database paths
+
+### File: `cmd/stagehand/inspect.go`
+
+Purpose:
+
+- implements the terminal-facing `stagehand inspect` workflow
+- loads stored run records plus ordered interactions directly from SQLite
+- renders nested interaction trees with optional body expansion
+
+### Structs and their purposes
+
+| Struct        | Purpose                                            |
+| ------------- | -------------------------------------------------- |
+| `inspectNode` | Tree node used to render parent/child interactions |
+
+### Functions
+
+| Function             | Signature                                                                                                                                                        | Purpose                                                               |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `runInspect`         | `func runInspect(args []string, stdout io.Writer, _ io.Writer) error`                                                                                            | Loads one run by ID or session and renders terminal inspection output |
+| `loadInspectableRun` | `func loadInspectableRun(ctx context.Context, artifactStore store.ArtifactStore, runID string, session string) (store.RunRecord, []recorder.Interaction, error)` | Loads the selected run record and ordered interactions                |
+| `renderInspect`      | `func renderInspect(w io.Writer, runRecord store.RunRecord, interactions []recorder.Interaction, showBodies bool) error`                                         | Renders the overall inspect view                                      |
+| `buildInspectTree`   | `func buildInspectTree(interactions []recorder.Interaction) []*inspectNode`                                                                                      | Builds a nested tree from `parent_interaction_id` links               |
+| `renderInspectNode`  | `func renderInspectNode(w io.Writer, node *inspectNode, depth int, showBodies bool, visited map[string]bool) error`                                              | Renders one interaction subtree                                       |
+| `prettyJSON`         | `func prettyJSON(value any) string`                                                                                                                              | Pretty-prints request bodies and event payloads                       |
+| `indentBlock`        | `func indentBlock(value string, prefix string) string`                                                                                                           | Applies indentation to multi-line body output                         |
+| `formatLatency`      | `func formatLatency(latencyMS int64) string`                                                                                                                     | Renders interaction latency or `n/a`                                  |
+| `formatFallback`     | `func formatFallback(tier recorder.FallbackTier) string`                                                                                                         | Renders fallback-tier labels or `none`                                |
+| `emptyFallback`      | `func emptyFallback(value string, fallback string) string`                                                                                                       | Fills missing string fields in the renderer                           |
+
+### Tests
+
+File: `cmd/stagehand/inspect_test.go`
+
+Covered behavior:
+
+- `inspect` rejects missing or conflicting selectors
+- `inspect` renders nested interactions with service, operation, latency, and fallback metadata
+- `inspect --show-bodies` expands request bodies and event payloads
+- `inspect --session` loads the latest stored run record even when the latest run is corrupted
+
+### File: `cmd/stagehand/workflow.go`
+
+Purpose:
+
+- holds shared helpers for the real CLI record/replay workflows
+- manages subprocess environment wiring, capture-bundle import/export, and local master-key handling
+- normalizes imported interactions before recorder-side persistence
+
+### Structs and their purposes
+
+| Struct                | Purpose                                                       |
+| --------------------- | ------------------------------------------------------------- |
+| `interactionBundle`   | On-disk JSON envelope for capture or replay interaction lists |
+| `recordResult`        | Machine-readable result emitted by `stagehand record`         |
+| `replayCommandResult` | Machine-readable result emitted by `stagehand replay`         |
+
+### Functions
+
+| Function                        | Signature                                                                                                                                   | Purpose                                                                  |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `newRunRecordForMode`           | `func newRunRecordForMode(session string, cfg config.Config, mode recorder.RunMode) (store.RunRecord, error)`                               | Builds a mode-specific run record for CLI workflows                      |
+| `newRecordingWriter`            | `func newRecordingWriter(artifactStore store.ArtifactStore, cfg config.Config, dbPath string) (*recording.Writer, error)`                   | Builds the scrub-before-persist writer used by CLI imports               |
+| `loadOrCreateMasterKey`         | `func loadOrCreateMasterKey(storageDir string) ([]byte, error)`                                                                             | Loads a local master key or creates `stagehand.master.key` beside SQLite |
+| `decodeMasterKey`               | `func decodeMasterKey(value string) ([]byte, error)`                                                                                        | Decodes raw, hex, or base64 master-key input                             |
+| `runManagedCommand`             | `func runManagedCommand(ctx context.Context, commandArgs []string, extraEnv map[string]string, logOutput io.Writer) error`                  | Executes the managed child process with Stagehand env wiring             |
+| `managedCommandEnvironment`     | `func managedCommandEnvironment(extraEnv map[string]string) []string`                                                                       | Merges process env, CLI overrides, and local `PYTHONPATH` wiring         |
+| `loadInteractionBundle`         | `func loadInteractionBundle(path string) (interactionBundle, error)`                                                                        | Loads a capture/replay bundle from disk                                  |
+| `writeInteractionBundle`        | `func writeInteractionBundle(path string, bundle interactionBundle) error`                                                                  | Writes a replay seed bundle atomically                                   |
+| `normalizeImportedInteractions` | `func normalizeImportedInteractions(runID string, source []recorder.Interaction) []recorder.Interaction`                                    | Remaps imported interactions into the target run namespace               |
+| `persistImportedInteractions`   | `func persistImportedInteractions(ctx context.Context, writer *recording.Writer, runID string, source []recorder.Interaction) (int, error)` | Persists normalized imported interactions                                |
+| `emitJSON`                      | `func emitJSON(w io.Writer, value any) error`                                                                                               | Emits machine-readable JSON to stdout                                    |
+| `mustGetwd`                     | `func mustGetwd() string`                                                                                                                   | Returns the working directory for local path helpers                     |
+
+## Package `stagehand/internal/runtime/replay`
+
+### File: `internal/runtime/replay/exact.go`
+
+Purpose:
+
+- validates a stored source run for exact replay
+- summarizes the source run so the CLI can seed a managed replay subprocess and report stable machine-readable output
+
+### Structs and their purposes
+
+| Struct   | Purpose                                                                      |
+| -------- | ---------------------------------------------------------------------------- |
+| `Result` | Machine-readable summary of the exact replay source run used by the CLI flow |
+
+### Exported functions and methods
+
+| Function or Method | Signature                                      | Purpose                                                                   |
+| ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------- |
+| `Exact`            | `func Exact(run recorder.Run) (Result, error)` | Validates replay eligibility and builds a source summary for exact replay |
+
+### Tests
+
+File: `internal/runtime/replay/exact_test.go`
+
+Covered behavior:
+
+- exact replay summarizes a replay-eligible run into stable machine-readable output
+- non-replay-eligible runs are rejected with a concrete error
 
 ## Package `stagehand/cmd/stagehandd`
 
@@ -415,6 +540,13 @@ Purpose:
 | --------------- | ----------------------------------------------------------- |
 | `ArtifactStore` | Stable interface for local artifact persistence and queries |
 
+Current `ArtifactStore` capabilities include:
+
+- loading a specific run record
+- loading the latest stored run record for a session
+- loading the latest replayable complete run for a session
+- loading ordered interactions for terminal or non-terminal runs
+
 ### Structs and their purposes
 
 | Struct      | Purpose                                                         |
@@ -502,22 +634,24 @@ Purpose:
 
 ### Exported methods on `Store`
 
-| Method              | Signature                                                                                             | Purpose                                                       |
-| ------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `Close`             | `func (s *Store) Close() error`                                                                       | Closes the underlying SQLite handle                           |
-| `CreateRun`         | `func (s *Store) CreateRun(ctx context.Context, run store.RunRecord) error`                           | Persists a top-level run record                               |
-| `GetRunRecord`      | `func (s *Store) GetRunRecord(ctx context.Context, runID string) (store.RunRecord, error)`            | Loads top-level run metadata, including `running` runs        |
-| `GetRun`            | `func (s *Store) GetRun(ctx context.Context, runID string) (recorder.Run, error)`                     | Loads a terminal run with all ordered interactions and events |
-| `UpdateRun`         | `func (s *Store) UpdateRun(ctx context.Context, run store.RunRecord) error`                           | Updates run lifecycle and metadata fields                     |
-| `DeleteRun`         | `func (s *Store) DeleteRun(ctx context.Context, runID string) error`                                  | Deletes one run and its dependent rows                        |
-| `DeleteSession`     | `func (s *Store) DeleteSession(ctx context.Context, sessionName string) error`                        | Deletes all runs and scrub salt for a session                 |
-| `WriteInteraction`  | `func (s *Store) WriteInteraction(ctx context.Context, interaction recorder.Interaction) error`       | Atomically writes one interaction and its events              |
-| `ListInteractions`  | `func (s *Store) ListInteractions(ctx context.Context, runID string) ([]recorder.Interaction, error)` | Lists stored interactions for a run in sequence order         |
-| `PutScrubSalt`      | `func (s *Store) PutScrubSalt(ctx context.Context, salt store.ScrubSalt) error`                       | Persists a session scrub salt                                 |
-| `GetScrubSalt`      | `func (s *Store) GetScrubSalt(ctx context.Context, sessionName string) (store.ScrubSalt, error)`      | Loads a scrub salt or returns `store.ErrNotFound`             |
-| `PutBaseline`       | `func (s *Store) PutBaseline(ctx context.Context, baseline store.Baseline) error`                     | Persists a baseline record                                    |
-| `GetBaseline`       | `func (s *Store) GetBaseline(ctx context.Context, baselineID string) (store.Baseline, error)`         | Loads a baseline by ID                                        |
-| `GetLatestBaseline` | `func (s *Store) GetLatestBaseline(ctx context.Context, sessionName string) (store.Baseline, error)`  | Returns the latest baseline for a session                     |
+| Method               | Signature                                                                                              | Purpose                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| `Close`              | `func (s *Store) Close() error`                                                                        | Closes the underlying SQLite handle                                  |
+| `CreateRun`          | `func (s *Store) CreateRun(ctx context.Context, run store.RunRecord) error`                            | Persists a top-level run record                                      |
+| `GetRunRecord`       | `func (s *Store) GetRunRecord(ctx context.Context, runID string) (store.RunRecord, error)`             | Loads top-level run metadata, including `running` runs               |
+| `GetLatestRunRecord` | `func (s *Store) GetLatestRunRecord(ctx context.Context, sessionName string) (store.RunRecord, error)` | Loads the latest stored run record for a session across all statuses |
+| `GetRun`             | `func (s *Store) GetRun(ctx context.Context, runID string) (recorder.Run, error)`                      | Loads a terminal run with all ordered interactions and events        |
+| `GetLatestRun`       | `func (s *Store) GetLatestRun(ctx context.Context, sessionName string) (recorder.Run, error)`          | Loads the latest replayable complete run for a session               |
+| `UpdateRun`          | `func (s *Store) UpdateRun(ctx context.Context, run store.RunRecord) error`                            | Updates run lifecycle and metadata fields                            |
+| `DeleteRun`          | `func (s *Store) DeleteRun(ctx context.Context, runID string) error`                                   | Deletes one run and its dependent rows                               |
+| `DeleteSession`      | `func (s *Store) DeleteSession(ctx context.Context, sessionName string) error`                         | Deletes all runs and scrub salt for a session                        |
+| `WriteInteraction`   | `func (s *Store) WriteInteraction(ctx context.Context, interaction recorder.Interaction) error`        | Atomically writes one interaction and its events                     |
+| `ListInteractions`   | `func (s *Store) ListInteractions(ctx context.Context, runID string) ([]recorder.Interaction, error)`  | Lists stored interactions for a run in sequence order                |
+| `PutScrubSalt`       | `func (s *Store) PutScrubSalt(ctx context.Context, salt store.ScrubSalt) error`                        | Persists a session scrub salt                                        |
+| `GetScrubSalt`       | `func (s *Store) GetScrubSalt(ctx context.Context, sessionName string) (store.ScrubSalt, error)`       | Loads a scrub salt or returns `store.ErrNotFound`                    |
+| `PutBaseline`        | `func (s *Store) PutBaseline(ctx context.Context, baseline store.Baseline) error`                      | Persists a baseline record                                           |
+| `GetBaseline`        | `func (s *Store) GetBaseline(ctx context.Context, baselineID string) (store.Baseline, error)`          | Loads a baseline by ID                                               |
+| `GetLatestBaseline`  | `func (s *Store) GetLatestBaseline(ctx context.Context, sessionName string) (store.Baseline, error)`   | Returns the latest baseline for a session                            |
 
 ### Internal helpers
 
@@ -876,20 +1010,21 @@ Purpose:
 
 ### Exports
 
-| Export                     | Kind     | Purpose                                          |
-| -------------------------- | -------- | ------------------------------------------------ |
-| `__version__`              | string   | Python package version                           |
-| `ARTIFACT_VERSION`         | string   | Artifact version placeholder                     |
-| `StagehandRuntime`         | type     | Public runtime object returned by `init()`       |
-| `RuntimeMetadata`          | type     | Run/session metadata carried by the runtime      |
-| `AlreadyInitializedError`  | error    | Raised on double initialization                  |
-| `InvalidModeError`         | error    | Raised when `init()` receives an invalid mode    |
-| `NotInitializedError`      | error    | Raised when runtime state is requested too early |
-| `ReplayMissError`          | error    | Raised when OpenAI replay mode has no exact seed |
-| `init`                     | function | Initializes the Python SDK bootstrap             |
-| `get_runtime`              | function | Returns the active runtime singleton             |
-| `is_initialized`           | function | Reports whether bootstrap has happened           |
-| `seed_replay_interactions` | function | Seeds the active runtime with exact replay data  |
+| Export                     | Kind     | Purpose                                                            |
+| -------------------------- | -------- | ------------------------------------------------------------------ |
+| `__version__`              | string   | Python package version                                             |
+| `ARTIFACT_VERSION`         | string   | Artifact version placeholder                                       |
+| `StagehandRuntime`         | type     | Public runtime object returned by `init()`                         |
+| `RuntimeMetadata`          | type     | Run/session metadata carried by the runtime                        |
+| `AlreadyInitializedError`  | error    | Raised on double initialization                                    |
+| `InvalidModeError`         | error    | Raised when `init()` receives an invalid mode                      |
+| `NotInitializedError`      | error    | Raised when runtime state is requested too early                   |
+| `ReplayMissError`          | error    | Raised when OpenAI replay mode has no exact seed                   |
+| `init`                     | function | Initializes the Python SDK bootstrap                               |
+| `init_from_env`            | function | Initializes the Python SDK from CLI-provided environment variables |
+| `get_runtime`              | function | Returns the active runtime singleton                               |
+| `is_initialized`           | function | Reports whether bootstrap has happened                             |
+| `seed_replay_interactions` | function | Seeds the active runtime with exact replay data                    |
 
 ### Behavior
 
@@ -899,6 +1034,7 @@ Purpose:
 - runtime metadata includes session, mode, generated `run_id`, optional config path, and version data
 - bootstrap now also installs `httpx` interception and exposes captured interactions from the runtime
 - replay mode can be seeded with captured OpenAI interactions for exact offline replay
+- `init_from_env()` lets a CLI-managed subprocess pick up session, mode, config path, and replay/capture bundle wiring without custom argument parsing
 
 ## Module `sdk/python/stagehand/_runtime.py`
 
@@ -908,7 +1044,8 @@ Purpose:
 - validates bootstrap inputs
 - resolves optional config paths
 - owns the Python-side capture buffer used by the `httpx` interceptor
-- exposes run/session metadata and captured interactions for later recorder hooks
+- exposes run/session metadata and captured interactions for recorder or CLI import hooks
+- loads replay bundles and writes capture bundles when the CLI provides the relevant environment variables
 
 ### Type aliases
 
@@ -918,10 +1055,16 @@ Purpose:
 
 ### Constants
 
-| Name                      | Meaning                                          |
-| ------------------------- | ------------------------------------------------ |
-| `DEFAULT_CONFIG_FILENAME` | Default runtime config filename, `stagehand.yml` |
-| `VALID_MODES`             | Canonical allowed bootstrap modes                |
+| Name                      | Meaning                                                        |
+| ------------------------- | -------------------------------------------------------------- |
+| `DEFAULT_CONFIG_FILENAME` | Default runtime config filename, `stagehand.yml`               |
+| `BUNDLE_VERSION`          | JSON bundle envelope version used by CLI-managed record/replay |
+| `ENV_SESSION`             | Environment variable carrying the Stagehand session            |
+| `ENV_MODE`                | Environment variable carrying the Stagehand mode               |
+| `ENV_CONFIG_PATH`         | Environment variable carrying the config path                  |
+| `ENV_CAPTURE_OUTPUT`      | Environment variable naming the capture-bundle output file     |
+| `ENV_REPLAY_INPUT`        | Environment variable naming the replay-seed input file         |
+| `VALID_MODES`             | Canonical allowed bootstrap modes                              |
 
 ### Classes and dataclasses
 
@@ -939,6 +1082,7 @@ Purpose:
 | Function or Method                            | Signature                                                                                                  | Purpose                                                            |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | `init`                                        | `def init(session: str, mode: str, config_path: str \| Path \| None = None) -> StagehandRuntime`           | Initializes the runtime singleton                                  |
+| `init_from_env`                               | `def init_from_env() -> StagehandRuntime`                                                                  | Initializes the runtime from CLI-provided environment variables    |
 | `get_runtime`                                 | `def get_runtime() -> StagehandRuntime`                                                                    | Returns the active runtime                                         |
 | `is_initialized`                              | `def is_initialized() -> bool`                                                                             | Reports whether bootstrap has already happened                     |
 | `seed_replay_interactions`                    | `def seed_replay_interactions(interactions: Iterable[CapturedInteraction \| dict[str, Any]]) -> int`       | Seeds exact replay state for the active runtime                    |
@@ -946,6 +1090,8 @@ Purpose:
 | `StagehandRuntime.recorder_metadata`          | `def recorder_metadata(self) -> dict[str, str \| None]`                                                    | Convenience wrapper exposing the runtime metadata to recorder code |
 | `StagehandRuntime.captured_interactions`      | `def captured_interactions(self) -> tuple[CapturedInteraction, ...]`                                       | Returns the in-memory normalized interaction buffer                |
 | `StagehandRuntime.captured_interaction_dicts` | `def captured_interaction_dicts(self) -> list[dict[str, Any]]`                                             | Returns artifact-shaped interaction dictionaries                   |
+| `StagehandRuntime.capture_bundle_dict`        | `def capture_bundle_dict(self) -> dict[str, Any]`                                                          | Returns the JSON bundle envelope used by CLI-managed record/replay |
+| `StagehandRuntime.write_capture_bundle`       | `def write_capture_bundle(self, path: str \| Path) -> str`                                                 | Writes the captured interactions to a bundle file                  |
 | `StagehandRuntime.seed_replay_interactions`   | `def seed_replay_interactions(self, interactions: Iterable[CapturedInteraction \| dict[str, Any]]) -> int` | Seeds OpenAI exact replay state for the current runtime            |
 
 ## Module `sdk/python/stagehand/_capture.py`
@@ -954,7 +1100,7 @@ Purpose:
 
 - defines the Python-side normalized interaction types used by Story D2
 - converts `httpx` requests, responses, errors, and timeouts into the core interaction/event shape
-- holds the thread-safe in-memory capture buffer until recorder persistence exists
+- holds the thread-safe in-memory capture buffer until it is exported through the current CLI/import boundary or a future direct persistence path
 
 ### Constants
 
@@ -980,6 +1126,7 @@ Purpose:
 - `CaptureBuffer.record_httpx_failure(...)` appends a normalized timeout or error interaction
 - `CaptureBuffer.record_openai_stream_response(...)` appends a streaming OpenAI interaction with ordered SSE events
 - `CaptureBuffer.record_replay_interaction(...)` appends a cloned interaction for replay runs with fallback provenance
+- the captured interactions can be exported through `StagehandRuntime.write_capture_bundle(...)`
 
 ## Module `sdk/python/stagehand/_httpx.py`
 
@@ -1001,6 +1148,7 @@ Behavior now covered:
 - generic sync and async request interception
 - OpenAI SSE capture by wrapping the response byte stream
 - exact OpenAI replay returned directly from the `send` hook in replay mode
+- CLI-seeded exact replay once `_runtime.py` has loaded a replay bundle into the runtime
 
 ## Module `sdk/python/stagehand/_openai.py`
 
@@ -1079,24 +1227,80 @@ Covered behavior:
 Purpose:
 
 - current TypeScript SDK entrypoint
-- exports version constants, types, and placeholder `init()`
+- re-exports the public TypeScript bootstrap/runtime API surface
 
 ### Type exports
 
-| Name            | Kind        | Purpose                                                |
-| --------------- | ----------- | ------------------------------------------------------ |
-| `StagehandMode` | union type  | Allowed mode values: `record`, `replay`, `passthrough` |
-| `InitOptions`   | object type | Input shape for `init()`                               |
+| Name               | Kind        | Purpose                                                              |
+| ------------------ | ----------- | -------------------------------------------------------------------- |
+| `StagehandMode`    | union type  | Allowed mode values: `record`, `replay`, `passthrough`               |
+| `InitOptions`      | object type | Input shape for `init()`                                             |
+| `RuntimeMetadata`  | object type | Runtime metadata shape exposed on the `StagehandRuntime` object      |
+| `RecorderMetadata` | object type | Recorder-facing serialized metadata returned by `recorderMetadata()` |
 
 ### Function exports
 
-| Name   | Signature                                     | Purpose                                               |
-| ------ | --------------------------------------------- | ----------------------------------------------------- |
-| `init` | `function init(_options: InitOptions): never` | Placeholder SDK init entrypoint that currently throws |
+| Name            | Signature                                               | Purpose                                                         |
+| --------------- | ------------------------------------------------------- | --------------------------------------------------------------- |
+| `init`          | `function init(options: InitOptions): StagehandRuntime` | Initializes the TypeScript runtime singleton                    |
+| `initFromEnv`   | `function initFromEnv(): StagehandRuntime`              | Initializes the runtime from CLI-provided environment variables |
+| `getRuntime`    | `function getRuntime(): StagehandRuntime`               | Returns the active runtime singleton                            |
+| `isInitialized` | `function isInitialized(): boolean`                     | Reports whether bootstrap has happened                          |
 
 ### Behavior
 
-- `init()` currently throws an error mentioning Story G1
+- `init()` now validates session and mode, resolves an optional config path, and creates a process-local runtime singleton
+- `initFromEnv()` reads `STAGEHAND_SESSION`, `STAGEHAND_MODE`, and optional `STAGEHAND_CONFIG_PATH`
+- the TypeScript bootstrap layer now matches Python behavior for initialization semantics before request interception work starts
+
+## Module `sdk/typescript/src/runtime.ts`
+
+Purpose:
+
+- implements the TypeScript bootstrap singleton for Story G1
+- validates bootstrap inputs
+- resolves optional config paths
+- exposes run/session metadata for later interception and recorder hooks
+
+### Constants
+
+| Name                      | Meaning                                             |
+| ------------------------- | --------------------------------------------------- |
+| `DEFAULT_CONFIG_FILENAME` | Default runtime config filename, `stagehand.yml`    |
+| `ENV_SESSION`             | Environment variable carrying the Stagehand session |
+| `ENV_MODE`                | Environment variable carrying the Stagehand mode    |
+| `ENV_CONFIG_PATH`         | Environment variable carrying the config path       |
+| `VALID_MODES`             | Canonical allowed bootstrap modes                   |
+
+### Classes and types
+
+| Name                      | Kind  | Purpose                                                              |
+| ------------------------- | ----- | -------------------------------------------------------------------- |
+| `StagehandError`          | error | Base TypeScript runtime bootstrap error                              |
+| `AlreadyInitializedError` | error | Raised when bootstrap is attempted twice                             |
+| `InvalidModeError`        | error | Raised when mode is outside the supported set                        |
+| `NotInitializedError`     | error | Raised when runtime state is requested before init                   |
+| `RuntimeMetadata`         | type  | Captures session, mode, run ID, config path, versions, and timestamp |
+| `RecorderMetadata`        | type  | Serialized metadata passed to recorder-facing integrations later     |
+| `StagehandRuntime`        | class | Public runtime wrapper around the bootstrap metadata                 |
+
+### Exported functions and methods
+
+| Function or Method                  | Signature                                               | Purpose                                                         |
+| ----------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------- |
+| `init`                              | `function init(options: InitOptions): StagehandRuntime` | Initializes the runtime singleton                               |
+| `initFromEnv`                       | `function initFromEnv(): StagehandRuntime`              | Initializes the runtime from CLI-provided environment variables |
+| `getRuntime`                        | `function getRuntime(): StagehandRuntime`               | Returns the active runtime                                      |
+| `isInitialized`                     | `function isInitialized(): boolean`                     | Reports whether bootstrap has already happened                  |
+| `_resetForTests`                    | `function _resetForTests(): void`                       | Clears the runtime singleton between tests                      |
+| `StagehandRuntime.recorderMetadata` | `recorderMetadata(): RecorderMetadata`                  | Returns recorder-facing metadata in a serializable shape        |
+
+### Behavior
+
+- `stagehand.yml` autodiscovery works from the current working directory when present
+- explicit config-path resolution fails fast when the file does not exist
+- `runId` generation follows the same `run_<hex>` pattern used by the Python bootstrap
+- request interception is still not implemented in TypeScript
 
 ## TypeScript tests
 
@@ -1104,7 +1308,13 @@ File: `sdk/typescript/src/index.test.ts`
 
 Covered behavior:
 
-- `init()` throws until Story G1 is implemented
+- `init()` returns runtime metadata for valid bootstrap inputs
+- default config autodiscovery works when `stagehand.yml` is present
+- explicit config path resolution works
+- `initFromEnv()` reads session, mode, and config path from environment variables
+- double initialization is rejected
+- invalid modes and empty sessions are rejected
+- `getRuntime()` requires prior initialization
 
 ## Scripts and Workflow Enforcement
 

@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 import stagehand
+from stagehand._runtime import _write_capture_bundle_on_exit
 
 
 def test_version_is_defined() -> None:
@@ -47,6 +48,22 @@ def test_init_accepts_explicit_config_path(tmp_path: Path, monkeypatch: pytest.M
     assert runtime.config_path == str(config_path.resolve())
 
 
+def test_init_from_env_reads_session_mode_and_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "stagehand.yml"
+    config_path.write_text("schema_version: v1alpha1\n", encoding="utf-8")
+    monkeypatch.setenv("STAGEHAND_SESSION", "cli-demo")
+    monkeypatch.setenv("STAGEHAND_MODE", "record")
+    monkeypatch.setenv("STAGEHAND_CONFIG_PATH", str(config_path))
+
+    runtime = stagehand.init_from_env()
+
+    assert runtime.session == "cli-demo"
+    assert runtime.mode == "record"
+    assert runtime.config_path == str(config_path.resolve())
+
+
 def test_double_init_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     stagehand.init(session="demo", mode="record")
@@ -79,3 +96,22 @@ def test_missing_config_path_is_rejected(tmp_path: Path, monkeypatch: pytest.Mon
 def test_get_runtime_requires_init() -> None:
     with pytest.raises(stagehand.NotInitializedError):
         stagehand.get_runtime()
+
+
+def test_write_capture_bundle_on_exit_reports_errors_to_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runtime = stagehand.init(session="demo", mode="record")
+
+    def fail_write(self: object, path: str | Path) -> str:
+        raise PermissionError(f"cannot write {path}")
+
+    monkeypatch.setattr(stagehand.StagehandRuntime, "write_capture_bundle", fail_write)
+
+    _write_capture_bundle_on_exit(runtime, tmp_path / "capture.json")
+
+    captured = capsys.readouterr()
+    assert "failed to write capture bundle" in captured.err
+    assert "PermissionError" in captured.err

@@ -1,0 +1,53 @@
+{
+  "schema_version": "v1alpha1",
+  "sdk_version": "0.1.0-alpha.0",
+  "runtime_version": "0.1.0-alpha.0",
+  "scrub_policy_version": "v1",
+  "run_id": "run_fixture_error_001",
+  "session_name": "error-flow",
+  "mode": "record",
+  "status": "complete",
+  "started_at": "2026-04-21T10:10:00Z",
+  "ended_at": "2026-04-21T10:10:00.220Z",
+  "interactions": [
+    {
+      "run_id": "run_fixture_error_001",
+      "interaction_id": "int_error_001",
+      "sequence": 1,
+      "service": "stripe",
+      "operation": "POST /v1/charges",
+      "protocol": "https",
+      "streaming": false,
+      "request": {
+        "url": "https://api.stripe.com/v1/charges",
+        "method": "POST",
+        "headers": {
+          "content-type": ["application/json"]
+        },
+        "body": {
+          "amount": 1000,
+          "currency": "usd"
+        }
+      },
+      "events": [
+        { "sequence": 1, "t_ms": 0, "sim_t_ms": 0, "type": "request_sent" },
+        {
+          "sequence": 2,
+          "t_ms": 220,
+          "sim_t_ms": 220,
+          "type": "error",
+          "data": {
+            "error_class": "ConnectError",
+            "message": "connection refused"
+          }
+        }
+      ],
+      "scrub_report": {
+        "redacted_paths": [],
+        "scrub_policy_version": "v1",
+        "session_salt_id": "salt_fixture_error"
+      },
+      "latency_ms": 220
+    }
+  ]
+}

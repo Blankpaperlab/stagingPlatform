@@ -1,13 +1,19 @@
 export { ARTIFACT_VERSION, SDK_VERSION } from './version.js';
+export {
+  AlreadyInitializedError,
+  DEFAULT_CONFIG_FILENAME,
+  ENV_CONFIG_PATH,
+  ENV_MODE,
+  ENV_SESSION,
+  InvalidModeError,
+  NotInitializedError,
+  StagehandError,
+  StagehandRuntime,
+  VALID_MODES,
+  getRuntime,
+  init,
+  initFromEnv,
+  isInitialized,
+} from './runtime.js';
 
-export type StagehandMode = 'record' | 'replay' | 'passthrough';
-
-export type InitOptions = {
-  session: string;
-  mode: StagehandMode;
-  configPath?: string;
-};
-
-export function init(_options: InitOptions): never {
-  throw new Error('Stagehand TypeScript SDK init will be implemented in Story G1.');
-}
+export type { InitOptions, RecorderMetadata, RuntimeMetadata, StagehandMode } from './runtime.js';

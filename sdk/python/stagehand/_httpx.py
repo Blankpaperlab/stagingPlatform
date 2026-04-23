@@ -9,7 +9,7 @@ from typing import Any, Callable, Iterable
 import httpx
 
 from ._capture import CaptureBuffer, CapturedInteraction
-from ._openai import OpenAIReplayStore, is_openai_request
+from ._openai import OpenAIReplayStore, ReplayFailureError, is_openai_request
 
 _patch_lock = Lock()
 _original_client_send: Callable[..., Any] | None = None
@@ -315,15 +315,35 @@ def _build_replay_response(
     streamed: bool,
     async_mode: bool,
 ) -> httpx.Response:
-    response_event = next(
-        event for event in interaction.events if event.type == "response_received"
-    )
-    response_data = response_event.data or {}
-    status_code = int(response_data.get("status_code", 200))
-    headers = httpx.Headers(_flatten_headers(response_data.get("headers", {})))
-
     def replayed() -> None:
         capture_buffer.record_replay_interaction(interaction, fallback_tier="exact")
+
+    terminal_event = _terminal_replay_event(interaction)
+    if terminal_event is None:
+        raise ReplayFailureError(
+            interaction=interaction,
+            terminal_event_type="missing_terminal_event",
+            detail="captured interaction is not replayable without a terminal event",
+        )
+
+    if terminal_event.type in {"error", "timeout"}:
+        replayed()
+        terminal_data = terminal_event.data or {}
+        raise ReplayFailureError(
+            interaction=interaction,
+            terminal_event_type=terminal_event.type,
+            error_class=_as_str_or_none(terminal_data.get("error_class")),
+            detail=_as_str_or_none(terminal_data.get("message")),
+        )
+
+    response_event = _response_replay_event(interaction)
+    response_data = (
+        response_event.data
+        if response_event is not None
+        else _default_response_data(streaming=interaction.streaming or streamed)
+    )
+    status_code = int(response_data.get("status_code", 200))
+    headers = httpx.Headers(_flatten_headers(response_data.get("headers", {})))
 
     if interaction.streaming or streamed:
         chunks = _extract_stream_chunks(interaction)
@@ -347,6 +367,37 @@ def _build_replay_response(
         content=body,
         request=request,
     )
+
+
+def _terminal_replay_event(interaction: CapturedInteraction) -> Any | None:
+    for event in reversed(interaction.events):
+        if event.type in {"response_received", "error", "timeout", "stream_end"}:
+            return event
+    return None
+
+
+def _response_replay_event(interaction: CapturedInteraction) -> Any | None:
+    for event in interaction.events:
+        if event.type == "response_received":
+            return event
+    return None
+
+
+def _default_response_data(*, streaming: bool) -> dict[str, Any]:
+    headers: dict[str, list[str]] = {}
+    if streaming:
+        headers["content-type"] = ["text/event-stream"]
+    return {
+        "status_code": 200,
+        "headers": headers,
+        "body": None,
+    }
+
+
+def _as_str_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def _extract_stream_chunks(interaction: CapturedInteraction) -> list[bytes]:

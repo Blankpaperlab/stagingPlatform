@@ -76,7 +76,9 @@ Current behavior:
 
 - `CreateRun` validates and inserts a top-level run record
 - `GetRunRecord` loads top-level run metadata, including `running` runs
+- `GetLatestRunRecord` loads the latest stored run record for a session regardless of lifecycle state
 - `GetRun` hydrates a terminal artifact run plus all ordered interactions and events
+- `GetLatestRun` returns the latest replayable `complete` run for a session, not the latest corrupted or incomplete run
 - `UpdateRun` updates the top-level run lifecycle fields
 - `DeleteRun` removes one run and its dependent rows while preserving the session scrub salt
 - `DeleteSession` removes all runs for a session plus the session scrub salt
@@ -96,6 +98,13 @@ Current behavior:
 2. create `schema_migrations` if it does not exist
 3. apply unapplied `migrations/*.sql` files in lexical order
 4. record each applied migration in `schema_migrations`
+
+Operational assumption:
+
+- SQLite foreign-key enforcement is enabled with `PRAGMA foreign_keys = ON`
+- that setting is per connection, not global to the database file
+- the local store intentionally uses one open/idle connection in V1 so cascade behavior stays stable
+- if connection pooling is widened later, the pragma setup must be revisited explicitly rather than assumed
 
 Migrations are idempotent at the runner level because already-applied versions are skipped.
 
@@ -239,6 +248,12 @@ Current guarantees:
 
 This is the first concrete protection against partially written interaction artifacts.
 
+The current CLI `record` and `replay` commands use this store together with `internal/recording.Writer`:
+
+- `record` persists scrubbed managed-subprocess captures into a local run
+- `replay` persists the managed-subprocess replay result as a new replay-mode run
+- `inspect` reads run records plus ordered interactions directly so failed runs can be debugged without artifact hydration
+
 ## Deletion Semantics
 
 Current local deletion behavior is defined at the store layer.
@@ -253,8 +268,8 @@ Current local deletion behavior is defined at the store layer.
 
 ### `DeleteSession`
 
-- deletes baselines for the target session
 - deletes all runs for the target session, including their dependent rows
+- removes baselines indirectly through the `baselines.source_run_id -> runs.run_id` `ON DELETE CASCADE`
 - deletes the session scrub salt
 - returns `store.ErrNotFound` if the session has neither stored runs nor a stored scrub salt
 
