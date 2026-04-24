@@ -35,6 +35,7 @@ Current status:
 - Python and TypeScript OpenAI-aware capture can classify additional compatible hosts through `STAGEHAND_OPENAI_HOSTS`
 - Story H1 runtime session lifecycle implemented for create, snapshot, restore, fork, destroy, and session isolation
 - Story H2 runtime event queue implemented for persisted scheduled events, session sim clocks, `AdvanceTime`, and push/pull delivery modes
+- Story H3 runtime fallback tiers 0-2 implemented for exact matching, nearest-neighbor matching, state-synthesis hooks, and persisted fallback tier tracking
 - Dashboard remains deferred in Plan A and is represented by a placeholder
 
 Primary planning docs live under `docs/`.
@@ -49,6 +50,7 @@ Current schema references:
 - session hashing: `docs/scrub-session-hashing.md`
 - runtime session lifecycle: `docs/runtime-session-lifecycle.md`
 - runtime event queue and sim time: `docs/runtime-event-queue.md`
+- runtime fallback tiers: `docs/runtime-fallback-tiers.md`
 - local SQLite store and migrations: `docs/sqlite-local-store.md`
 
 Baseline local checks:

@@ -431,11 +431,13 @@ Use these statuses on your board:
 
 - Outcome: replay can recover from non-exact matches with explicit tier tracking.
 - To do:
-  - [ ] implement exact request matching
-  - [ ] implement nearest-neighbor matching
-  - [ ] implement state-aware synthesis hook
-  - [ ] persist used fallback tier on each interaction
-  - [ ] add configuration to allow and disallow tiers
+  - [x] implement exact request matching
+  - [x] implement nearest-neighbor matching
+  - [x] implement state-aware synthesis hook
+  - [x] persist used fallback tier on each interaction
+  - [x] add configuration to allow and disallow tiers
+- Current implementation note:
+  the Go runtime now has `internal/runtime/fallback.Matcher` for tier 0 exact matching, tier 1 nearest-neighbor matching, and tier 2 state-synthesis hooks. Matching honors `fallback.allowed_tiers`, returns interactions with explicit `fallback_tier`, and SQLite persistence now has regression coverage for round-tripping the used tier. Tier 3 `llm_synthesis` remains intentionally rejected by the H3 matcher.
 
 ### Story H4: Implement runtime resilience behavior
 
@@ -451,7 +453,7 @@ Use these statuses on your board:
 - [x] sessions are isolated
 - [x] snapshots restore correctly
 - [x] event queue works
-- [ ] fallback tiers are visible and configurable
+- [x] fallback tiers are visible and configurable
 - [ ] runtime failure modes are handled cleanly
 
 ## Epic I: Stripe Simulator and Error Injection

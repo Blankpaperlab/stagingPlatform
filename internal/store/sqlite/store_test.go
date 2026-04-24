@@ -136,6 +136,35 @@ func TestStoreWritesAndReadsInteractions(t *testing.T) {
 	}
 }
 
+func TestStorePersistsInteractionFallbackTier(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	run := validRunRecord()
+	if err := sqliteStore.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+
+	interaction := validInteraction(run.RunID)
+	interaction.FallbackTier = recorder.FallbackTierNearestNeighbor
+	if err := sqliteStore.WriteInteraction(context.Background(), interaction); err != nil {
+		t.Fatalf("WriteInteraction() error = %v", err)
+	}
+
+	interactions, err := sqliteStore.ListInteractions(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("ListInteractions() error = %v", err)
+	}
+	if len(interactions) != 1 {
+		t.Fatalf("len(ListInteractions()) = %d, want 1", len(interactions))
+	}
+	if interactions[0].FallbackTier != recorder.FallbackTierNearestNeighbor {
+		t.Fatalf("FallbackTier = %q, want %q", interactions[0].FallbackTier, recorder.FallbackTierNearestNeighbor)
+	}
+}
+
 func TestStoreInteractionWriteIsAtomic(t *testing.T) {
 	t.Parallel()
 
