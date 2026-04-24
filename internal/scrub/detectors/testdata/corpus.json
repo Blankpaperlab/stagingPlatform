@@ -40,6 +40,21 @@
     ]
   },
   {
+    "name": "phone positive unicode punctuation boundary",
+    "text": "連絡先：+1 (415) 555-2671。",
+    "want": [
+      {
+        "kind": "phone",
+        "value": "+1 (415) 555-2671"
+      }
+    ]
+  },
+  {
+    "name": "phone negative unicode word boundary",
+    "text": "顧客+14155552671 should not be treated as a separate phone token.",
+    "want": []
+  },
+  {
     "name": "phone negative too short",
     "text": "Reference code 555-1212 is not a full phone number.",
     "want": []
@@ -70,8 +85,48 @@
     ]
   },
   {
+    "name": "credit card positive 19 digit",
+    "text": "Use 4000 0000 0000 0000 006 for the long-form test case.",
+    "want": [
+      {
+        "kind": "credit_card",
+        "value": "4000 0000 0000 0000 006"
+      }
+    ]
+  },
+  {
     "name": "credit card negative non luhn",
     "text": "Fake number 4242 4242 4242 4243 should not match.",
+    "want": []
+  },
+  {
+    "name": "credit card negative 20 digit",
+    "text": "Ignore 4000 0000 0000 0000 0006 because it exceeds the supported range.",
+    "want": []
+  },
+  {
+    "name": "password positive assignment",
+    "text": "Password they accidentally pasted: hunter2",
+    "want": [
+      {
+        "kind": "password",
+        "value": "hunter2"
+      }
+    ]
+  },
+  {
+    "name": "password positive parenthetical",
+    "text": "The assistant echoed the password (hunter2) in the response.",
+    "want": [
+      {
+        "kind": "password",
+        "value": "hunter2"
+      }
+    ]
+  },
+  {
+    "name": "password negative reset instructions",
+    "text": "The customer needs a password reset link.",
     "want": []
   },
   {

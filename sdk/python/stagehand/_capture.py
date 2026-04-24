@@ -8,6 +8,8 @@ from typing import Any, Callable, Final
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+from ._providers import is_openai_host
+
 DEFAULT_SCRUB_POLICY_VERSION: Final[str] = "v0-unredacted"
 DEFAULT_SESSION_SALT_ID: Final[str] = "salt_pending"
 
@@ -467,6 +469,8 @@ def _detect_protocol(url: str) -> str:
 
 def _detect_service(url: str) -> str:
     hostname = (urlsplit(url).hostname or "unknown").lower()
+    if is_openai_host(hostname):
+        return "openai"
     if hostname in _KNOWN_SERVICE_HOSTS:
         return _KNOWN_SERVICE_HOSTS[hostname]
     return hostname
@@ -480,7 +484,7 @@ def _detect_operation(method: str, url: str) -> str:
 def detect_operation(method: str, url: str, body: Any | None = None) -> str:
     path = urlsplit(url).path or "/"
     hostname = (urlsplit(url).hostname or "").lower()
-    if hostname == "api.openai.com" and method.upper() == "POST" and isinstance(body, dict):
+    if is_openai_host(hostname) and method.upper() == "POST" and isinstance(body, dict):
         if path == "/v1/chat/completions" and "model" in body and "messages" in body:
             return "chat.completions.create"
         if path == "/v1/responses" and "model" in body and "input" in body:

@@ -1,0 +1,76 @@
+{
+  "name": "openai-chat-success-default-host",
+  "request": {
+    "method": "POST",
+    "url": "https://api.openai.com/v1/chat/completions",
+    "headers": {
+      "content-type": "application/json",
+      "x-stagehand-parity": "shared"
+    },
+    "body": {
+      "model": "gpt-5.4",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status_code": 200,
+    "headers": {
+      "content-type": "application/json",
+      "x-parity": "openai-default"
+    },
+    "body": {
+      "id": "chatcmpl_default_123",
+      "object": "chat.completion",
+      "model": "gpt-5.4"
+    }
+  },
+  "expected_canonical": {
+    "service": "openai",
+    "operation": "chat.completions.create",
+    "protocol": "https",
+    "streaming": false,
+    "fallback_tier": null,
+    "request": {
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "headers": {
+        "content-type": ["application/json"],
+        "x-stagehand-parity": ["shared"]
+      },
+      "body": {
+        "capture_kind": "present"
+      }
+    },
+    "events": [
+      {
+        "sequence": 1,
+        "type": "request_sent"
+      },
+      {
+        "sequence": 2,
+        "type": "response_received",
+        "data": {
+          "status_code": 200,
+          "headers": {
+            "content-type": ["application/json"],
+            "x-parity": ["openai-default"]
+          },
+          "body": {
+            "id": "chatcmpl_default_123",
+            "object": "chat.completion",
+            "model": "gpt-5.4"
+          }
+        }
+      }
+    ],
+    "scrub_report": {
+      "scrub_policy_version": "v0-unredacted",
+      "session_salt_id": "salt_pending"
+    }
+  }
+}

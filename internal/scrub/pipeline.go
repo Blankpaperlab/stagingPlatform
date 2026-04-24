@@ -183,19 +183,39 @@ func (p *Pipeline) ScrubInteraction(interaction recorder.Interaction) (recorder.
 	for idx, event := range interaction.Events {
 		copiedEvent := event
 		if event.Data != nil {
+			headers, headersPresent, err := p.scrubResponseHeaders(event.Data, report)
+			if err != nil {
+				return recorder.Interaction{}, err
+			}
+
+			dataWithoutHeaders := make(map[string]any, len(event.Data))
+			for key, value := range event.Data {
+				if key == "headers" {
+					continue
+				}
+				dataWithoutHeaders[key] = value
+			}
+
 			path := fmt.Sprintf("events[%d].data", idx)
-			scrubbedData, removed, err := p.scrubValue(path, event.Data, report)
+			scrubbedData, removed, err := p.scrubValue(path, dataWithoutHeaders, report)
 			if err != nil {
 				return recorder.Interaction{}, err
 			}
 
 			switch {
 			case removed || scrubbedData == nil:
+				if headersPresent {
+					copiedEvent.Data = map[string]any{"headers": headers}
+					break
+				}
 				copiedEvent.Data = nil
 			default:
 				typedData, ok := scrubbedData.(map[string]any)
 				if !ok {
 					return recorder.Interaction{}, fmt.Errorf("%s scrubbed to %T, want map[string]any", path, scrubbedData)
+				}
+				if headersPresent {
+					typedData["headers"] = headers
 				}
 				copiedEvent.Data = typedData
 			}
@@ -206,6 +226,7 @@ func (p *Pipeline) ScrubInteraction(interaction recorder.Interaction) (recorder.
 
 	scrubbed.ScrubReport = recorder.ScrubReport{
 		RedactedPaths:      report.paths(),
+		DetectorKinds:      report.detectorKinds(),
 		ScrubPolicyVersion: p.policyVersion,
 		SessionSaltID:      p.sessionSaltID,
 	}
@@ -214,6 +235,10 @@ func (p *Pipeline) ScrubInteraction(interaction recorder.Interaction) (recorder.
 }
 
 func (p *Pipeline) scrubHeaders(headers map[string][]string, report *reportCollector) (map[string][]string, error) {
+	return p.scrubHeadersWithPrefix("request.headers", headers, report)
+}
+
+func (p *Pipeline) scrubHeadersWithPrefix(prefix string, headers map[string][]string, report *reportCollector) (map[string][]string, error) {
 	if len(headers) == 0 {
 		return nil, nil
 	}
@@ -226,7 +251,7 @@ func (p *Pipeline) scrubHeaders(headers map[string][]string, report *reportColle
 
 	scrubbed := make(map[string][]string, len(headers))
 	for _, originalName := range names {
-		path := fmt.Sprintf("request.headers.%s", strings.ToLower(originalName))
+		path := fmt.Sprintf("%s.%s", prefix, strings.ToLower(originalName))
 		values := append([]string(nil), headers[originalName]...)
 		rule, ok := p.ruleForPath(path)
 		if !ok {
@@ -257,6 +282,25 @@ func (p *Pipeline) scrubHeaders(headers map[string][]string, report *reportColle
 	}
 
 	return scrubbed, nil
+}
+
+func (p *Pipeline) scrubResponseHeaders(data map[string]any, report *reportCollector) (map[string]any, bool, error) {
+	rawHeaders, ok := data["headers"]
+	if !ok {
+		return nil, false, nil
+	}
+
+	headers, err := coerceHeadersMap(rawHeaders)
+	if err != nil {
+		return nil, false, fmt.Errorf("scrub response headers: %w", err)
+	}
+
+	scrubbed, err := p.scrubHeadersWithPrefix("response.headers", headers, report)
+	if err != nil {
+		return nil, false, fmt.Errorf("scrub response headers: %w", err)
+	}
+
+	return headersToAnyMap(scrubbed), true, nil
 }
 
 func (p *Pipeline) scrubQuery(rawURL string, report *reportCollector) (string, error) {
@@ -488,6 +532,10 @@ func (p *Pipeline) scrubStringWithDetectors(path, value string, report *reportCo
 		return value, false, nil
 	}
 
+	for _, match := range matches {
+		report.addDetectorKind(string(match.Kind))
+	}
+
 	scrubbed := value
 	for idx := len(matches) - 1; idx >= 0; idx-- {
 		replacement, err := p.hashString(matches[idx].Value)
@@ -662,14 +710,68 @@ func joinObjectPath(parent, key string) string {
 	return parent + "." + key
 }
 
+func coerceHeadersMap(value any) (map[string][]string, error) {
+	if value == nil {
+		return nil, nil
+	}
+
+	rawMap, ok := value.(map[string]any)
+	if !ok {
+		if typed, ok := value.(map[string][]string); ok {
+			cloned := make(map[string][]string, len(typed))
+			for key, values := range typed {
+				cloned[key] = append([]string(nil), values...)
+			}
+			return cloned, nil
+		}
+		return nil, fmt.Errorf("headers value has type %T, want map", value)
+	}
+
+	headers := make(map[string][]string, len(rawMap))
+	for key, raw := range rawMap {
+		switch typed := raw.(type) {
+		case []string:
+			headers[key] = append([]string(nil), typed...)
+		case []any:
+			values := make([]string, len(typed))
+			for idx, item := range typed {
+				values[idx] = fmt.Sprint(item)
+			}
+			headers[key] = values
+		case string:
+			headers[key] = []string{typed}
+		default:
+			headers[key] = []string{fmt.Sprint(typed)}
+		}
+	}
+
+	return headers, nil
+}
+
+func headersToAnyMap(headers map[string][]string) map[string]any {
+	if len(headers) == 0 {
+		return nil
+	}
+
+	converted := make(map[string]any, len(headers))
+	for key, values := range headers {
+		converted[key] = append([]string(nil), values...)
+	}
+
+	return converted
+}
+
 type reportCollector struct {
-	seen         map[string]struct{}
-	pathsInOrder []string
+	seen                 map[string]struct{}
+	pathsInOrder         []string
+	seenDetectorKinds    map[string]struct{}
+	detectorKindsInOrder []string
 }
 
 func newReportCollector() *reportCollector {
 	return &reportCollector{
-		seen: make(map[string]struct{}),
+		seen:              make(map[string]struct{}),
+		seenDetectorKinds: make(map[string]struct{}),
 	}
 }
 
@@ -683,4 +785,19 @@ func (r *reportCollector) add(path string) {
 
 func (r *reportCollector) paths() []string {
 	return append([]string(nil), r.pathsInOrder...)
+}
+
+func (r *reportCollector) addDetectorKind(kind string) {
+	if strings.TrimSpace(kind) == "" {
+		return
+	}
+	if _, ok := r.seenDetectorKinds[kind]; ok {
+		return
+	}
+	r.seenDetectorKinds[kind] = struct{}{}
+	r.detectorKindsInOrder = append(r.detectorKindsInOrder, kind)
+}
+
+func (r *reportCollector) detectorKinds() []string {
+	return append([]string(nil), r.detectorKindsInOrder...)
 }

@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ._capture import CapturedInteraction
+from ._providers import is_openai_host
 
 
 class ReplayMissError(RuntimeError):
@@ -77,7 +78,7 @@ class OpenAIReplayStore:
 
 
 def is_openai_request(request: httpx.Request) -> bool:
-    return (request.url.host or "").lower() == "api.openai.com"
+    return is_openai_host(request.url.host)
 
 
 def request_key_from_httpx_request(request: httpx.Request) -> str:
@@ -85,7 +86,7 @@ def request_key_from_httpx_request(request: httpx.Request) -> str:
     payload = {
         "method": str(request.method).upper(),
         "url": str(request.url),
-        "body": body,
+        "body": _replay_key_body(body),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -94,9 +95,108 @@ def _request_key_from_interaction(interaction: CapturedInteraction) -> str:
     payload = {
         "method": interaction.request.method.upper(),
         "url": interaction.request.url,
-        "body": interaction.request.body,
+        "body": _replay_key_body(interaction.request.body),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _replay_key_body(body: Any) -> Any:
+    if not isinstance(body, dict):
+        return body
+
+    if isinstance(body.get("messages"), list) and "model" in body:
+        key_body: dict[str, Any] = {}
+        for field in (
+            "model",
+            "stream",
+            "temperature",
+            "top_p",
+            "n",
+            "max_tokens",
+            "response_format",
+            "tool_choice",
+            "parallel_tool_calls",
+        ):
+            if field in body:
+                key_body[field] = body[field]
+        if isinstance(body.get("tools"), list):
+            key_body["tools"] = [_tool_signature(tool) for tool in body["tools"]]
+        key_body["messages"] = [_message_signature(message) for message in body["messages"]]
+        return key_body
+
+    if "input" in body and "model" in body:
+        key_body = {"model": body["model"], "input": _content_signature(body.get("input"))}
+        if "stream" in body:
+            key_body["stream"] = body["stream"]
+        return key_body
+
+    return body
+
+
+def _message_signature(message: Any) -> Any:
+    if not isinstance(message, dict):
+        return _content_signature(message)
+
+    signature: dict[str, Any] = {}
+    for field in ("role", "name", "tool_call_id"):
+        if field in message:
+            signature[field] = message[field]
+    if "content" in message:
+        signature["content"] = _content_signature(message["content"])
+    if isinstance(message.get("tool_calls"), list):
+        signature["tool_calls"] = [
+            _tool_call_signature(tool_call) for tool_call in message["tool_calls"]
+        ]
+    return signature
+
+
+def _tool_call_signature(tool_call: Any) -> Any:
+    if not isinstance(tool_call, dict):
+        return _content_signature(tool_call)
+
+    signature: dict[str, Any] = {}
+    for field in ("id", "type"):
+        if field in tool_call:
+            signature[field] = tool_call[field]
+
+    function = tool_call.get("function")
+    if isinstance(function, dict):
+        signature["function"] = {
+            "name": function.get("name"),
+            "arguments": _content_signature(function.get("arguments")),
+        }
+
+    return signature
+
+
+def _tool_signature(tool: Any) -> Any:
+    if not isinstance(tool, dict):
+        return _content_signature(tool)
+
+    signature: dict[str, Any] = {"type": tool.get("type")}
+    function = tool.get("function")
+    if isinstance(function, dict):
+        signature["function"] = {
+            "name": function.get("name"),
+            "parameters": _content_signature(function.get("parameters")),
+        }
+    return signature
+
+
+def _content_signature(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return {"type": "string"}
+    if isinstance(value, bool):
+        return {"type": "bool", "value": value}
+    if isinstance(value, (int, float)):
+        return {"type": "number"}
+    if isinstance(value, list):
+        return [_content_signature(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _content_signature(value[key]) for key in sorted(value)}
+    return {"type": type(value).__name__}
 
 
 def _decode_httpx_request_body(request: httpx.Request) -> Any | None:

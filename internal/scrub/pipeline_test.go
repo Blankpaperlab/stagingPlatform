@@ -134,6 +134,7 @@ func TestScrubInteractionPreserveRuleOverridesBroaderWildcard(t *testing.T) {
 	if !slices.Equal(scrubbed.ScrubReport.RedactedPaths, wantPaths) {
 		t.Fatalf("ScrubReport.RedactedPaths = %#v, want %#v", scrubbed.ScrubReport.RedactedPaths, wantPaths)
 	}
+
 }
 
 func TestScrubInteractionMixedCaseHeaderPatternMatchesLowercasedHeaderPath(t *testing.T) {
@@ -244,6 +245,104 @@ func TestScrubInteractionLowercaseAndMixedCaseHeaderRulesBehaveIdentically(t *te
 	if !slices.Equal(mixedCaseScrubbed.ScrubReport.RedactedPaths, lowercaseScrubbed.ScrubReport.RedactedPaths) {
 		t.Fatalf(
 			"mixed-case redacted paths = %#v, want %#v",
+			mixedCaseScrubbed.ScrubReport.RedactedPaths,
+			lowercaseScrubbed.ScrubReport.RedactedPaths,
+		)
+	}
+}
+
+func TestScrubInteractionMixedCaseResponseHeaderRuleMatchesLowercasedHeaderPath(t *testing.T) {
+	pipeline := mustNewPipeline(t, Options{
+		PolicyVersion: "v1",
+		SessionSaltID: "salt_test",
+		HashSalt:      []byte("session-salt"),
+		Rules: []Rule{
+			{
+				Name:    "response-token-mask",
+				Pattern: "response.headers.X-Response-Token",
+				Action:  ActionMask,
+			},
+		},
+	})
+
+	interaction := baseInteraction()
+	interaction.Events[0].Data["headers"] = map[string]any{
+		"X-Response-Token": []any{"reply-secret-token"},
+	}
+
+	scrubbed, err := pipeline.ScrubInteraction(interaction)
+	if err != nil {
+		t.Fatalf("ScrubInteraction() error = %v", err)
+	}
+
+	gotHeaders := scrubbed.Events[0].Data["headers"].(map[string]any)
+	values := gotHeaders["X-Response-Token"].([]string)
+	if values[0] == "reply-secret-token" {
+		t.Fatalf("response header = %q, want masked value", values[0])
+	}
+
+	if !slices.Contains(scrubbed.ScrubReport.RedactedPaths, "response.headers.x-response-token") {
+		t.Fatalf(
+			"ScrubReport.RedactedPaths = %#v, want response header path",
+			scrubbed.ScrubReport.RedactedPaths,
+		)
+	}
+}
+
+func TestScrubInteractionLowercaseAndMixedCaseResponseHeaderRulesBehaveIdentically(t *testing.T) {
+	lowercasePipeline := mustNewPipeline(t, Options{
+		PolicyVersion: "v1",
+		SessionSaltID: "salt_test",
+		HashSalt:      []byte("session-salt"),
+		Rules: []Rule{
+			{
+				Name:    "response-token-mask-lowercase",
+				Pattern: "response.headers.x-response-token",
+				Action:  ActionMask,
+			},
+		},
+	})
+
+	mixedCasePipeline := mustNewPipeline(t, Options{
+		PolicyVersion: "v1",
+		SessionSaltID: "salt_test",
+		HashSalt:      []byte("session-salt"),
+		Rules: []Rule{
+			{
+				Name:    "response-token-mask-mixed",
+				Pattern: "response.headers.X-Response-Token",
+				Action:  ActionMask,
+			},
+		},
+	})
+
+	lowercaseInteraction := baseInteraction()
+	lowercaseInteraction.Events[0].Data["headers"] = map[string]any{
+		"X-Response-Token": []any{"reply-secret-token"},
+	}
+	mixedCaseInteraction := baseInteraction()
+	mixedCaseInteraction.Events[0].Data["headers"] = map[string]any{
+		"X-Response-Token": []any{"reply-secret-token"},
+	}
+
+	lowercaseScrubbed, err := lowercasePipeline.ScrubInteraction(lowercaseInteraction)
+	if err != nil {
+		t.Fatalf("lowercase ScrubInteraction() error = %v", err)
+	}
+	mixedCaseScrubbed, err := mixedCasePipeline.ScrubInteraction(mixedCaseInteraction)
+	if err != nil {
+		t.Fatalf("mixed-case ScrubInteraction() error = %v", err)
+	}
+
+	lowercaseHeaders := lowercaseScrubbed.Events[0].Data["headers"].(map[string]any)
+	mixedCaseHeaders := mixedCaseScrubbed.Events[0].Data["headers"].(map[string]any)
+	if got, want := mixedCaseHeaders["X-Response-Token"].([]string), lowercaseHeaders["X-Response-Token"].([]string); !slices.Equal(got, want) {
+		t.Fatalf("masked response header = %#v, want %#v", got, want)
+	}
+
+	if !slices.Equal(mixedCaseScrubbed.ScrubReport.RedactedPaths, lowercaseScrubbed.ScrubReport.RedactedPaths) {
+		t.Fatalf(
+			"mixed-case response-header redacted paths = %#v, want %#v",
 			mixedCaseScrubbed.ScrubReport.RedactedPaths,
 			lowercaseScrubbed.ScrubReport.RedactedPaths,
 		)
@@ -431,6 +530,11 @@ func TestScrubInteractionAppliesDetectorsWithoutStructuralRules(t *testing.T) {
 	}
 	if !slices.Equal(scrubbed.ScrubReport.RedactedPaths, wantPaths) {
 		t.Fatalf("ScrubReport.RedactedPaths = %#v, want %#v", scrubbed.ScrubReport.RedactedPaths, wantPaths)
+	}
+
+	wantKinds := []string{"email", "api_key", "phone", "ssn", "credit_card", "jwt"}
+	if !slices.Equal(scrubbed.ScrubReport.DetectorKinds, wantKinds) {
+		t.Fatalf("ScrubReport.DetectorKinds = %#v, want %#v", scrubbed.ScrubReport.DetectorKinds, wantKinds)
 	}
 }
 

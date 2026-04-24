@@ -15,7 +15,6 @@ import (
 	"io"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"stagehand/internal/store"
@@ -29,8 +28,6 @@ const (
 )
 
 var emailPattern = regexp.MustCompile(`(?i)^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$`)
-
-var sessionCreationLocks keyedMutexMap
 
 type Manager struct {
 	store     store.ArtifactStore
@@ -50,16 +47,6 @@ type encryptedEnvelope struct {
 	Version    string `json:"version"`
 	Nonce      string `json:"nonce"`
 	Ciphertext string `json:"ciphertext"`
-}
-
-type keyedMutexMap struct {
-	mu    sync.Mutex
-	locks map[string]*keyedMutexRef
-}
-
-type keyedMutexRef struct {
-	mu   sync.Mutex
-	refs int
 }
 
 func NewManager(artifactStore store.ArtifactStore, masterKey []byte) (*Manager, error) {
@@ -93,9 +80,6 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionName string) (Material
 		return Material{}, fmt.Errorf("session name is required")
 	}
 
-	unlock := sessionCreationLocks.lock(sessionName)
-	defer unlock()
-
 	existing, err := m.Get(ctx, sessionName)
 	if err == nil {
 		return existing, nil
@@ -126,8 +110,12 @@ func (m *Manager) GetOrCreate(ctx context.Context, sessionName string) (Material
 		SaltEncrypted: encrypted,
 		CreatedAt:     createdAt,
 	}
-	if err := m.store.PutScrubSalt(ctx, record); err != nil {
+	persistedRecord, created, err := m.store.CreateScrubSaltIfAbsent(ctx, record)
+	if err != nil {
 		return Material{}, fmt.Errorf("persist session salt for %q: %w", sessionName, err)
+	}
+	if !created {
+		return m.decrypt(persistedRecord)
 	}
 
 	return Material{
@@ -259,33 +247,4 @@ func associatedData(sessionName, saltID string) []byte {
 
 func looksLikeEmail(value string) bool {
 	return emailPattern.MatchString(strings.TrimSpace(value))
-}
-
-func (m *keyedMutexMap) lock(key string) func() {
-	m.mu.Lock()
-	if m.locks == nil {
-		m.locks = make(map[string]*keyedMutexRef)
-	}
-
-	ref := m.locks[key]
-	if ref == nil {
-		ref = &keyedMutexRef{}
-		m.locks[key] = ref
-	}
-	ref.refs++
-	m.mu.Unlock()
-
-	ref.mu.Lock()
-
-	return func() {
-		ref.mu.Unlock()
-
-		m.mu.Lock()
-		defer m.mu.Unlock()
-
-		ref.refs--
-		if ref.refs == 0 {
-			delete(m.locks, key)
-		}
-	}
 }

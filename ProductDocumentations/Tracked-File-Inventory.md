@@ -137,15 +137,17 @@ These directories exist to stabilize repo layout but do not yet contain implemen
 
 ## TypeScript SDK Files
 
-| File                               | Purpose                                                              | Current Status |
-| ---------------------------------- | -------------------------------------------------------------------- | -------------- |
-| `sdk/typescript/README.md`         | TypeScript SDK package note and current bootstrap status             | Implemented    |
-| `sdk/typescript/package.json`      | TypeScript package metadata, exports, and scripts                    | Implemented    |
-| `sdk/typescript/tsconfig.json`     | TypeScript compiler configuration                                    | Implemented    |
-| `sdk/typescript/src/index.ts`      | TypeScript SDK entrypoint exporting the bootstrap/runtime public API | Implemented    |
-| `sdk/typescript/src/index.test.ts` | TypeScript tests for bootstrap init behavior and runtime access      | Implemented    |
-| `sdk/typescript/src/runtime.ts`    | TypeScript bootstrap singleton, metadata, env wiring, and init logic | Implemented    |
-| `sdk/typescript/src/version.ts`    | TypeScript SDK and artifact version placeholders                     | Implemented    |
+| File                                 | Purpose                                                                              | Current Status |
+| ------------------------------------ | ------------------------------------------------------------------------------------ | -------------- |
+| `sdk/typescript/README.md`           | TypeScript SDK package note and current bootstrap/interception status                | Implemented    |
+| `sdk/typescript/package.json`        | TypeScript package metadata, exports, and scripts                                    | Implemented    |
+| `sdk/typescript/tsconfig.json`       | TypeScript compiler configuration                                                    | Implemented    |
+| `sdk/typescript/src/capture.ts`      | TypeScript artifact-shaped in-memory interaction capture buffer                      | Implemented    |
+| `sdk/typescript/src/interception.ts` | `undici` dispatcher interception for Node HTTP traffic                               | Implemented    |
+| `sdk/typescript/src/index.ts`        | TypeScript SDK entrypoint exporting the bootstrap/runtime public API                 | Implemented    |
+| `sdk/typescript/src/index.test.ts`   | TypeScript tests for bootstrap, `fetch`, `undici`, error, and timeout capture        | Implemented    |
+| `sdk/typescript/src/runtime.ts`      | TypeScript bootstrap singleton, metadata, env wiring, init logic, and capture access | Implemented    |
+| `sdk/typescript/src/version.ts`      | TypeScript SDK and artifact version placeholders                                     | Implemented    |
 
 ## Dashboard and Examples
 

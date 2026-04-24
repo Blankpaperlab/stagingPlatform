@@ -4,6 +4,7 @@ from ._openai import ReplayFailureError, ReplayMissError
 from ._version import ARTIFACT_VERSION, __version__
 from ._runtime import (
     AlreadyInitializedError,
+    ENV_OPENAI_HOSTS,
     InvalidModeError,
     NotInitializedError,
     RuntimeMetadata,
@@ -18,6 +19,7 @@ from ._runtime import (
 __all__ = [
     "ARTIFACT_VERSION",
     "AlreadyInitializedError",
+    "ENV_OPENAI_HOSTS",
     "InvalidModeError",
     "NotInitializedError",
     "ReplayFailureError",

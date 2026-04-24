@@ -15,6 +15,7 @@ from uuid import uuid4
 from ._capture import CaptureBuffer, CapturedInteraction
 from ._httpx import install_httpx_interception, uninstall_httpx_interception
 from ._openai import OpenAIReplayStore
+from ._providers import ENV_OPENAI_HOSTS as _PROVIDER_ENV_OPENAI_HOSTS
 from ._version import ARTIFACT_VERSION, __version__
 
 DEFAULT_CONFIG_FILENAME: Final[str] = "stagehand.yml"
@@ -24,6 +25,7 @@ ENV_MODE: Final[str] = "STAGEHAND_MODE"
 ENV_CONFIG_PATH: Final[str] = "STAGEHAND_CONFIG_PATH"
 ENV_CAPTURE_OUTPUT: Final[str] = "STAGEHAND_CAPTURE_OUTPUT"
 ENV_REPLAY_INPUT: Final[str] = "STAGEHAND_REPLAY_INPUT"
+ENV_OPENAI_HOSTS: Final[str] = _PROVIDER_ENV_OPENAI_HOSTS
 
 StagehandMode: TypeAlias = Literal["record", "replay", "passthrough"]
 

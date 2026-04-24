@@ -1,0 +1,119 @@
+{
+  "name": "openai-sse-success",
+  "request": {
+    "method": "POST",
+    "url": "https://api.openai.com/v1/chat/completions",
+    "headers": {
+      "content-type": "application/json",
+      "x-stagehand-parity": "shared"
+    },
+    "body": {
+      "model": "gpt-5.4",
+      "stream": true,
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello"
+        }
+      ]
+    }
+  },
+  "response": {
+    "status_code": 200,
+    "headers": {
+      "content-type": "text/event-stream",
+      "x-parity": "stream"
+    },
+    "stream_body": "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}]}\n\ndata: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_123\",\"type\":\"function\",\"function\":{\"name\":\"lookup_customer\",\"arguments\":\"{\\\"customer_id\\\":\\\"cus_123\\\"}\"}}]},\"index\":0}]}\n\ndata: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\",\"index\":0}]}\n\ndata: [DONE]\n\n"
+  },
+  "expected_canonical": {
+    "service": "openai",
+    "operation": "chat.completions.create",
+    "protocol": "https",
+    "streaming": true,
+    "fallback_tier": null,
+    "request": {
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "headers": {
+        "content-type": ["application/json"],
+        "x-stagehand-parity": ["shared"]
+      },
+      "body": {
+        "capture_kind": "present"
+      }
+    },
+    "events": [
+      {
+        "sequence": 1,
+        "type": "request_sent"
+      },
+      {
+        "sequence": 2,
+        "type": "response_received",
+        "data": {
+          "status_code": 200,
+          "headers": {
+            "content-type": ["text/event-stream"],
+            "x-parity": ["stream"]
+          },
+          "body": {
+            "capture_status": "stream"
+          }
+        }
+      },
+      {
+        "sequence": 3,
+        "type": "stream_chunk",
+        "data": {
+          "chunk": "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"role\":\"assistant\"},\"index\":0}]}\n\n"
+        }
+      },
+      {
+        "sequence": 4,
+        "type": "stream_chunk",
+        "data": {
+          "chunk": "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_123\",\"type\":\"function\",\"function\":{\"name\":\"lookup_customer\",\"arguments\":\"{\\\"customer_id\\\":\\\"cus_123\\\"}\"}}]},\"index\":0}]}\n\n"
+        }
+      },
+      {
+        "sequence": 5,
+        "type": "tool_call_start",
+        "nested_interaction_id": "tool_call_0",
+        "data": {
+          "index": 0,
+          "tool_call_id": "call_123",
+          "name": "lookup_customer"
+        }
+      },
+      {
+        "sequence": 6,
+        "type": "stream_chunk",
+        "data": {
+          "chunk": "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\",\"index\":0}]}\n\n"
+        }
+      },
+      {
+        "sequence": 7,
+        "type": "tool_call_end",
+        "nested_interaction_id": "tool_call_0",
+        "data": {
+          "index": 0,
+          "tool_call_id": "call_123",
+          "name": "lookup_customer"
+        }
+      },
+      {
+        "sequence": 8,
+        "type": "stream_end",
+        "data": {
+          "chunk": "data: [DONE]\n\n"
+        }
+      }
+    ],
+    "scrub_report": {
+      "scrub_policy_version": "v0-unredacted",
+      "session_salt_id": "salt_pending"
+    }
+  }
+}

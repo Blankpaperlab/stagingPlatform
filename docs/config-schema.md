@@ -66,13 +66,13 @@ Test-runner behavior:
 
 ### `scrub`
 
-| Field                | Required | Default | Validation                                                                            |
-| -------------------- | -------- | ------- | ------------------------------------------------------------------------------------- |
-| `enabled`            | no       | `true`  | must remain `true` in V1                                                              |
-| `policy_version`     | no       | `v1`    | must be non-empty                                                                     |
-| `custom_rules`       | no       | `[]`    | validated rule list, merged after built-in defaults                                   |
-| `custom_rules_files` | no       | `[]`    | reserved in V1, must remain empty                                                     |
-| `detectors.*`        | no       | `true`  | `email`, `phone`, `ssn`, `credit_card`, `jwt`, and `api_key` must remain `true` in V1 |
+| Field                | Required | Default | Validation                                                                                        |
+| -------------------- | -------- | ------- | ------------------------------------------------------------------------------------------------- |
+| `enabled`            | no       | `true`  | must remain `true` in V1                                                                          |
+| `policy_version`     | no       | `v1`    | must be non-empty                                                                                 |
+| `custom_rules`       | no       | `[]`    | validated rule list, merged after built-in defaults                                               |
+| `custom_rules_files` | no       | `[]`    | reserved in V1, must remain empty                                                                 |
+| `detectors.*`        | no       | `true`  | `email`, `phone`, `ssn`, `credit_card`, `jwt`, `api_key`, and `password` must remain `true` in V1 |
 
 #### `scrub.custom_rules[*]`
 

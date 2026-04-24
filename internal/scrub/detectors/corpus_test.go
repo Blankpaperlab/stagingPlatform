@@ -84,6 +84,60 @@ func TestDefaultLibraryDeduplicatesAPIPrefixOverlaps(t *testing.T) {
 	}
 }
 
+func TestDefaultLibraryCreditCardBoundaryLengths(t *testing.T) {
+	library := DefaultLibrary()
+
+	testCases := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{
+			name: "valid 13 digit",
+			text: "Legacy Visa 4222222222222 should match.",
+			want: []string{"4222222222222"},
+		},
+		{
+			name: "valid 19 digit",
+			text: "Long card 4000 0000 0000 0000 006 should match.",
+			want: []string{"4000 0000 0000 0000 006"},
+		},
+		{
+			name: "reject 20 digit",
+			text: "Ignore 4000 0000 0000 0000 0006 because it is too long.",
+			want: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			matches := library.Scan(tc.text)
+			var got []string
+			for _, match := range matches {
+				if match.Kind == KindCreditCard {
+					got = append(got, match.Value)
+				}
+			}
+
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("credit-card matches = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultLibraryPhoneUnicodeBoundaries(t *testing.T) {
+	library := DefaultLibrary()
+
+	if got := library.Scan("連絡先：+1 (415) 555-2671。"); len(got) != 1 || got[0].Kind != KindPhone {
+		t.Fatalf("unicode punctuation case = %#v, want one phone match", got)
+	}
+
+	if got := library.Scan("顧客+14155552671 should not be treated as a separate token."); len(got) != 0 {
+		t.Fatalf("unicode word-boundary case = %#v, want no matches", got)
+	}
+}
+
 func loadCorpus(t *testing.T) []corpusCase {
 	t.Helper()
 

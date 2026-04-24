@@ -12,6 +12,8 @@ The Go source of truth is:
 - `internal/store/sqlite/store.go`
 - `internal/store/sqlite/migrations/0001_initial.sql`
 - `internal/store/sqlite/migrations/0002_add_run_integrity_issues.sql`
+- `internal/store/sqlite/migrations/0003_session_lifecycle.sql`
+- `internal/store/sqlite/migrations/0004_event_queue.sql`
 
 ## Scope
 
@@ -27,10 +29,12 @@ Current store responsibilities:
 - write and read interactions and ordered events
 - persist session scrub salts
 - write and look up baselines
+- persist runtime session records and session snapshots
+- persist session simulation clocks and scheduled runtime events
 - delete whole local sessions
 - enforce an atomic write boundary per interaction
 
-This is the local-only storage layer for the first safe record/replay slice. It is not yet the full runtime store for snapshots, scheduled events, assertion execution, or CLI-level retention workflows.
+This is the local-only storage layer for the first safe record/replay slice. It now includes the first runtime session/snapshot state model plus persisted event queue state, but assertion execution and CLI-level retention workflows remain future work.
 
 ## Safe Persisted Recording Path
 
@@ -68,6 +72,10 @@ Current exported models:
 - `RunRecord`
 - `ScrubSalt`
 - `Baseline`
+- `SessionRecord`
+- `SessionSnapshot`
+- `SessionClock`
+- `ScheduledEvent`
 - `ErrNotFound`
 
 The current SQLite implementation is `internal/store/sqlite.Store`.
@@ -86,6 +94,9 @@ Current behavior:
 - `ListInteractions` returns ordered interactions for a run, each with ordered events
 - `PutScrubSalt` and `GetScrubSalt` persist session-scoped scrub salt material
 - `PutBaseline`, `GetBaseline`, and `GetLatestBaseline` support baseline storage and lookup, but baselines require a `complete` source run and a matching session name
+- `CreateSession`, `GetSession`, `UpdateSession`, `PutSessionSnapshot`, `GetSessionSnapshot`, and `GetLatestSessionSnapshot` support the runtime session lifecycle
+- `PutSessionClock` and `GetSessionClock` persist per-session non-virtualized simulation time
+- `PutScheduledEvent`, `GetScheduledEvent`, `ListDueScheduledEvents`, and `MarkScheduledEventsDelivered` support delayed runtime events for push and pull delivery modes
 - missing records are mapped to `store.ErrNotFound`
 
 ## Migration Strategy
@@ -114,6 +125,10 @@ Current migrations:
   Creates the base local tables and indexes.
 - `0002_add_run_integrity_issues.sql`
   Adds `integrity_issues_json` to `runs` so run status and corruption state can be persisted without losing schema fidelity.
+- `0003_session_lifecycle.sql`
+  Adds `sessions` and `session_snapshots` for runtime session create, fork, snapshot, restore, and destroy behavior.
+- `0004_event_queue.sql`
+  Adds `session_clocks` and `scheduled_events` for runtime event scheduling and deterministic simulation-time delivery.
 
 ## Tables
 
@@ -220,6 +235,63 @@ Current salt payload behavior:
 - encryption is authenticated against `session_name` and `salt_id`
 - plaintext salt material exists only in memory after decryption
 
+### `sessions`
+
+Stores runtime session identity and current snapshot pointers.
+
+Key fields:
+
+- `session_name`
+- `parent_session_name`
+- `current_snapshot_id`
+- `status`
+- `created_at`
+- `updated_at`
+
+### `session_snapshots`
+
+Stores immutable JSON runtime state checkpoints.
+
+Key fields:
+
+- `snapshot_id`
+- `session_name`
+- `parent_snapshot_id`
+- `source_run_id`
+- `state_json`
+- `created_at`
+
+### `session_clocks`
+
+Stores one non-virtualized simulation clock per runtime session.
+
+Key fields:
+
+- `session_name`
+- `sim_time`
+- `updated_at`
+
+The Go model exposes this as `SessionClock.CurrentTime`; the SQLite column is named `sim_time` to avoid ambiguity with SQLite's `current_time` keyword.
+
+### `scheduled_events`
+
+Stores delayed simulator events for push or pull delivery.
+
+Key fields:
+
+- `event_id`
+- `session_name`
+- `service`
+- `topic`
+- `delivery_mode`
+- `due_at`
+- `payload_json`
+- `status`
+- `created_at`
+- `delivered_at`
+
+Current delivery modes are `push` and `pull`. Current statuses are `pending` and `delivered`.
+
 ## Indexes
 
 The current schema adds indexes for the main local lookup paths:
@@ -233,6 +305,12 @@ The current schema adds indexes for the main local lookup paths:
 - assertion lookup by run
 - baseline lookup by session and creation time
 - scrub salt lookup by `salt_id`
+- session lookup by parent session
+- session snapshot lookup by session and creation time
+- session snapshot ancestry lookup
+- session clock update lookup
+- scheduled event lookup by `(session_name, status, delivery_mode, due_at, event_id)`
+- scheduled event creation lookup by session
 
 ## Atomicity Rules
 
@@ -271,7 +349,9 @@ Current local deletion behavior is defined at the store layer.
 - deletes all runs for the target session, including their dependent rows
 - removes baselines indirectly through the `baselines.source_run_id -> runs.run_id` `ON DELETE CASCADE`
 - deletes the session scrub salt
-- returns `store.ErrNotFound` if the session has neither stored runs nor a stored scrub salt
+- deletes the runtime session row and its snapshots
+- deletes session clocks and scheduled events
+- returns `store.ErrNotFound` if the session has no stored runs, runtime session row, snapshots, queue state, or scrub salt
 
 These semantics are now enforced by reusable store contract tests so future backends can match them.
 

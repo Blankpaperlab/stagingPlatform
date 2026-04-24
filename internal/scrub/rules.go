@@ -84,9 +84,10 @@ func MustMergeRules(defaults []Rule, custom []Rule) []Rule {
 func normalizeRulePattern(pattern string) string {
 	trimmed := strings.TrimSpace(pattern)
 	lowered := strings.ToLower(trimmed)
-	const requestHeaderPrefix = "request.headers."
-	if strings.HasPrefix(lowered, requestHeaderPrefix) {
-		return requestHeaderPrefix + lowered[len(requestHeaderPrefix):]
+	for _, prefix := range []string{"request.headers.", "response.headers."} {
+		if strings.HasPrefix(lowered, prefix) {
+			return prefix + lowered[len(prefix):]
+		}
 	}
 	return trimmed
 }

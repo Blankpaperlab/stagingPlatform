@@ -17,6 +17,7 @@ It now:
 - returns ordered detector matches
 - feeds automatic payload mutation in the structural scrub pipeline
 - supports detector-set selection from validated runtime config
+- records detector categories in `scrub_report.detector_kinds` when detector-driven scrubbing changes an interaction
 
 It still does not:
 
@@ -44,6 +45,7 @@ Each match reports:
 - SSN
 - Luhn-validated credit card
 - common API key prefixes
+- password-assignment text such as `Password: hunter2`
 
 ## Detector Rules
 
@@ -91,6 +93,12 @@ The default library currently recognizes common prefixed tokens including:
 - `AIza...`
 - `ghp_...`
 
+### Password Assignment
+
+- detects short free-text password disclosures when a password-like label points at a token
+- supports forms such as `Password: hunter2`, `passwd = hunter2`, and short explanatory labels ending in `: hunter2`
+- intentionally does not match generic phrases such as `password reset`
+
 ## Library Behavior
 
 `Library.Scan(text)`:
@@ -108,6 +116,7 @@ Current tests cover:
 - positive and negative corpus cases for every detector kind
 - ordering of mixed detector matches by text offset
 - deduplication of overlapping API-key prefix matches
+- scrub-report detector kind emission through the structural scrub pipeline
 
 The corpus lives in `internal/scrub/detectors/testdata/corpus.json`.
 

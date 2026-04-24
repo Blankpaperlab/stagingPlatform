@@ -182,11 +182,13 @@ Required fields:
 Optional fields:
 
 - `redacted_paths`
+- `detector_kinds`
 
 Validation rules:
 
 - interaction `scrub_report.scrub_policy_version` must match run `scrub_policy_version`
 - `session_salt_id` is required even if the interaction has no redacted paths, because session-scoped deterministic replacement is part of the V1 scrub design
+- `detector_kinds`, when present, names the detector categories that changed data in this interaction and must not contain empty values
 
 ## `IntegrityIssue`
 
@@ -272,6 +274,7 @@ Known issue codes currently declared in code:
       ],
       "scrub_report": {
         "redacted_paths": ["request.headers.authorization", "request.body.messages[0].content"],
+        "detector_kinds": ["email", "api_key"],
         "scrub_policy_version": "v1",
         "session_salt_id": "salt_xyz"
       },

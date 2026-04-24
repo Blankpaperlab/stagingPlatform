@@ -26,7 +26,15 @@ Current status:
 - Story F2 CLI `replay` implemented as a managed subprocess exact-replay flow
 - Story F3 CLI `inspect` implemented for terminal debugging of stored runs
 - Python SDK now captures normalized in-memory HTTP interactions, can bootstrap from CLI-provided environment variables, and can replay seeded OpenAI chat-completion calls offline
+- Minimal Python OpenAI verification agents live in `examples/verification-agents/` and exercise the core record, scrub, store, replay, and inspect loop
+- Python and TypeScript SDKs currently support `record`, `replay`, and `passthrough` modes; hybrid remains a future runtime concept, not a shipped SDK mode
 - Story G1 TypeScript bootstrap runtime implemented
+- Story G2 TypeScript request interception implemented for built-in `fetch` and `undici`
+- TypeScript SDK now emits OpenAI-style streaming chunk and tool-call boundary events during SSE capture
+- TypeScript SDK replay now supports exact seeded replay for non-streaming and supported SSE interactions and fails closed on replay misses instead of hitting live APIs
+- Python and TypeScript OpenAI-aware capture can classify additional compatible hosts through `STAGEHAND_OPENAI_HOSTS`
+- Story H1 runtime session lifecycle implemented for create, snapshot, restore, fork, destroy, and session isolation
+- Story H2 runtime event queue implemented for persisted scheduled events, session sim clocks, `AdvanceTime`, and push/pull delivery modes
 - Dashboard remains deferred in Plan A and is represented by a placeholder
 
 Primary planning docs live under `docs/`.
@@ -39,6 +47,8 @@ Current schema references:
 - structural scrub pipeline: `docs/scrub-structural-pipeline.md`
 - detector library: `docs/scrub-detector-library.md`
 - session hashing: `docs/scrub-session-hashing.md`
+- runtime session lifecycle: `docs/runtime-session-lifecycle.md`
+- runtime event queue and sim time: `docs/runtime-event-queue.md`
 - local SQLite store and migrations: `docs/sqlite-local-store.md`
 
 Baseline local checks:
@@ -54,6 +64,13 @@ Current local CLI workflow:
 2. Run `stagehand replay (--run-id <id> | --session <name>) -- <command> [args...]` to seed a Stagehand-aware subprocess from a stored run and persist the replay run result.
 3. Run `stagehand inspect (--run-id <id> | --session <name>) [--show-bodies]` to inspect ordered interactions, nested calls, and failed-run integrity issues from the terminal.
 4. In Python child processes, call `stagehand.init_from_env()` or `stagehand.init(...)` so the SDK picks up the CLI-provided session/mode wiring.
+
+Minimal OpenAI verification agents:
+
+1. Install the pinned example dependency with `python -m pip install -r examples/verification-agents/requirements.txt`.
+2. Set `OPENAI_API_KEY`.
+3. Run `python examples/verification-agents/verify_openai_agents.py`.
+4. The verifier runs the simple, tool-calling, and sensitive-data agents in order, then checks SQLite persistence, scrub reports, offline replay, and inspect output.
 
 Build commands:
 

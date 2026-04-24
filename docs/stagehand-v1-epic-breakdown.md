@@ -8,6 +8,7 @@ Companion docs:
 
 - `stagehand-v1-build-plan.md`
 - `stagehand-v1-epic-milestone-map.md`
+- `stagehand-v1-defect-remediation-plan.md`
 
 ## How to Use This Page
 
@@ -316,7 +317,7 @@ Use these statuses on your board:
 
 - Epic code: `G`
 - Milestone span: `M2`
-- Estimate: `8d`
+- Estimate: `11d`
 - Goal: offer parity for Node-based agent teams without proxy setup.
 - Depends on: `B`, `C`, `E`, `F`
 
@@ -329,32 +330,68 @@ Use these statuses on your board:
   - [x] propagate session and run metadata
   - [x] align config loading behavior with Python
 - Current implementation note:
-  the TypeScript SDK now has `init`, `initFromEnv`, singleton runtime guards, run/session metadata, and `stagehand.yml` autodiscovery parity with the Python bootstrap. HTTP interception is still Story `G2`.
+  the TypeScript SDK now has `init`, `initFromEnv`, singleton runtime guards, run/session metadata, and `stagehand.yml` autodiscovery parity with the Python bootstrap.
 
 ### Story G2: Add request interception
 
 - Outcome: common Node HTTP paths are capturable.
 - To do:
-  - [ ] intercept `fetch`
-  - [ ] intercept `undici`
-  - [ ] normalize requests and responses into shared artifact shape
-  - [ ] capture error and timeout paths
+  - [x] intercept `fetch`
+  - [x] intercept `undici`
+  - [x] normalize requests and responses into shared artifact shape
+  - [x] capture error and timeout paths
+- Current implementation note:
+  the TypeScript SDK now installs request interception through the shared `undici` global dispatcher in non-`passthrough` modes, captures built-in `fetch` and direct `undici.fetch(...)` traffic, normalizes those requests into the shared artifact-shaped interaction model, records network failures and aborted requests as terminal `error` or `timeout` events, emits OpenAI-style SSE `stream_chunk` / `stream_end` / `tool_call_start` / `tool_call_end` events during capture, exact-replays seeded non-streaming interactions in `replay` mode, and exact-replays supported SSE interactions without live network dispatch. Replay misses still fail closed before live network dispatch.
 
 ### Story G3: Add parity tests
 
-- Outcome: Python and TS produce equivalent artifacts for equivalent flows.
+- Outcome: Python and TS produce equivalent artifacts for equivalent supported flows, and any remaining gaps are explicit.
 - To do:
-  - [ ] create shared fixture scenarios
-  - [ ] compare event ordering and artifact fields
-  - [ ] verify scrub integration works the same way
-  - [ ] document known parity gaps if any remain
+  - [x] create shared fixture scenarios for overlapping Python and TS capture paths
+  - [x] compare canonical interaction fields and event ordering
+  - [x] verify scrub integration produces equivalent stored artifacts through the shared persisted writer path
+  - [x] document known parity gaps that are outside the supported overlap
+- Required shared scenarios:
+  - [x] simple HTTP `GET` success fixture
+  - [x] simple HTTP `GET` timeout fixture
+  - [x] OpenAI non-streaming chat success fixture on default host
+  - [x] OpenAI non-streaming chat success fixture on configured custom host
+  - [x] OpenAI SSE success fixture with `stream_chunk`, `stream_end`, and tool-call boundary events
+  - [x] scrub parity fixture that proves the same request/response header rules and `redacted_paths` behavior after persistence
+- Canonical parity checks:
+  - [x] `service`, `operation`, `protocol`, `streaming`, and `fallback_tier`
+  - [x] request method, path, selected headers, and normalized body shape
+  - [x] event `sequence`, `type`, and selected event payload fields
+  - [x] `scrub_report.scrub_policy_version` and `scrub_report.session_salt_id`
+  - [x] persisted scrubbed artifact shape after the Go writer path
+- Current implementation note:
+  the shared parity suite now covers simple HTTP success/timeout, OpenAI non-streaming success on default and configured custom hosts, OpenAI SSE capture with stream and tool-call events, and a shared scrub parity fixture backed by the Go persisted writer path. Request-body parity for body-bearing SDK flows is intentionally normalized to `{"capture_kind":"present"}` because the current Node `fetch`/`undici` dispatch surface still exposes opaque request-body objects in some paths.
+
+### Story G4: Add TypeScript streaming replay parity
+
+- Outcome: supported TypeScript SSE captures can be exact-replayed without live network dispatch.
+- To do:
+  - [x] reconstruct SSE bytes from captured `stream_chunk` and `stream_end` events
+  - [x] emit replayed chunks through the Undici handler callbacks in original order
+  - [x] preserve captured tool-call boundaries during replay
+  - [x] fail closed with typed errors for unsupported streaming shapes
+  - [x] add replay parity tests showing zero live server hits during streaming replay
+- Required scenarios:
+  - [x] seeded chat-completions SSE replay returns `text/event-stream` and zero live hits
+  - [x] seeded responses SSE replay preserves ordered chunk delivery and final done marker
+  - [x] seeded streaming timeout or error returns typed replay failure
+  - [x] streaming replay miss fails closed before outbound dispatch
+- Current implementation note:
+  TypeScript exact replay now supports supported SSE captures by reconstructing captured stream bytes from `stream_chunk` and `stream_end`, delivering them through the Undici handler callbacks in original order, preserving the captured tool-call boundary events in the replayed artifact, and failing closed with typed replay errors when a seeded streaming interaction is malformed or unsupported.
 
 ### Epic G completion checklist
 
 - [x] TS SDK init works
-- [ ] `fetch` and `undici` are covered
-- [ ] parity tests exist
-- [ ] major config behavior matches Python
+- [x] `fetch` and `undici` are covered
+- [x] shared parity fixtures exist for overlapping Python and TS flows
+- [x] scrub parity is verified through the shared persisted writer path
+- [x] TypeScript streaming replay is exact for supported SSE flows or explicitly fail-closed for unsupported shapes
+- [x] major config behavior matches Python
 
 ## Epic H: Runtime Core
 
@@ -368,23 +405,27 @@ Use these statuses on your board:
 
 - Outcome: sessions can be created, forked, restored, and destroyed cleanly.
 - To do:
-  - [ ] define session state model
-  - [ ] implement create
-  - [ ] implement fork
-  - [ ] implement snapshot
-  - [ ] implement restore
-  - [ ] implement destroy
-  - [ ] add session isolation tests
+  - [x] define session state model
+  - [x] implement create
+  - [x] implement fork
+  - [x] implement snapshot
+  - [x] implement restore
+  - [x] implement destroy
+  - [x] add session isolation tests
+- Current implementation note:
+  runtime sessions now have durable `sessions` and `session_snapshots` rows, a Go `internal/runtime/session.Manager`, forked child snapshots link back to parent snapshots, restore rejects cross-session snapshots, and destroy removes runtime session state along with the existing session-scoped local artifacts.
 
 ### Story H2: Implement event queue and sim-time handling
 
 - Outcome: delayed simulator events can be scheduled and replayed predictably.
 - To do:
-  - [ ] define scheduled event schema
-  - [ ] implement queue persistence
-  - [ ] implement non-virtualized sim clock semantics
-  - [ ] implement `advance_time`
-  - [ ] add tests for push and pull delivery modes
+  - [x] define scheduled event schema
+  - [x] implement queue persistence
+  - [x] implement non-virtualized sim clock semantics
+  - [x] implement `advance_time`
+  - [x] add tests for push and pull delivery modes
+- Current implementation note:
+  runtime event queues now have durable `session_clocks` and `scheduled_events` rows, a Go `internal/runtime/queue.Manager`, explicit non-virtualized `AdvanceTime` semantics, deterministic due-event ordering, push delivery during time advancement, pull delivery on demand, and store-level cleanup through session deletion.
 
 ### Story H3: Implement fallback tiers 0-2
 
@@ -407,9 +448,9 @@ Use these statuses on your board:
 
 ### Epic H completion checklist
 
-- [ ] sessions are isolated
-- [ ] snapshots restore correctly
-- [ ] event queue works
+- [x] sessions are isolated
+- [x] snapshots restore correctly
+- [x] event queue works
 - [ ] fallback tiers are visible and configurable
 - [ ] runtime failure modes are handled cleanly
 
@@ -672,6 +713,12 @@ Use these statuses on your board:
   - [ ] create support escalation example
   - [ ] wire examples into automated test paths where possible
   - [ ] ensure each example demonstrates one core product capability
+- Verification-agent slice:
+  - [x] add simplest Python OpenAI record/replay/inspect verification agent
+  - [x] add Python multi-step tool-calling verification agent
+  - [x] add Python sensitive-data scrub verification agent
+  - [x] add verifier that runs agents in order and checks SQLite persistence, scrub reports, replay output, and inspect output
+  - [ ] run the verifier against a real `OPENAI_API_KEY` in an environment allowed to call OpenAI
 
 ### Story O2: Write docs
 

@@ -167,6 +167,7 @@ Every scrubbed interaction gets a `ScrubReport` with:
 - `scrub_policy_version`
 - `session_salt_id`
 - concrete `redacted_paths`
+- detector-driven `detector_kinds`
 
 `redacted_paths` records the concrete paths changed during scrubbing, not the wildcard rule patterns.
 
@@ -176,6 +177,8 @@ Example:
 - report paths:
   - `request.body.messages[0].content`
   - `request.body.messages[1].content`
+
+`detector_kinds` records the detector categories that actually changed string content in the interaction, such as `email`, `phone`, `credit_card`, `ssn`, `jwt`, `api_key`, or `password`. It is intended for verification and audit checks; `redacted_paths` remains the source of which concrete fields were changed.
 
 ## Current Limits
 

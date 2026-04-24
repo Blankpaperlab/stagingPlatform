@@ -27,6 +27,10 @@ bin/
 *.test
 
 # Local data
+.env
+.env.*
+!.env.example
+.stagehand/
 *.db
 *.sqlite
 *.sqlite3

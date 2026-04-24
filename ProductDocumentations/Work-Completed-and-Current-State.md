@@ -505,8 +505,9 @@ What was done:
 Current outcome:
 
 - the TypeScript SDK is no longer scaffold-only at the bootstrap layer
-- Node users now have the same basic init/runtime semantics as Python users before request interception work starts
-- Story `G2` remains the next TypeScript-specific implementation step
+- Node users now have the same basic init/runtime semantics as Python users
+- built-in `fetch` and direct `undici.fetch(...)` traffic are now capturable through the shared dispatcher interception layer
+- TypeScript now records normalized success, error, and timeout interactions in the shared artifact-shaped structure
 
 ## Current Implemented Surface
 

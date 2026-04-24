@@ -135,6 +135,7 @@ type DetectorConfig struct {
 	CreditCard bool `yaml:"credit_card"`
 	JWT        bool `yaml:"jwt"`
 	APIKey     bool `yaml:"api_key"`
+	Password   bool `yaml:"password"`
 }
 
 type FallbackConfig struct {
@@ -261,6 +262,7 @@ func DefaultConfig() Config {
 				CreditCard: true,
 				JWT:        true,
 				APIKey:     true,
+				Password:   true,
 			},
 		},
 		Fallback: FallbackConfig{
@@ -400,6 +402,9 @@ func (c Config) Validate() error {
 	}
 	if !c.Scrub.Detectors.APIKey {
 		verr.add("scrub.detectors.api_key must be true in v1")
+	}
+	if !c.Scrub.Detectors.Password {
+		verr.add("scrub.detectors.password must be true in v1")
 	}
 
 	for _, file := range c.Scrub.CustomRulesFiles {

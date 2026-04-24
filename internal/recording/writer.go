@@ -3,6 +3,7 @@ package recording
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"stagehand/internal/config"
 	"stagehand/internal/recorder"
@@ -18,6 +19,9 @@ type Writer struct {
 	scrubConfig     config.ScrubConfig
 	rules           []scrub.Rule
 	detectorLibrary *detectors.Library
+	pipelineMu      sync.Mutex
+	pipelinesBySalt map[string]*scrub.Pipeline
+	pipelineFactory func(scrub.Options) (*scrub.Pipeline, error)
 }
 
 type WriterOptions struct {
@@ -54,7 +58,10 @@ func NewWriter(opts WriterOptions) (*Writer, error) {
 			SSN:        opts.ScrubConfig.Detectors.SSN,
 			CreditCard: opts.ScrubConfig.Detectors.CreditCard,
 			APIKey:     opts.ScrubConfig.Detectors.APIKey,
+			Password:   opts.ScrubConfig.Detectors.Password,
 		}),
+		pipelinesBySalt: make(map[string]*scrub.Pipeline),
+		pipelineFactory: scrub.NewPipeline,
 	}, nil
 }
 
@@ -77,13 +84,7 @@ func (w *Writer) PersistInteraction(ctx context.Context, interaction recorder.In
 		return recorder.Interaction{}, fmt.Errorf("get session salt for %q: %w", run.SessionName, err)
 	}
 
-	pipeline, err := scrub.NewPipeline(scrub.Options{
-		PolicyVersion:   run.ScrubPolicyVersion,
-		SessionSaltID:   salt.SaltID,
-		HashSalt:        salt.Salt,
-		Rules:           scrub.CloneRules(w.rules),
-		DetectorLibrary: w.detectorLibrary,
-	})
+	pipeline, err := w.pipelineForSalt(run.ScrubPolicyVersion, salt)
 	if err != nil {
 		return recorder.Interaction{}, fmt.Errorf("build scrub pipeline: %w", err)
 	}
@@ -98,4 +99,27 @@ func (w *Writer) PersistInteraction(ctx context.Context, interaction recorder.In
 	}
 
 	return scrubbed, nil
+}
+
+func (w *Writer) pipelineForSalt(policyVersion string, salt session_salt.Material) (*scrub.Pipeline, error) {
+	w.pipelineMu.Lock()
+	defer w.pipelineMu.Unlock()
+
+	if pipeline, ok := w.pipelinesBySalt[salt.SaltID]; ok {
+		return pipeline, nil
+	}
+
+	pipeline, err := w.pipelineFactory(scrub.Options{
+		PolicyVersion:   policyVersion,
+		SessionSaltID:   salt.SaltID,
+		HashSalt:        salt.Salt,
+		Rules:           scrub.CloneRules(w.rules),
+		DetectorLibrary: w.detectorLibrary,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	w.pipelinesBySalt[salt.SaltID] = pipeline
+	return pipeline, nil
 }

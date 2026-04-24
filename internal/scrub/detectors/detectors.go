@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 type Kind string
@@ -18,6 +20,7 @@ const (
 	KindSSN        Kind = "ssn"
 	KindCreditCard Kind = "credit_card"
 	KindAPIKey     Kind = "api_key"
+	KindPassword   Kind = "password"
 )
 
 type Match struct {
@@ -43,6 +46,7 @@ type Enabled struct {
 	SSN        bool
 	CreditCard bool
 	APIKey     bool
+	Password   bool
 }
 
 type regexDetector struct {
@@ -52,12 +56,15 @@ type regexDetector struct {
 }
 
 var (
-	emailPattern = regexp.MustCompile(`(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b`)
-	jwtPattern   = regexp.MustCompile(`\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)
-	phonePattern = regexp.MustCompile(`(?:\+?\d[\d\s().-]{8,}\d)`)
-	ssnPattern   = regexp.MustCompile(`\b\d{3}-?\d{2}-?\d{4}\b`)
-	cardPattern  = regexp.MustCompile(`\b(?:\d[ -]?){13,19}\d\b`)
-	apiPatterns  = []*regexp.Regexp{
+	emailPattern    = regexp.MustCompile(`(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b`)
+	jwtPattern      = regexp.MustCompile(`\b[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`)
+	phonePattern    = regexp.MustCompile(`(?:\+?\d[\d\s().-]{8,}\d)`)
+	ssnPattern      = regexp.MustCompile(`\b\d{3}-?\d{2}-?\d{4}\b`)
+	cardPattern     = regexp.MustCompile(`\b\d(?:[ -]?\d){12,18}\b`)
+	passwordPattern = regexp.MustCompile(
+		`(?i)\b(?:password|passwd|pwd)\b(?:(?:[^:\n]{0,80}:|\s*(?:=|is))\s*([^\s,;]+)|\s*\(\s*([^\s,;)]+)\s*\))`,
+	)
+	apiPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`\bsk-[A-Za-z0-9]{16,}\b`),
 		regexp.MustCompile(`\bsk-proj-[A-Za-z0-9_-]{16,}\b`),
 		regexp.MustCompile(`\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b`),
@@ -74,6 +81,7 @@ func DefaultLibrary() *Library {
 		SSN:        true,
 		CreditCard: true,
 		APIKey:     true,
+		Password:   true,
 	})
 }
 
@@ -97,6 +105,9 @@ func LibraryForEnabled(enabled Enabled) *Library {
 	}
 	if enabled.APIKey {
 		configured = append(configured, newRegexDetector(KindAPIKey, apiPatterns, nil))
+	}
+	if enabled.Password {
+		configured = append(configured, passwordDetector{})
 	}
 
 	return NewLibrary(configured...)
@@ -254,13 +265,13 @@ func validatePhone(text string, start int, end int) bool {
 	}
 
 	if start > 0 {
-		if isPhoneTokenBoundary(rune(text[start-1])) {
+		if r, ok := previousRune(text, start); ok && isPhoneTokenBoundary(r) {
 			return false
 		}
 	}
 
 	if end < len(text) {
-		if isPhoneTokenBoundary(rune(text[end])) {
+		if r, ok := nextRune(text, end); ok && isPhoneTokenBoundary(r) {
 			return false
 		}
 	}
@@ -341,11 +352,9 @@ func passesLuhn(digits string) bool {
 
 func isPhoneTokenBoundary(r rune) bool {
 	switch {
-	case r >= 'a' && r <= 'z':
+	case unicode.IsLetter(r):
 		return true
-	case r >= 'A' && r <= 'Z':
-		return true
-	case r >= '0' && r <= '9':
+	case unicode.IsDigit(r):
 		return true
 	case r == '_':
 		return true
@@ -354,6 +363,76 @@ func isPhoneTokenBoundary(r rune) bool {
 	}
 }
 
+func previousRune(text string, start int) (rune, bool) {
+	if start <= 0 || start > len(text) {
+		return 0, false
+	}
+
+	r, _ := utf8.DecodeLastRuneInString(text[:start])
+	if r == utf8.RuneError {
+		return r, false
+	}
+
+	return r, true
+}
+
+func nextRune(text string, end int) (rune, bool) {
+	if end < 0 || end >= len(text) {
+		return 0, false
+	}
+
+	r, _ := utf8.DecodeRuneInString(text[end:])
+	if r == utf8.RuneError {
+		return r, false
+	}
+
+	return r, true
+}
+
 func stringifyIndex(value int) string {
 	return strconv.Itoa(value)
+}
+
+type passwordDetector struct{}
+
+func (passwordDetector) Kind() Kind {
+	return KindPassword
+}
+
+func (passwordDetector) FindAll(text string) []Match {
+	if text == "" {
+		return nil
+	}
+
+	indexes := passwordPattern.FindAllStringSubmatchIndex(text, -1)
+	matches := make([]Match, 0, len(indexes))
+	for _, idx := range indexes {
+		start, end := firstCapturedRange(idx)
+		if start < 0 || end < 0 {
+			continue
+		}
+
+		value := text[start:end]
+		if len(value) < 4 {
+			continue
+		}
+
+		matches = append(matches, Match{
+			Kind:  KindPassword,
+			Value: value,
+			Start: start,
+			End:   end,
+		})
+	}
+
+	return matches
+}
+
+func firstCapturedRange(indexes []int) (int, int) {
+	for idx := 2; idx+1 < len(indexes); idx += 2 {
+		if indexes[idx] >= 0 && indexes[idx+1] >= 0 {
+			return indexes[idx], indexes[idx+1]
+		}
+	}
+	return -1, -1
 }

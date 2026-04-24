@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 const sqliteTimeFormat = "2006-01-02T15:04:05.000000000Z07:00"
 
 var _ store.ArtifactStore = (*Store)(nil)
+var _ store.SessionStore = (*Store)(nil)
+var _ store.EventQueueStore = (*Store)(nil)
 
 type Store struct {
 	db *sql.DB
@@ -40,6 +43,442 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+func (s *Store) CreateSession(ctx context.Context, session store.SessionRecord) error {
+	if err := session.Validate(); err != nil {
+		return fmt.Errorf("validate session record %q: %w", session.SessionName, err)
+	}
+
+	_, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO sessions (
+			session_name, parent_session_name, current_snapshot_id, status, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?)`,
+		session.SessionName,
+		nullIfEmpty(session.ParentSessionName),
+		nullIfEmpty(session.CurrentSnapshotID),
+		string(session.Status),
+		formatTime(session.CreatedAt),
+		formatTime(session.UpdatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("insert session %q: %w", session.SessionName, err)
+	}
+
+	return nil
+}
+
+func (s *Store) GetSession(ctx context.Context, sessionName string) (store.SessionRecord, error) {
+	var (
+		session         store.SessionRecord
+		parentSession   sql.NullString
+		currentSnapshot sql.NullString
+		createdAt       string
+		updatedAt       string
+		sessionStatus   string
+	)
+
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT session_name, parent_session_name, current_snapshot_id, status, created_at, updated_at
+		FROM sessions
+		WHERE session_name = ?`,
+		sessionName,
+	).Scan(
+		&session.SessionName,
+		&parentSession,
+		&currentSnapshot,
+		&sessionStatus,
+		&createdAt,
+		&updatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.SessionRecord{}, fmt.Errorf("get session %q: %w", sessionName, store.ErrNotFound)
+	}
+	if err != nil {
+		return store.SessionRecord{}, fmt.Errorf("get session %q: %w", sessionName, err)
+	}
+
+	parsedCreatedAt, err := parseStoredTime(createdAt)
+	if err != nil {
+		return store.SessionRecord{}, fmt.Errorf("parse session %q created_at: %w", sessionName, err)
+	}
+
+	parsedUpdatedAt, err := parseStoredTime(updatedAt)
+	if err != nil {
+		return store.SessionRecord{}, fmt.Errorf("parse session %q updated_at: %w", sessionName, err)
+	}
+
+	session.ParentSessionName = parentSession.String
+	session.CurrentSnapshotID = currentSnapshot.String
+	session.Status = store.SessionStatus(sessionStatus)
+	session.CreatedAt = parsedCreatedAt
+	session.UpdatedAt = parsedUpdatedAt
+
+	if err := session.Validate(); err != nil {
+		return store.SessionRecord{}, fmt.Errorf("hydrate session %q: %w", sessionName, err)
+	}
+
+	return session, nil
+}
+
+func (s *Store) UpdateSession(ctx context.Context, session store.SessionRecord) error {
+	if err := session.Validate(); err != nil {
+		return fmt.Errorf("validate session record %q: %w", session.SessionName, err)
+	}
+
+	if strings.TrimSpace(session.CurrentSnapshotID) != "" {
+		snapshot, err := s.GetSessionSnapshot(ctx, session.CurrentSnapshotID)
+		if err != nil {
+			return err
+		}
+		if snapshot.SessionName != session.SessionName {
+			return fmt.Errorf("session %q cannot point at snapshot %q for session %q", session.SessionName, snapshot.SnapshotID, snapshot.SessionName)
+		}
+	}
+
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE sessions SET
+			parent_session_name = ?,
+			current_snapshot_id = ?,
+			status = ?,
+			created_at = ?,
+			updated_at = ?
+		WHERE session_name = ?`,
+		nullIfEmpty(session.ParentSessionName),
+		nullIfEmpty(session.CurrentSnapshotID),
+		string(session.Status),
+		formatTime(session.CreatedAt),
+		formatTime(session.UpdatedAt),
+		session.SessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("update session %q: %w", session.SessionName, err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err == nil && rowsAffected == 0 {
+		return fmt.Errorf("update session %q: %w", session.SessionName, store.ErrNotFound)
+	}
+
+	return nil
+}
+
+func (s *Store) PutSessionSnapshot(ctx context.Context, snapshot store.SessionSnapshot) error {
+	if err := snapshot.Validate(); err != nil {
+		return fmt.Errorf("validate session snapshot %q: %w", snapshot.SnapshotID, err)
+	}
+
+	if _, err := s.GetSession(ctx, snapshot.SessionName); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(snapshot.ParentSnapshotID) != "" {
+		if _, err := s.GetSessionSnapshot(ctx, snapshot.ParentSnapshotID); err != nil {
+			return err
+		}
+	}
+
+	if strings.TrimSpace(snapshot.SourceRunID) != "" {
+		runRecord, err := s.GetRunRecord(ctx, snapshot.SourceRunID)
+		if err != nil {
+			return err
+		}
+		if runRecord.SessionName != snapshot.SessionName {
+			return fmt.Errorf("snapshot %q source run session %q must match snapshot session %q", snapshot.SnapshotID, runRecord.SessionName, snapshot.SessionName)
+		}
+	}
+
+	stateJSON, err := marshalJSON(snapshot.State)
+	if err != nil {
+		return fmt.Errorf("marshal session snapshot state for %q: %w", snapshot.SnapshotID, err)
+	}
+
+	_, err = s.db.ExecContext(
+		ctx,
+		`INSERT INTO session_snapshots (
+			snapshot_id, session_name, parent_snapshot_id, source_run_id, state_json, created_at
+		) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(snapshot_id) DO UPDATE SET
+			session_name = excluded.session_name,
+			parent_snapshot_id = excluded.parent_snapshot_id,
+			source_run_id = excluded.source_run_id,
+			state_json = excluded.state_json,
+			created_at = excluded.created_at`,
+		snapshot.SnapshotID,
+		snapshot.SessionName,
+		nullIfEmpty(snapshot.ParentSnapshotID),
+		nullIfEmpty(snapshot.SourceRunID),
+		string(stateJSON),
+		formatTime(snapshot.CreatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert session snapshot %q: %w", snapshot.SnapshotID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) GetSessionSnapshot(ctx context.Context, snapshotID string) (store.SessionSnapshot, error) {
+	return s.getSessionSnapshotByQuery(
+		ctx,
+		`SELECT snapshot_id, session_name, parent_snapshot_id, source_run_id, state_json, created_at
+		FROM session_snapshots
+		WHERE snapshot_id = ?`,
+		snapshotID,
+	)
+}
+
+func (s *Store) GetLatestSessionSnapshot(ctx context.Context, sessionName string) (store.SessionSnapshot, error) {
+	return s.getSessionSnapshotByQuery(
+		ctx,
+		`SELECT snapshot_id, session_name, parent_snapshot_id, source_run_id, state_json, created_at
+		FROM session_snapshots
+		WHERE session_name = ?
+		ORDER BY created_at DESC, snapshot_id DESC
+		LIMIT 1`,
+		sessionName,
+	)
+}
+
+func (s *Store) PutSessionClock(ctx context.Context, clock store.SessionClock) error {
+	if err := clock.Validate(); err != nil {
+		return fmt.Errorf("validate session clock %q: %w", clock.SessionName, err)
+	}
+
+	if _, err := s.GetSession(ctx, clock.SessionName); err != nil {
+		return err
+	}
+
+	_, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO session_clocks(session_name, sim_time, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(session_name) DO UPDATE SET
+			sim_time = excluded.sim_time,
+			updated_at = excluded.updated_at`,
+		clock.SessionName,
+		formatTime(clock.CurrentTime),
+		formatTime(clock.UpdatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert session clock %q: %w", clock.SessionName, err)
+	}
+
+	return nil
+}
+
+func (s *Store) GetSessionClock(ctx context.Context, sessionName string) (store.SessionClock, error) {
+	var (
+		clock       store.SessionClock
+		currentTime string
+		updatedAt   string
+	)
+
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT session_name, sim_time, updated_at
+		FROM session_clocks
+		WHERE session_name = ?`,
+		sessionName,
+	).Scan(&clock.SessionName, &currentTime, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.SessionClock{}, fmt.Errorf("get session clock %q: %w", sessionName, store.ErrNotFound)
+	}
+	if err != nil {
+		return store.SessionClock{}, fmt.Errorf("get session clock %q: %w", sessionName, err)
+	}
+
+	parsedCurrentTime, err := parseStoredTime(currentTime)
+	if err != nil {
+		return store.SessionClock{}, fmt.Errorf("parse session clock %q sim_time: %w", sessionName, err)
+	}
+
+	parsedUpdatedAt, err := parseStoredTime(updatedAt)
+	if err != nil {
+		return store.SessionClock{}, fmt.Errorf("parse session clock %q updated_at: %w", sessionName, err)
+	}
+
+	clock.CurrentTime = parsedCurrentTime
+	clock.UpdatedAt = parsedUpdatedAt
+
+	if err := clock.Validate(); err != nil {
+		return store.SessionClock{}, fmt.Errorf("hydrate session clock %q: %w", sessionName, err)
+	}
+
+	return clock, nil
+}
+
+func (s *Store) PutScheduledEvent(ctx context.Context, event store.ScheduledEvent) error {
+	if err := event.Validate(); err != nil {
+		return fmt.Errorf("validate scheduled event %q: %w", event.EventID, err)
+	}
+
+	if _, err := s.GetSession(ctx, event.SessionName); err != nil {
+		return err
+	}
+
+	payloadJSON, err := marshalJSON(event.Payload)
+	if err != nil {
+		return fmt.Errorf("marshal scheduled event payload for %q: %w", event.EventID, err)
+	}
+
+	_, err = s.db.ExecContext(
+		ctx,
+		`INSERT INTO scheduled_events (
+			event_id, session_name, service, topic, delivery_mode, due_at, payload_json, status, created_at, delivered_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(event_id) DO UPDATE SET
+			session_name = excluded.session_name,
+			service = excluded.service,
+			topic = excluded.topic,
+			delivery_mode = excluded.delivery_mode,
+			due_at = excluded.due_at,
+			payload_json = excluded.payload_json,
+			status = excluded.status,
+			created_at = excluded.created_at,
+			delivered_at = excluded.delivered_at`,
+		event.EventID,
+		event.SessionName,
+		event.Service,
+		event.Topic,
+		string(event.DeliveryMode),
+		formatTime(event.DueAt),
+		string(payloadJSON),
+		string(event.Status),
+		formatTime(event.CreatedAt),
+		formatOptionalTime(event.DeliveredAt),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert scheduled event %q: %w", event.EventID, err)
+	}
+
+	return nil
+}
+
+func (s *Store) GetScheduledEvent(ctx context.Context, eventID string) (store.ScheduledEvent, error) {
+	return s.getScheduledEventByQuery(
+		ctx,
+		`SELECT
+			event_id, session_name, service, topic, delivery_mode, due_at, payload_json, status, created_at, delivered_at
+		FROM scheduled_events
+		WHERE event_id = ?`,
+		eventID,
+	)
+}
+
+func (s *Store) ListDueScheduledEvents(
+	ctx context.Context,
+	sessionName string,
+	deliveryMode store.ScheduledEventDeliveryMode,
+	dueAt time.Time,
+) ([]store.ScheduledEvent, error) {
+	if strings.TrimSpace(sessionName) == "" {
+		return nil, fmt.Errorf("scheduled event session_name is required")
+	}
+	if !slices.Contains([]store.ScheduledEventDeliveryMode{
+		store.ScheduledEventDeliveryModePush,
+		store.ScheduledEventDeliveryModePull,
+	}, deliveryMode) {
+		return nil, fmt.Errorf("scheduled event delivery_mode %q is unsupported", deliveryMode)
+	}
+	if dueAt.IsZero() {
+		return nil, fmt.Errorf("scheduled event due_at boundary is required")
+	}
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT
+			event_id, session_name, service, topic, delivery_mode, due_at, payload_json, status, created_at, delivered_at
+		FROM scheduled_events
+		WHERE session_name = ?
+			AND status = ?
+			AND delivery_mode = ?
+			AND due_at <= ?
+		ORDER BY due_at ASC, event_id ASC`,
+		sessionName,
+		string(store.ScheduledEventStatusPending),
+		string(deliveryMode),
+		formatTime(dueAt),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query due scheduled events for session %q: %w", sessionName, err)
+	}
+	defer rows.Close()
+
+	var events []store.ScheduledEvent
+	for rows.Next() {
+		event, err := scanScheduledEvent(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan due scheduled events for session %q: %w", sessionName, err)
+		}
+		events = append(events, event)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate due scheduled events for session %q: %w", sessionName, err)
+	}
+
+	return events, nil
+}
+
+func (s *Store) MarkScheduledEventsDelivered(
+	ctx context.Context,
+	sessionName string,
+	eventIDs []string,
+	deliveredAt time.Time,
+) error {
+	if strings.TrimSpace(sessionName) == "" {
+		return fmt.Errorf("scheduled event session_name is required")
+	}
+	if deliveredAt.IsZero() {
+		return fmt.Errorf("scheduled event delivered_at is required")
+	}
+	if len(eventIDs) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin scheduled event delivery mark for session %q: %w", sessionName, err)
+	}
+
+	for _, eventID := range eventIDs {
+		eventID = strings.TrimSpace(eventID)
+		if eventID == "" {
+			_ = tx.Rollback()
+			return fmt.Errorf("scheduled event_id is required")
+		}
+
+		result, err := tx.ExecContext(
+			ctx,
+			`UPDATE scheduled_events SET status = ?, delivered_at = ?
+			WHERE event_id = ? AND session_name = ? AND status = ?`,
+			string(store.ScheduledEventStatusDelivered),
+			formatTime(deliveredAt),
+			eventID,
+			sessionName,
+			string(store.ScheduledEventStatusPending),
+		)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("mark scheduled event %q delivered: %w", eventID, err)
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err == nil && rowsAffected == 0 {
+			_ = tx.Rollback()
+			return fmt.Errorf("mark scheduled event %q delivered: %w", eventID, store.ErrNotFound)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit scheduled event delivery mark for session %q: %w", sessionName, err)
+	}
+
+	return nil
 }
 
 func (s *Store) CreateRun(ctx context.Context, run store.RunRecord) error {
@@ -200,8 +639,12 @@ func (s *Store) DeleteSession(ctx context.Context, sessionName string) error {
 	}
 
 	var (
-		runCount  int
-		saltCount int
+		runCount            int
+		saltCount           int
+		sessionCount        int
+		snapshotCount       int
+		sessionClockCount   int
+		scheduledEventCount int
 	)
 
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE session_name = ?`, sessionName).Scan(&runCount); err != nil {
@@ -214,7 +657,32 @@ func (s *Store) DeleteSession(ctx context.Context, sessionName string) error {
 		return fmt.Errorf("count scrub salts for session %q: %w", sessionName, err)
 	}
 
-	if runCount == 0 && saltCount == 0 {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE session_name = ?`, sessionName).Scan(&sessionCount); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("count runtime sessions for session %q: %w", sessionName, err)
+	}
+
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_snapshots WHERE session_name = ?`, sessionName).Scan(&snapshotCount); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("count runtime session snapshots for session %q: %w", sessionName, err)
+	}
+
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_clocks WHERE session_name = ?`, sessionName).Scan(&sessionClockCount); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("count runtime session clocks for session %q: %w", sessionName, err)
+	}
+
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM scheduled_events WHERE session_name = ?`, sessionName).Scan(&scheduledEventCount); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("count scheduled events for session %q: %w", sessionName, err)
+	}
+
+	if runCount == 0 &&
+		saltCount == 0 &&
+		sessionCount == 0 &&
+		snapshotCount == 0 &&
+		sessionClockCount == 0 &&
+		scheduledEventCount == 0 {
 		_ = tx.Rollback()
 		return fmt.Errorf("delete session %q: %w", sessionName, store.ErrNotFound)
 	}
@@ -227,6 +695,21 @@ func (s *Store) DeleteSession(ctx context.Context, sessionName string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM scrub_salts WHERE session_name = ?`, sessionName); err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("delete scrub salts for session %q: %w", sessionName, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM scheduled_events WHERE session_name = ?`, sessionName); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("delete scheduled events for session %q: %w", sessionName, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM session_clocks WHERE session_name = ?`, sessionName); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("delete runtime session clock %q: %w", sessionName, err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE session_name = ?`, sessionName); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("delete runtime session %q: %w", sessionName, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -492,6 +975,52 @@ func (s *Store) PutScrubSalt(ctx context.Context, salt store.ScrubSalt) error {
 	return nil
 }
 
+func (s *Store) CreateScrubSaltIfAbsent(
+	ctx context.Context,
+	salt store.ScrubSalt,
+) (store.ScrubSalt, bool, error) {
+	if strings.TrimSpace(salt.SessionName) == "" {
+		return store.ScrubSalt{}, false, fmt.Errorf("scrub salt session_name is required")
+	}
+
+	if strings.TrimSpace(salt.SaltID) == "" {
+		return store.ScrubSalt{}, false, fmt.Errorf("scrub salt salt_id is required")
+	}
+
+	if salt.CreatedAt.IsZero() {
+		return store.ScrubSalt{}, false, fmt.Errorf("scrub salt created_at is required")
+	}
+
+	result, err := s.db.ExecContext(
+		ctx,
+		`INSERT OR IGNORE INTO scrub_salts(session_name, salt_id, salt_encrypted, created_at)
+		VALUES (?, ?, ?, ?)`,
+		salt.SessionName,
+		salt.SaltID,
+		salt.SaltEncrypted,
+		formatTime(salt.CreatedAt),
+	)
+	if err != nil {
+		return store.ScrubSalt{}, false, fmt.Errorf(
+			"create scrub salt if absent for session %q: %w",
+			salt.SessionName,
+			err,
+		)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err == nil && rowsAffected == 1 {
+		return salt, true, nil
+	}
+
+	existing, err := s.GetScrubSalt(ctx, salt.SessionName)
+	if err != nil {
+		return store.ScrubSalt{}, false, err
+	}
+
+	return existing, false, nil
+}
+
 func (s *Store) GetScrubSalt(ctx context.Context, sessionName string) (store.ScrubSalt, error) {
 	var (
 		saltID    string
@@ -741,6 +1270,127 @@ func (s *Store) getBaselineByQuery(ctx context.Context, query, value string) (st
 	baseline.CreatedAt = parsedCreatedAt
 
 	return baseline, nil
+}
+
+func (s *Store) getSessionSnapshotByQuery(ctx context.Context, query, value string) (store.SessionSnapshot, error) {
+	var (
+		snapshot         store.SessionSnapshot
+		parentSnapshotID sql.NullString
+		sourceRunID      sql.NullString
+		stateJSON        string
+		createdAt        string
+	)
+
+	err := s.db.QueryRowContext(ctx, query, value).Scan(
+		&snapshot.SnapshotID,
+		&snapshot.SessionName,
+		&parentSnapshotID,
+		&sourceRunID,
+		&stateJSON,
+		&createdAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.SessionSnapshot{}, fmt.Errorf("session snapshot lookup %q: %w", value, store.ErrNotFound)
+	}
+	if err != nil {
+		return store.SessionSnapshot{}, fmt.Errorf("session snapshot lookup %q: %w", value, err)
+	}
+
+	if err := unmarshalJSONString(stateJSON, &snapshot.State); err != nil {
+		return store.SessionSnapshot{}, fmt.Errorf("decode session snapshot state for %q: %w", snapshot.SnapshotID, err)
+	}
+
+	parsedCreatedAt, err := parseStoredTime(createdAt)
+	if err != nil {
+		return store.SessionSnapshot{}, fmt.Errorf("parse session snapshot created_at for %q: %w", snapshot.SnapshotID, err)
+	}
+
+	snapshot.ParentSnapshotID = parentSnapshotID.String
+	snapshot.SourceRunID = sourceRunID.String
+	snapshot.CreatedAt = parsedCreatedAt
+
+	if err := snapshot.Validate(); err != nil {
+		return store.SessionSnapshot{}, fmt.Errorf("hydrate session snapshot %q: %w", snapshot.SnapshotID, err)
+	}
+
+	return snapshot, nil
+}
+
+func (s *Store) getScheduledEventByQuery(ctx context.Context, query, value string) (store.ScheduledEvent, error) {
+	row := s.db.QueryRowContext(ctx, query, value)
+	event, err := scanScheduledEvent(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return store.ScheduledEvent{}, fmt.Errorf("scheduled event lookup %q: %w", value, store.ErrNotFound)
+	}
+	if err != nil {
+		return store.ScheduledEvent{}, fmt.Errorf("scheduled event lookup %q: %w", value, err)
+	}
+
+	return event, nil
+}
+
+type scheduledEventScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanScheduledEvent(scanner scheduledEventScanner) (store.ScheduledEvent, error) {
+	var (
+		event        store.ScheduledEvent
+		deliveryMode string
+		dueAt        string
+		payloadJSON  string
+		status       string
+		createdAt    string
+		deliveredAt  sql.NullString
+	)
+
+	if err := scanner.Scan(
+		&event.EventID,
+		&event.SessionName,
+		&event.Service,
+		&event.Topic,
+		&deliveryMode,
+		&dueAt,
+		&payloadJSON,
+		&status,
+		&createdAt,
+		&deliveredAt,
+	); err != nil {
+		return store.ScheduledEvent{}, err
+	}
+
+	parsedDueAt, err := parseStoredTime(dueAt)
+	if err != nil {
+		return store.ScheduledEvent{}, fmt.Errorf("parse scheduled event %q due_at: %w", event.EventID, err)
+	}
+
+	parsedCreatedAt, err := parseStoredTime(createdAt)
+	if err != nil {
+		return store.ScheduledEvent{}, fmt.Errorf("parse scheduled event %q created_at: %w", event.EventID, err)
+	}
+
+	event.DeliveryMode = store.ScheduledEventDeliveryMode(deliveryMode)
+	event.DueAt = parsedDueAt
+	event.Status = store.ScheduledEventStatus(status)
+	event.CreatedAt = parsedCreatedAt
+
+	if deliveredAt.Valid && strings.TrimSpace(deliveredAt.String) != "" {
+		parsedDeliveredAt, err := parseStoredTime(deliveredAt.String)
+		if err != nil {
+			return store.ScheduledEvent{}, fmt.Errorf("parse scheduled event %q delivered_at: %w", event.EventID, err)
+		}
+		event.DeliveredAt = &parsedDeliveredAt
+	}
+
+	if err := unmarshalJSONString(payloadJSON, &event.Payload); err != nil {
+		return store.ScheduledEvent{}, fmt.Errorf("decode scheduled event %q payload: %w", event.EventID, err)
+	}
+
+	if err := event.Validate(); err != nil {
+		return store.ScheduledEvent{}, fmt.Errorf("hydrate scheduled event %q: %w", event.EventID, err)
+	}
+
+	return event, nil
 }
 
 func (s *Store) getLatestRunID(ctx context.Context, sessionName string) (string, error) {

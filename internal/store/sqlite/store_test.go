@@ -223,6 +223,64 @@ func TestStorePersistsScrubSalt(t *testing.T) {
 	}
 }
 
+func TestStoreCreateScrubSaltIfAbsentReturnsFirstWriter(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	first := store.ScrubSalt{
+		SessionName:   "onboarding-flow",
+		SaltID:        "salt_first",
+		SaltEncrypted: []byte("encrypted-first"),
+		CreatedAt:     time.Date(2026, time.April, 23, 12, 0, 0, 0, time.UTC),
+	}
+
+	persistedFirst, created, err := sqliteStore.CreateScrubSaltIfAbsent(context.Background(), first)
+	if err != nil {
+		t.Fatalf("CreateScrubSaltIfAbsent(first) error = %v", err)
+	}
+	if !created {
+		t.Fatal("CreateScrubSaltIfAbsent(first) = created false, want true")
+	}
+	if persistedFirst.SaltID != first.SaltID {
+		t.Fatalf("persistedFirst.SaltID = %q, want %q", persistedFirst.SaltID, first.SaltID)
+	}
+
+	second := store.ScrubSalt{
+		SessionName:   first.SessionName,
+		SaltID:        "salt_second",
+		SaltEncrypted: []byte("encrypted-second"),
+		CreatedAt:     time.Date(2026, time.April, 23, 12, 1, 0, 0, time.UTC),
+	}
+
+	persistedSecond, created, err := sqliteStore.CreateScrubSaltIfAbsent(context.Background(), second)
+	if err != nil {
+		t.Fatalf("CreateScrubSaltIfAbsent(second) error = %v", err)
+	}
+	if created {
+		t.Fatal("CreateScrubSaltIfAbsent(second) = created true, want false")
+	}
+	if persistedSecond.SaltID != first.SaltID {
+		t.Fatalf("persistedSecond.SaltID = %q, want first-writer salt %q", persistedSecond.SaltID, first.SaltID)
+	}
+	if string(persistedSecond.SaltEncrypted) != string(first.SaltEncrypted) {
+		t.Fatalf(
+			"persistedSecond.SaltEncrypted = %q, want first-writer payload %q",
+			string(persistedSecond.SaltEncrypted),
+			string(first.SaltEncrypted),
+		)
+	}
+
+	gotSalt, err := sqliteStore.GetScrubSalt(context.Background(), first.SessionName)
+	if err != nil {
+		t.Fatalf("GetScrubSalt() error = %v", err)
+	}
+	if gotSalt.SaltID != first.SaltID {
+		t.Fatalf("GetScrubSalt().SaltID = %q, want %q", gotSalt.SaltID, first.SaltID)
+	}
+}
+
 func TestStoreWritesAndLooksUpBaselines(t *testing.T) {
 	t.Parallel()
 
@@ -473,6 +531,243 @@ func TestDeleteSessionRemovesBaselinesViaRunCascade(t *testing.T) {
 	}
 }
 
+func TestStoreSessionLifecycleStateAndSnapshots(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	createdAt := time.Date(2026, time.April, 24, 9, 0, 0, 0, time.UTC)
+	session := store.SessionRecord{
+		SessionName: "runtime-session",
+		Status:      store.SessionStatusActive,
+		CreatedAt:   createdAt,
+		UpdatedAt:   createdAt,
+	}
+	if err := sqliteStore.CreateSession(context.Background(), session); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	snapshot := store.SessionSnapshot{
+		SnapshotID:  "snap_runtime_001",
+		SessionName: session.SessionName,
+		State: map[string]any{
+			"stripe": map[string]any{
+				"customers": []any{"cus_001"},
+			},
+		},
+		CreatedAt: createdAt.Add(time.Second),
+	}
+	if err := sqliteStore.PutSessionSnapshot(context.Background(), snapshot); err != nil {
+		t.Fatalf("PutSessionSnapshot() error = %v", err)
+	}
+
+	session.CurrentSnapshotID = snapshot.SnapshotID
+	session.UpdatedAt = snapshot.CreatedAt
+	if err := sqliteStore.UpdateSession(context.Background(), session); err != nil {
+		t.Fatalf("UpdateSession() error = %v", err)
+	}
+
+	gotSession, err := sqliteStore.GetSession(context.Background(), session.SessionName)
+	if err != nil {
+		t.Fatalf("GetSession() error = %v", err)
+	}
+	if gotSession.CurrentSnapshotID != snapshot.SnapshotID {
+		t.Fatalf("CurrentSnapshotID = %q, want %q", gotSession.CurrentSnapshotID, snapshot.SnapshotID)
+	}
+
+	gotSnapshot, err := sqliteStore.GetLatestSessionSnapshot(context.Background(), session.SessionName)
+	if err != nil {
+		t.Fatalf("GetLatestSessionSnapshot() error = %v", err)
+	}
+	if gotSnapshot.SnapshotID != snapshot.SnapshotID {
+		t.Fatalf("SnapshotID = %q, want %q", gotSnapshot.SnapshotID, snapshot.SnapshotID)
+	}
+	if gotSnapshot.State["stripe"] == nil {
+		t.Fatalf("snapshot state = %#v, want stripe state", gotSnapshot.State)
+	}
+}
+
+func TestStorePersistsSessionClockAndScheduledEvents(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, time.April, 24, 13, 0, 0, 0, time.UTC)
+	session := store.SessionRecord{
+		SessionName: "queue-session",
+		Status:      store.SessionStatusActive,
+		CreatedAt:   base,
+		UpdatedAt:   base,
+	}
+	if err := sqliteStore.CreateSession(ctx, session); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	clock := store.SessionClock{
+		SessionName: session.SessionName,
+		CurrentTime: base,
+		UpdatedAt:   base,
+	}
+	if err := sqliteStore.PutSessionClock(ctx, clock); err != nil {
+		t.Fatalf("PutSessionClock() error = %v", err)
+	}
+
+	gotClock, err := sqliteStore.GetSessionClock(ctx, session.SessionName)
+	if err != nil {
+		t.Fatalf("GetSessionClock() error = %v", err)
+	}
+	if !gotClock.CurrentTime.Equal(clock.CurrentTime) {
+		t.Fatalf("CurrentTime = %s, want %s", gotClock.CurrentTime, clock.CurrentTime)
+	}
+
+	pushDue := scheduledEvent("evt_push_due", session.SessionName, store.ScheduledEventDeliveryModePush, base.Add(5*time.Minute))
+	pullDue := scheduledEvent("evt_pull_due", session.SessionName, store.ScheduledEventDeliveryModePull, base.Add(5*time.Minute))
+	pushLater := scheduledEvent("evt_push_later", session.SessionName, store.ScheduledEventDeliveryModePush, base.Add(10*time.Minute))
+
+	for _, event := range []store.ScheduledEvent{pushLater, pullDue, pushDue} {
+		if err := sqliteStore.PutScheduledEvent(ctx, event); err != nil {
+			t.Fatalf("PutScheduledEvent(%q) error = %v", event.EventID, err)
+		}
+	}
+
+	duePush, err := sqliteStore.ListDueScheduledEvents(ctx, session.SessionName, store.ScheduledEventDeliveryModePush, base.Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("ListDueScheduledEvents(push) error = %v", err)
+	}
+	if len(duePush) != 1 || duePush[0].EventID != pushDue.EventID {
+		t.Fatalf("due push events = %#v, want only %q", duePush, pushDue.EventID)
+	}
+
+	duePull, err := sqliteStore.ListDueScheduledEvents(ctx, session.SessionName, store.ScheduledEventDeliveryModePull, base.Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("ListDueScheduledEvents(pull) error = %v", err)
+	}
+	if len(duePull) != 1 || duePull[0].EventID != pullDue.EventID {
+		t.Fatalf("due pull events = %#v, want only %q", duePull, pullDue.EventID)
+	}
+
+	deliveredAt := base.Add(5 * time.Minute)
+	if err := sqliteStore.MarkScheduledEventsDelivered(ctx, session.SessionName, []string{pushDue.EventID}, deliveredAt); err != nil {
+		t.Fatalf("MarkScheduledEventsDelivered() error = %v", err)
+	}
+
+	gotEvent, err := sqliteStore.GetScheduledEvent(ctx, pushDue.EventID)
+	if err != nil {
+		t.Fatalf("GetScheduledEvent() error = %v", err)
+	}
+	if gotEvent.Status != store.ScheduledEventStatusDelivered {
+		t.Fatalf("Status = %q, want %q", gotEvent.Status, store.ScheduledEventStatusDelivered)
+	}
+	if gotEvent.DeliveredAt == nil || !gotEvent.DeliveredAt.Equal(deliveredAt) {
+		t.Fatalf("DeliveredAt = %v, want %s", gotEvent.DeliveredAt, deliveredAt)
+	}
+
+	duePush, err = sqliteStore.ListDueScheduledEvents(ctx, session.SessionName, store.ScheduledEventDeliveryModePush, base.Add(5*time.Minute))
+	if err != nil {
+		t.Fatalf("ListDueScheduledEvents(after mark) error = %v", err)
+	}
+	if len(duePush) != 0 {
+		t.Fatalf("due push after delivery = %#v, want empty", duePush)
+	}
+}
+
+func TestDeleteSessionRemovesRuntimeSessionStateOnlyForTarget(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	createdAt := time.Date(2026, time.April, 24, 10, 0, 0, 0, time.UTC)
+	for _, sessionName := range []string{"delete-target", "keep-target"} {
+		session := store.SessionRecord{
+			SessionName: sessionName,
+			Status:      store.SessionStatusActive,
+			CreatedAt:   createdAt,
+			UpdatedAt:   createdAt,
+		}
+		if err := sqliteStore.CreateSession(context.Background(), session); err != nil {
+			t.Fatalf("CreateSession(%q) error = %v", sessionName, err)
+		}
+		if err := sqliteStore.PutSessionSnapshot(context.Background(), store.SessionSnapshot{
+			SnapshotID:  "snap_" + sessionName,
+			SessionName: sessionName,
+			State:       map[string]any{"value": sessionName},
+			CreatedAt:   createdAt.Add(time.Second),
+		}); err != nil {
+			t.Fatalf("PutSessionSnapshot(%q) error = %v", sessionName, err)
+		}
+	}
+
+	if err := sqliteStore.DeleteSession(context.Background(), "delete-target"); err != nil {
+		t.Fatalf("DeleteSession() error = %v", err)
+	}
+
+	if _, err := sqliteStore.GetSession(context.Background(), "delete-target"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetSession(deleted) error = %v, want store.ErrNotFound", err)
+	}
+	if _, err := sqliteStore.GetLatestSessionSnapshot(context.Background(), "delete-target"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetLatestSessionSnapshot(deleted) error = %v, want store.ErrNotFound", err)
+	}
+	if _, err := sqliteStore.GetSession(context.Background(), "keep-target"); err != nil {
+		t.Fatalf("GetSession(kept) error = %v", err)
+	}
+	if _, err := sqliteStore.GetLatestSessionSnapshot(context.Background(), "keep-target"); err != nil {
+		t.Fatalf("GetLatestSessionSnapshot(kept) error = %v", err)
+	}
+}
+
+func TestDeleteSessionRemovesEventQueueStateOnlyForTarget(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, time.April, 24, 14, 0, 0, 0, time.UTC)
+	for _, sessionName := range []string{"queue-delete-target", "queue-keep-target"} {
+		session := store.SessionRecord{
+			SessionName: sessionName,
+			Status:      store.SessionStatusActive,
+			CreatedAt:   base,
+			UpdatedAt:   base,
+		}
+		if err := sqliteStore.CreateSession(ctx, session); err != nil {
+			t.Fatalf("CreateSession(%q) error = %v", sessionName, err)
+		}
+		if err := sqliteStore.PutSessionClock(ctx, store.SessionClock{
+			SessionName: sessionName,
+			CurrentTime: base,
+			UpdatedAt:   base,
+		}); err != nil {
+			t.Fatalf("PutSessionClock(%q) error = %v", sessionName, err)
+		}
+		event := scheduledEvent("evt_"+sessionName, sessionName, store.ScheduledEventDeliveryModePull, base.Add(time.Minute))
+		if err := sqliteStore.PutScheduledEvent(ctx, event); err != nil {
+			t.Fatalf("PutScheduledEvent(%q) error = %v", sessionName, err)
+		}
+	}
+
+	if err := sqliteStore.DeleteSession(ctx, "queue-delete-target"); err != nil {
+		t.Fatalf("DeleteSession() error = %v", err)
+	}
+
+	if _, err := sqliteStore.GetSessionClock(ctx, "queue-delete-target"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetSessionClock(deleted) error = %v, want store.ErrNotFound", err)
+	}
+	if _, err := sqliteStore.GetScheduledEvent(ctx, "evt_queue-delete-target"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetScheduledEvent(deleted) error = %v, want store.ErrNotFound", err)
+	}
+	if _, err := sqliteStore.GetSessionClock(ctx, "queue-keep-target"); err != nil {
+		t.Fatalf("GetSessionClock(kept) error = %v", err)
+	}
+	if _, err := sqliteStore.GetScheduledEvent(ctx, "evt_queue-keep-target"); err != nil {
+		t.Fatalf("GetScheduledEvent(kept) error = %v", err)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -583,6 +878,22 @@ func validInteraction(runID string) recorder.Interaction {
 	}
 }
 
+func scheduledEvent(eventID string, sessionName string, mode store.ScheduledEventDeliveryMode, dueAt time.Time) store.ScheduledEvent {
+	return store.ScheduledEvent{
+		EventID:      eventID,
+		SessionName:  sessionName,
+		Service:      "stripe",
+		Topic:        "webhook.payment_intent.succeeded",
+		DeliveryMode: mode,
+		DueAt:        dueAt,
+		Payload: map[string]any{
+			"object_id": "pi_test_001",
+		},
+		Status:    store.ScheduledEventStatusPending,
+		CreatedAt: dueAt.Add(-time.Minute),
+	}
+}
+
 func TestMigrationCountMatchesEmbeddedMigrations(t *testing.T) {
 	t.Parallel()
 
@@ -596,7 +907,7 @@ func TestMigrationCountMatchesEmbeddedMigrations(t *testing.T) {
 		versions = append(versions, migration.Version)
 	}
 
-	if !slices.Equal(versions, []string{"0001_initial", "0002_add_run_integrity_issues"}) {
+	if !slices.Equal(versions, []string{"0001_initial", "0002_add_run_integrity_issues", "0003_session_lifecycle", "0004_event_queue"}) {
 		t.Fatalf("migration versions = %v", versions)
 	}
 }

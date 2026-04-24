@@ -1227,16 +1227,49 @@ Covered behavior:
 Purpose:
 
 - current TypeScript SDK entrypoint
-- re-exports the public TypeScript bootstrap/runtime API surface
+- re-exports the public TypeScript bootstrap/runtime and capture API surface
 
 ### Type exports
 
-| Name               | Kind        | Purpose                                                              |
-| ------------------ | ----------- | -------------------------------------------------------------------- |
-| `StagehandMode`    | union type  | Allowed mode values: `record`, `replay`, `passthrough`               |
-| `InitOptions`      | object type | Input shape for `init()`                                             |
-| `RuntimeMetadata`  | object type | Runtime metadata shape exposed on the `StagehandRuntime` object      |
-| `RecorderMetadata` | object type | Recorder-facing serialized metadata returned by `recorderMetadata()` |
+| Name                  | Kind        | Purpose                                                              |
+| --------------------- | ----------- | -------------------------------------------------------------------- |
+| `StagehandMode`       | union type  | Allowed mode values: `record`, `replay`, `passthrough`               |
+| `InitOptions`         | object type | Input shape for `init()`                                             |
+| `RuntimeMetadata`     | object type | Runtime metadata shape exposed on the `StagehandRuntime` object      |
+| `RecorderMetadata`    | object type | Recorder-facing serialized metadata returned by `recorderMetadata()` |
+| `CapturedHeaders`     | object type | Normalized header map used in captured TypeScript interactions       |
+| `CapturedRequest`     | object type | Normalized captured request shape for TypeScript interception        |
+| `CapturedEvent`       | object type | Artifact-shaped captured event record                                |
+| `CapturedInteraction` | object type | Artifact-shaped captured TypeScript interaction                      |
+
+## Module `sdk/typescript/src/capture.ts`
+
+Purpose:
+
+- holds the TypeScript-side artifact-shaped capture model
+- provides the in-memory `CaptureBuffer` used by Node interception
+
+Key exports:
+
+| Name                           | Kind     | Purpose                                                  |
+| ------------------------------ | -------- | -------------------------------------------------------- |
+| `CaptureBuffer`                | class    | Stores ordered captured interactions for one runtime     |
+| `DEFAULT_SCRUB_POLICY_VERSION` | constant | Placeholder scrub policy marker for TS in-memory capture |
+| `DEFAULT_SESSION_SALT_ID`      | constant | Placeholder session salt marker for TS in-memory capture |
+
+## Module `sdk/typescript/src/interception.ts`
+
+Purpose:
+
+- installs Node HTTP interception through `undici`'s global dispatcher
+- captures built-in `fetch` and direct `undici.fetch(...)` traffic in one path
+
+Key exports:
+
+| Name                               | Kind     | Purpose                                                    |
+| ---------------------------------- | -------- | ---------------------------------------------------------- |
+| `installRequestInterception`       | function | Installs the dispatcher-based HTTP interception layer      |
+| `resetRequestInterceptionForTests` | function | Restores the original dispatcher for isolated TS test runs |
 
 ### Function exports
 

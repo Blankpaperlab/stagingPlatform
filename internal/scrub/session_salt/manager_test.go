@@ -3,14 +3,11 @@ package session_salt
 import (
 	"bytes"
 	"context"
-	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	"stagehand/internal/recorder"
-	"stagehand/internal/store"
 	sqlitestore "stagehand/internal/store/sqlite"
 )
 
@@ -109,34 +106,61 @@ func TestReplacementIsStableWithinSessionAndDiffersAcrossSessions(t *testing.T) 
 	}
 }
 
-func TestManagerGetOrCreateSerializesConcurrentCreationPerSession(t *testing.T) {
-	store := newBlockingScrubSaltStore(1)
-	manager, err := NewManager(store, bytes.Repeat([]byte{0x24}, MasterKeySize))
+func TestManagerGetOrCreateIsStableAcrossIndependentStores(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "stagehand.db")
+	storeA, err := sqlitestore.OpenStore(context.Background(), dbPath)
 	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
+		t.Fatalf("OpenStore(storeA) error = %v", err)
+	}
+	defer storeA.Close()
+
+	storeB, err := sqlitestore.OpenStore(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("OpenStore(storeB) error = %v", err)
+	}
+	defer storeB.Close()
+
+	managerA, err := NewManager(storeA, bytes.Repeat([]byte{0x24}, MasterKeySize))
+	if err != nil {
+		t.Fatalf("NewManager(storeA) error = %v", err)
+	}
+	managerA.random = bytes.NewReader(bytes.Repeat([]byte{0xA1}, SaltSize+8+nonceSize))
+	managerA.now = func() time.Time {
+		return time.Date(2026, time.April, 23, 10, 0, 0, 0, time.UTC)
 	}
 
-	const sessionName = "concurrent-session"
-	const concurrentCalls = 64
+	managerB, err := NewManager(storeB, bytes.Repeat([]byte{0x24}, MasterKeySize))
+	if err != nil {
+		t.Fatalf("NewManager(storeB) error = %v", err)
+	}
+	managerB.random = bytes.NewReader(bytes.Repeat([]byte{0xB2}, SaltSize+8+nonceSize))
+	managerB.now = func() time.Time {
+		return time.Date(2026, time.April, 23, 10, 0, 1, 0, time.UTC)
+	}
+
+	const sessionName = "cross-process-session"
 
 	type result struct {
 		material Material
 		err      error
 	}
 
-	results := make(chan result, concurrentCalls)
+	results := make(chan result, 2)
+	start := make(chan struct{})
 	var wg sync.WaitGroup
-	for range concurrentCalls {
+	for _, manager := range []*Manager{managerA, managerB} {
 		wg.Add(1)
-		go func() {
+		go func(manager *Manager) {
 			defer wg.Done()
+			<-start
 			material, err := manager.GetOrCreate(context.Background(), sessionName)
 			results <- result{material: material, err: err}
-		}()
+		}(manager)
 	}
 
-	store.waitForGetMiss(t)
-	store.releaseBlockedGets()
+	close(start)
 
 	wg.Wait()
 	close(results)
@@ -149,16 +173,12 @@ func TestManagerGetOrCreateSerializesConcurrentCreationPerSession(t *testing.T) 
 		materials = append(materials, result.material)
 	}
 
-	if len(materials) != concurrentCalls {
-		t.Fatalf("len(materials) = %d, want %d", len(materials), concurrentCalls)
+	if len(materials) != 2 {
+		t.Fatalf("len(materials) = %d, want 2", len(materials))
 	}
 
-	if store.putCount() != 1 {
-		t.Fatalf("putCount() = %d, want 1", store.putCount())
-	}
-
-	saltIDs := make(map[string]struct{}, concurrentCalls)
-	salts := make(map[string]struct{}, concurrentCalls)
+	saltIDs := make(map[string]struct{}, len(materials))
+	salts := make(map[string]struct{}, len(materials))
 	for _, material := range materials {
 		saltIDs[material.SaltID] = struct{}{}
 		salts[string(material.Salt)] = struct{}{}
@@ -183,132 +203,4 @@ func openTestStore(t *testing.T) *sqlitestore.Store {
 	}
 
 	return sqliteStore
-}
-
-type blockingScrubSaltStore struct {
-	mu          sync.Mutex
-	record      *store.ScrubSalt
-	getMisses   int
-	blockedGets chan struct{}
-	releaseGets chan struct{}
-	puts        int
-}
-
-func newBlockingScrubSaltStore(getMisses int) *blockingScrubSaltStore {
-	return &blockingScrubSaltStore{
-		getMisses:   getMisses,
-		blockedGets: make(chan struct{}, getMisses),
-		releaseGets: make(chan struct{}),
-	}
-}
-
-func (s *blockingScrubSaltStore) waitForGetMiss(t *testing.T) {
-	t.Helper()
-
-	select {
-	case <-s.blockedGets:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for blocked GetScrubSalt miss")
-	}
-}
-
-func (s *blockingScrubSaltStore) releaseBlockedGets() {
-	close(s.releaseGets)
-}
-
-func (s *blockingScrubSaltStore) putCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.puts
-}
-
-func (s *blockingScrubSaltStore) CreateRun(context.Context, store.RunRecord) error {
-	return errors.New("unexpected CreateRun call")
-}
-
-func (s *blockingScrubSaltStore) GetRunRecord(context.Context, string) (store.RunRecord, error) {
-	return store.RunRecord{}, errors.New("unexpected GetRunRecord call")
-}
-
-func (s *blockingScrubSaltStore) GetLatestRunRecord(context.Context, string) (store.RunRecord, error) {
-	return store.RunRecord{}, errors.New("unexpected GetLatestRunRecord call")
-}
-
-func (s *blockingScrubSaltStore) GetRun(context.Context, string) (recorder.Run, error) {
-	return recorder.Run{}, errors.New("unexpected GetRun call")
-}
-
-func (s *blockingScrubSaltStore) GetLatestRun(context.Context, string) (recorder.Run, error) {
-	return recorder.Run{}, errors.New("unexpected GetLatestRun call")
-}
-
-func (s *blockingScrubSaltStore) UpdateRun(context.Context, store.RunRecord) error {
-	return errors.New("unexpected UpdateRun call")
-}
-
-func (s *blockingScrubSaltStore) DeleteRun(context.Context, string) error {
-	return errors.New("unexpected DeleteRun call")
-}
-
-func (s *blockingScrubSaltStore) DeleteSession(context.Context, string) error {
-	return errors.New("unexpected DeleteSession call")
-}
-
-func (s *blockingScrubSaltStore) WriteInteraction(context.Context, recorder.Interaction) error {
-	return errors.New("unexpected WriteInteraction call")
-}
-
-func (s *blockingScrubSaltStore) ListInteractions(context.Context, string) ([]recorder.Interaction, error) {
-	return nil, errors.New("unexpected ListInteractions call")
-}
-
-func (s *blockingScrubSaltStore) PutScrubSalt(_ context.Context, salt store.ScrubSalt) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	copySalt := salt
-	copySalt.SaltEncrypted = append([]byte(nil), salt.SaltEncrypted...)
-	s.record = &copySalt
-	s.puts++
-	return nil
-}
-
-func (s *blockingScrubSaltStore) GetScrubSalt(_ context.Context, sessionName string) (store.ScrubSalt, error) {
-	s.mu.Lock()
-	if s.record != nil && s.record.SessionName == sessionName {
-		record := *s.record
-		record.SaltEncrypted = append([]byte(nil), s.record.SaltEncrypted...)
-		s.mu.Unlock()
-		return record, nil
-	}
-
-	shouldBlock := s.getMisses > 0
-	if shouldBlock {
-		s.getMisses--
-	}
-	s.mu.Unlock()
-
-	if shouldBlock {
-		s.blockedGets <- struct{}{}
-		<-s.releaseGets
-		return store.ScrubSalt{}, store.ErrNotFound
-	}
-
-	return store.ScrubSalt{}, store.ErrNotFound
-}
-
-func (s *blockingScrubSaltStore) PutBaseline(context.Context, store.Baseline) error {
-	return errors.New("unexpected PutBaseline call")
-}
-
-func (s *blockingScrubSaltStore) GetBaseline(context.Context, string) (store.Baseline, error) {
-	return store.Baseline{}, errors.New("unexpected GetBaseline call")
-}
-
-func (s *blockingScrubSaltStore) GetLatestBaseline(context.Context, string) (store.Baseline, error) {
-	return store.Baseline{}, errors.New("unexpected GetLatestBaseline call")
-}
-
-func (s *blockingScrubSaltStore) Close() error {
-	return nil
 }

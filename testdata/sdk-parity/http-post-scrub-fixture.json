@@ -1,0 +1,86 @@
+{
+  "name": "http-post-scrub-fixture",
+  "request": {
+    "method": "POST",
+    "path": "/parity/scrub?email=alice@example.com",
+    "headers": {
+      "content-type": "application/json",
+      "x-stagehand-parity": "shared",
+      "authorization": "Bearer stagehand-fixture-stripe-token",
+      "x-customer-email": "alice@example.com"
+    },
+    "body": {
+      "notes": "Customer alice@example.com requested a refund"
+    }
+  },
+  "response": {
+    "status_code": 200,
+    "headers": {
+      "content-type": "application/json",
+      "x-parity": "scrub",
+      "x-response-token": "stagehand-fixture-response-token"
+    },
+    "body": {
+      "assistant_email": "alice@example.com",
+      "status": "ok"
+    }
+  },
+  "expected_canonical": {
+    "service": "127.0.0.1",
+    "operation": "POST /parity/scrub",
+    "protocol": "http",
+    "streaming": false,
+    "fallback_tier": null,
+    "request": {
+      "method": "POST",
+      "path": "/parity/scrub?email=alice@example.com",
+      "headers": {
+        "authorization": ["Bearer stagehand-fixture-stripe-token"],
+        "content-type": ["application/json"],
+        "x-customer-email": ["alice@example.com"],
+        "x-stagehand-parity": ["shared"]
+      },
+      "body": {
+        "capture_kind": "present"
+      }
+    },
+    "events": [
+      {
+        "sequence": 1,
+        "type": "request_sent"
+      },
+      {
+        "sequence": 2,
+        "type": "response_received",
+        "data": {
+          "status_code": 200,
+          "headers": {
+            "content-type": ["application/json"],
+            "x-parity": ["scrub"],
+            "x-response-token": ["stagehand-fixture-response-token"]
+          },
+          "body": {
+            "assistant_email": "alice@example.com",
+            "status": "ok"
+          }
+        }
+      }
+    ],
+    "scrub_report": {
+      "scrub_policy_version": "v0-unredacted",
+      "session_salt_id": "salt_pending"
+    }
+  },
+  "expected_scrub": {
+    "redacted_paths": [
+      "request.headers.authorization",
+      "request.headers.x-customer-email",
+      "request.query.email",
+      "request.body.notes",
+      "response.headers.x-response-token",
+      "events[1].data.body.assistant_email"
+    ],
+    "dropped_request_headers": ["authorization"],
+    "response_header_path": "x-response-token"
+  }
+}

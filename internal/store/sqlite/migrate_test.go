@@ -29,6 +29,10 @@ func TestOpenAndMigrateCreatesExpectedSchema(t *testing.T) {
 		"runs",
 		"schema_migrations",
 		"scrub_salts",
+		"scheduled_events",
+		"session_clocks",
+		"session_snapshots",
+		"sessions",
 	} {
 		if !slices.Contains(tables, want) {
 			t.Fatalf("expected table %q to exist, tables = %v", want, tables)
@@ -46,6 +50,13 @@ func TestOpenAndMigrateCreatesExpectedSchema(t *testing.T) {
 		"idx_runs_session_started_at",
 		"idx_runs_status_started_at",
 		"idx_scrub_salts_salt_id",
+		"idx_scheduled_events_session_created_at",
+		"idx_scheduled_events_session_status_mode_due",
+		"idx_session_clocks_updated_at",
+		"idx_session_snapshots_parent_id",
+		"idx_session_snapshots_session_created_at",
+		"idx_sessions_current_snapshot_id",
+		"idx_sessions_parent_session_name",
 	} {
 		if !slices.Contains(indexes, want) {
 			t.Fatalf("expected index %q to exist, indexes = %v", want, indexes)

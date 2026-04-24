@@ -111,3 +111,22 @@ func TestMergeRulesNormalizesHeaderPatternsToLowercase(t *testing.T) {
 		t.Fatalf("normalized header pattern = %q, want %q", got, "request.headers.x-customer-email")
 	}
 }
+
+func TestMergeRulesNormalizesResponseHeaderPatternsToLowercase(t *testing.T) {
+	t.Parallel()
+
+	merged, err := MergeRules(DefaultRules(), []Rule{
+		{
+			Name:    "response-trace-mask",
+			Pattern: "response.headers.X-Trace-Token",
+			Action:  ActionMask,
+		},
+	})
+	if err != nil {
+		t.Fatalf("MergeRules() error = %v", err)
+	}
+
+	if got := merged[len(merged)-1].Pattern; got != "response.headers.x-trace-token" {
+		t.Fatalf("normalized response header pattern = %q, want %q", got, "response.headers.x-trace-token")
+	}
+}

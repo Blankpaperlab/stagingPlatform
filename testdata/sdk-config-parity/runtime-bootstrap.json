@@ -1,0 +1,11 @@
+{
+  "default_config_filename": "stagehand.yml",
+  "supported_modes": ["record", "replay", "passthrough"],
+  "shared_env_keys": {
+    "session": "STAGEHAND_SESSION",
+    "mode": "STAGEHAND_MODE",
+    "config_path": "STAGEHAND_CONFIG_PATH",
+    "replay_input": "STAGEHAND_REPLAY_INPUT",
+    "openai_hosts": "STAGEHAND_OPENAI_HOSTS"
+  }
+}

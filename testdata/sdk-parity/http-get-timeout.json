@@ -1,0 +1,40 @@
+{
+  "name": "http-get-timeout",
+  "request": {
+    "method": "GET",
+    "path": "/parity/slow",
+    "headers": {
+      "x-stagehand-parity": "shared"
+    }
+  },
+  "server_delay_ms": 250,
+  "expected_canonical": {
+    "service": "127.0.0.1",
+    "operation": "GET /parity/slow",
+    "protocol": "http",
+    "streaming": false,
+    "fallback_tier": null,
+    "request": {
+      "method": "GET",
+      "path": "/parity/slow",
+      "headers": {
+        "x-stagehand-parity": ["shared"]
+      },
+      "body": null
+    },
+    "events": [
+      {
+        "sequence": 1,
+        "type": "request_sent"
+      },
+      {
+        "sequence": 2,
+        "type": "timeout"
+      }
+    ],
+    "scrub_report": {
+      "scrub_policy_version": "v0-unredacted",
+      "session_salt_id": "salt_pending"
+    }
+  }
+}

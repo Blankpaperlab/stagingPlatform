@@ -163,6 +163,7 @@ type ExtractedEntity struct {
 
 type ScrubReport struct {
 	RedactedPaths      []string `json:"redacted_paths,omitempty"`
+	DetectorKinds      []string `json:"detector_kinds,omitempty"`
 	ScrubPolicyVersion string   `json:"scrub_policy_version"`
 	SessionSaltID      string   `json:"session_salt_id"`
 }
@@ -511,6 +512,13 @@ func (s ScrubReport) validate(expectedPolicyVersion string) error {
 	for _, path := range s.RedactedPaths {
 		if strings.TrimSpace(path) == "" {
 			verr.add("redacted_paths cannot contain empty values")
+			break
+		}
+	}
+
+	for _, kind := range s.DetectorKinds {
+		if strings.TrimSpace(kind) == "" {
+			verr.add("detector_kinds cannot contain empty values")
 			break
 		}
 	}

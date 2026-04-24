@@ -119,6 +119,53 @@ def test_httpx_generic_error_is_captured_as_error_event() -> None:
     assert interaction.events[1].data["message"] == "connection refused"
 
 
+def test_custom_openai_host_is_classified_and_replayed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(stagehand.ENV_OPENAI_HOSTS, "gateway.openai.local")
+    record_runtime = stagehand.init(session="custom-openai-record", mode="record")
+
+    def record_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == "https://gateway.openai.local/v1/chat/completions"
+        return httpx.Response(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json={"id": "resp_custom", "ok": True},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(record_handler)) as client:
+        response = client.post(
+            "https://gateway.openai.local/v1/chat/completions",
+            json={"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 200
+    captured = record_runtime.captured_interactions()[0]
+    assert captured.service == "openai"
+    assert captured.operation == "chat.completions.create"
+
+    recorded_interactions = record_runtime.captured_interactions()
+    _reset_for_tests()
+
+    monkeypatch.setenv(stagehand.ENV_OPENAI_HOSTS, "gateway.openai.local")
+    replay_runtime = stagehand.init(session="custom-openai-replay", mode="replay")
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("custom-host replay should not call the underlying transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        replayed = client.post(
+            "https://gateway.openai.local/v1/chat/completions",
+            json={"model": "gpt-5.4", "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert replayed.status_code == 200
+    assert replayed.json() == {"id": "resp_custom", "ok": True}
+    replayed_interaction = replay_runtime.captured_interactions()[0]
+    assert replayed_interaction.fallback_tier == "exact"
+
+
 def test_captured_interaction_dicts_match_artifact_shape() -> None:
     stagehand.init(session="demo", mode="record")
 
@@ -300,6 +347,154 @@ def test_openai_replay_returns_exact_non_stream_response() -> None:
     replayed_interaction = replay_runtime.captured_interactions()[0]
     assert replayed_interaction.fallback_tier == "exact"
     assert replayed_interaction.streaming is False
+
+
+def test_openai_replay_strips_transport_encoding_headers() -> None:
+    stagehand.init(session="demo-encoded-replay", mode="replay")
+    assert (
+        stagehand.seed_replay_interactions(
+            [
+                {
+                    "run_id": "run_seed",
+                    "interaction_id": "int_seed_001",
+                    "sequence": 1,
+                    "service": "openai",
+                    "operation": "chat.completions.create",
+                    "protocol": "https",
+                    "request": {
+                        "url": "https://api.openai.com/v1/chat/completions",
+                        "method": "POST",
+                        "body": {
+                            "model": "gpt-5.4",
+                            "messages": [{"role": "user", "content": "say hello"}],
+                        },
+                    },
+                    "events": [
+                        {
+                            "sequence": 1,
+                            "t_ms": 0,
+                            "sim_t_ms": 0,
+                            "type": "request_sent",
+                        },
+                        {
+                            "sequence": 2,
+                            "t_ms": 1,
+                            "sim_t_ms": 1,
+                            "type": "response_received",
+                            "data": {
+                                "status_code": 200,
+                                "headers": {
+                                    "content-type": ["application/json"],
+                                    "content-encoding": ["gzip"],
+                                    "transfer-encoding": ["chunked"],
+                                },
+                                "body": {"id": "resp_456", "ok": True},
+                            },
+                        },
+                    ],
+                    "scrub_report": {
+                        "scrub_policy_version": "v0-unredacted",
+                        "session_salt_id": "salt_pending",
+                    },
+                }
+            ]
+        )
+        == 1
+    )
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("replay should not call the underlying transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        replayed_response = client.post(
+            "https://api.openai.com/v1/chat/completions",
+            json={
+                "model": "gpt-5.4",
+                "messages": [{"role": "user", "content": "say hello"}],
+            },
+        )
+
+    assert replayed_response.status_code == 200
+    assert "content-encoding" not in replayed_response.headers
+    assert "transfer-encoding" not in replayed_response.headers
+    assert replayed_response.json() == {"id": "resp_456", "ok": True}
+
+
+def test_openai_replay_matches_scrubbed_sensitive_prompt_shape() -> None:
+    stagehand.init(session="demo-sensitive-replay", mode="replay")
+    assert (
+        stagehand.seed_replay_interactions(
+            [
+                {
+                    "run_id": "run_seed",
+                    "interaction_id": "int_seed_001",
+                    "sequence": 1,
+                    "service": "openai",
+                    "operation": "chat.completions.create",
+                    "protocol": "https",
+                    "request": {
+                        "url": "https://api.openai.com/v1/chat/completions",
+                        "method": "POST",
+                        "body": {
+                            "model": "gpt-5.4",
+                            "messages": [
+                                {"role": "system", "content": "Summarize tickets."},
+                                {
+                                    "role": "user",
+                                    "content": "Customer email: user_abcd@scrub.local",
+                                },
+                            ],
+                            "temperature": 0,
+                        },
+                    },
+                    "events": [
+                        {
+                            "sequence": 1,
+                            "t_ms": 0,
+                            "sim_t_ms": 0,
+                            "type": "request_sent",
+                        },
+                        {
+                            "sequence": 2,
+                            "t_ms": 1,
+                            "sim_t_ms": 1,
+                            "type": "response_received",
+                            "data": {
+                                "status_code": 200,
+                                "headers": {"content-type": ["application/json"]},
+                                "body": {"id": "resp_sensitive", "ok": True},
+                            },
+                        },
+                    ],
+                    "scrub_report": {
+                        "scrub_policy_version": "v1",
+                        "session_salt_id": "salt_test",
+                        "detector_kinds": ["email"],
+                    },
+                }
+            ]
+        )
+        == 1
+    )
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("scrubbed replay should not call the underlying transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        replayed_response = client.post(
+            "https://api.openai.com/v1/chat/completions",
+            json={
+                "model": "gpt-5.4",
+                "messages": [
+                    {"role": "system", "content": "Summarize tickets."},
+                    {"role": "user", "content": "Customer email: john.doe@example.com"},
+                ],
+                "temperature": 0,
+            },
+        )
+
+    assert replayed_response.status_code == 200
+    assert replayed_response.json() == {"id": "resp_sensitive", "ok": True}
 
 
 def test_openai_replay_miss_raises_concrete_error() -> None:

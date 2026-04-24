@@ -1,0 +1,69 @@
+{
+  "name": "http-get-success",
+  "request": {
+    "method": "GET",
+    "path": "/parity/items?limit=2",
+    "headers": {
+      "x-stagehand-parity": "shared"
+    }
+  },
+  "response": {
+    "status_code": 200,
+    "headers": {
+      "content-type": "application/json",
+      "x-parity": "ok"
+    },
+    "body": {
+      "ok": true,
+      "items": [
+        {
+          "id": "itm_123"
+        }
+      ]
+    }
+  },
+  "expected_canonical": {
+    "service": "127.0.0.1",
+    "operation": "GET /parity/items",
+    "protocol": "http",
+    "streaming": false,
+    "fallback_tier": null,
+    "request": {
+      "method": "GET",
+      "path": "/parity/items?limit=2",
+      "headers": {
+        "x-stagehand-parity": ["shared"]
+      },
+      "body": null
+    },
+    "events": [
+      {
+        "sequence": 1,
+        "type": "request_sent"
+      },
+      {
+        "sequence": 2,
+        "type": "response_received",
+        "data": {
+          "status_code": 200,
+          "headers": {
+            "content-type": ["application/json"],
+            "x-parity": ["ok"]
+          },
+          "body": {
+            "ok": true,
+            "items": [
+              {
+                "id": "itm_123"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "scrub_report": {
+      "scrub_policy_version": "v0-unredacted",
+      "session_salt_id": "salt_pending"
+    }
+  }
+}

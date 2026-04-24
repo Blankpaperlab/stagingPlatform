@@ -343,7 +343,7 @@ def _build_replay_response(
         else _default_response_data(streaming=interaction.streaming or streamed)
     )
     status_code = int(response_data.get("status_code", 200))
-    headers = httpx.Headers(_flatten_headers(response_data.get("headers", {})))
+    headers = httpx.Headers(_replay_headers(response_data.get("headers", {})))
 
     if interaction.streaming or streamed:
         chunks = _extract_stream_chunks(interaction)
@@ -440,6 +440,27 @@ def _flatten_headers(headers: Any) -> list[tuple[str, str]]:
         else:
             flattened.append((str(key), str(values)))
     return flattened
+
+
+def _replay_headers(headers: Any) -> list[tuple[str, str]]:
+    filtered: list[tuple[str, str]] = []
+    for key, value in _flatten_headers(headers):
+        name = key.lower()
+        if name in {
+            "connection",
+            "content-encoding",
+            "content-length",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+        }:
+            continue
+        filtered.append((key, value))
+    return filtered
 
 
 def _elapsed_ms(started: float) -> int:
