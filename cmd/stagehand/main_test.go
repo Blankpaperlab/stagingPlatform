@@ -225,6 +225,108 @@ func TestRunRecordSurfacesCaptureBundleWriteFailure(t *testing.T) {
 	if !strings.Contains(stderr.String(), "simulated capture bundle write failure:") {
 		t.Fatalf("stderr missing concrete capture bundle failure\nstderr=%s", stderr.String())
 	}
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	runRecord, err := sqliteStore.GetLatestRunRecord(context.Background(), "failing-flow")
+	if err != nil {
+		t.Fatalf("GetLatestRunRecord() error = %v", err)
+	}
+	if runRecord.Status != store.RunLifecycleStatusIncomplete {
+		t.Fatalf("run status = %q, want %q", runRecord.Status, store.RunLifecycleStatusIncomplete)
+	}
+	if len(runRecord.IntegrityIssues) != 1 || runRecord.IntegrityIssues[0].Code != recorder.IntegrityIssueRecorderShutdown {
+		t.Fatalf("integrity issues = %#v, want recorder_shutdown", runRecord.IntegrityIssues)
+	}
+}
+
+func TestRunRecordRejectsInvalidImportBeforePersistingAnyInteractions(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	args := []string{
+		"record",
+		"--session", "invalid-import-flow",
+		"--config", configPath,
+		"--",
+	}
+	args = append(args, helperCommand("record-write-invalid-capture")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := run(args, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(record invalid import) expected error")
+	}
+	if !strings.Contains(err.Error(), "validate imported interaction") {
+		t.Fatalf("run(record invalid import) error = %v, want validation context", err)
+	}
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	runRecord, err := sqliteStore.GetLatestRunRecord(context.Background(), "invalid-import-flow")
+	if err != nil {
+		t.Fatalf("GetLatestRunRecord() error = %v", err)
+	}
+	if runRecord.Status != store.RunLifecycleStatusCorrupted {
+		t.Fatalf("run status = %q, want %q", runRecord.Status, store.RunLifecycleStatusCorrupted)
+	}
+	if len(runRecord.IntegrityIssues) != 1 || runRecord.IntegrityIssues[0].Code != recorder.IntegrityIssueSchemaValidation {
+		t.Fatalf("integrity issues = %#v, want schema_validation_failed", runRecord.IntegrityIssues)
+	}
+
+	interactions, err := sqliteStore.ListInteractions(context.Background(), runRecord.RunID)
+	if err != nil {
+		t.Fatalf("ListInteractions() error = %v", err)
+	}
+	if len(interactions) != 0 {
+		t.Fatalf("len(ListInteractions()) = %d, want 0 after preflight import rejection", len(interactions))
+	}
+}
+
+func TestFinalizeRunUsesExplicitRuntimeFailureClassification(t *testing.T) {
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(t.TempDir(), "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	run, err := newRunRecordForMode("classified-flow", minimalConfig(), recorder.RunModeRecord)
+	if err != nil {
+		t.Fatalf("newRunRecordForMode() error = %v", err)
+	}
+	if err := sqliteStore.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+
+	runErr := schemaValidationFailure("validate imported bundle", fmt.Errorf("bad interaction"))
+	if err := finalizeRun(context.Background(), sqliteStore, run, runErr); err != nil {
+		t.Fatalf("finalizeRun() error = %v", err)
+	}
+
+	gotRecord, err := sqliteStore.GetRunRecord(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRunRecord() error = %v", err)
+	}
+	if gotRecord.Status != store.RunLifecycleStatusCorrupted {
+		t.Fatalf("Status = %q, want %q", gotRecord.Status, store.RunLifecycleStatusCorrupted)
+	}
+	if len(gotRecord.IntegrityIssues) != 1 || gotRecord.IntegrityIssues[0].Code != recorder.IntegrityIssueSchemaValidation {
+		t.Fatalf("IntegrityIssues = %#v, want schema validation issue", gotRecord.IntegrityIssues)
+	}
 }
 
 func TestSQLiteDatabasePathUsesFileWhenAlreadyFileLike(t *testing.T) {
@@ -443,6 +545,26 @@ func TestHelperProcess(t *testing.T) {
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "simulated capture bundle write failure: %v\n", err)
 			os.Exit(6)
+		}
+		os.Exit(0)
+	case "record-write-invalid-capture":
+		capturePath := mustEnv(t, envStagehandCaptureOut)
+		interactions := helperCapturedInteractions()
+		invalid := interactions[0]
+		invalid.InteractionID = "int_helper_invalid"
+		invalid.Sequence = 2
+		invalid.Events = invalid.Events[:1]
+		interactions = append(interactions, invalid)
+		if err := writeInteractionBundle(capturePath, interactionBundle{
+			BundleVersion: interactionBundleVersion,
+			Metadata: map[string]any{
+				"mode":    os.Getenv(envStagehandMode),
+				"session": os.Getenv(envStagehandSession),
+			},
+			Interactions: interactions,
+		}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(8)
 		}
 		os.Exit(0)
 	case "replay-consume-seed-and-write-capture":

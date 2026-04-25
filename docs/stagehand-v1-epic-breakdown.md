@@ -443,10 +443,12 @@ Use these statuses on your board:
 
 - Outcome: partial failures are observable and do not silently corrupt replay.
 - To do:
-  - [ ] mark runs `complete`, `incomplete`, or `corrupted`
-  - [ ] ensure interaction writes are atomic
-  - [ ] validate imports before acceptance
-  - [ ] surface runtime failures with actionable errors
+  - [x] mark runs `complete`, `incomplete`, or `corrupted`
+  - [x] ensure interaction writes are atomic
+  - [x] validate imports before acceptance
+  - [x] surface runtime failures with actionable errors
+- Current implementation note:
+  CLI-managed runs now classify terminal failures as `complete`, `incomplete`, or `corrupted` with concrete integrity issue codes. Imported interaction bundles are normalized and structurally validated before persistence starts, invalid imports write zero interactions, and SQLite keeps the per-interaction transactional write boundary.
 
 ### Epic H completion checklist
 
@@ -454,7 +456,7 @@ Use these statuses on your board:
 - [x] snapshots restore correctly
 - [x] event queue works
 - [x] fallback tiers are visible and configurable
-- [ ] runtime failure modes are handled cleanly
+- [x] runtime failure modes are handled cleanly
 
 ## Epic I: Stripe Simulator and Error Injection
 
@@ -468,10 +470,12 @@ Use these statuses on your board:
 
 - Outcome: the Stripe simulator supports a narrow but compelling object set.
 - To do:
-  - [ ] finalize V1 subset: customer, payment method, and payment intent or charge
-  - [ ] define request matching and response schemas for the subset
-  - [ ] store object state by session
-  - [ ] implement create, read, and update flows required by examples
+  - [x] finalize V1 subset: customer, payment method, and payment intent or charge
+  - [x] define request matching and response schemas for the subset
+  - [x] store object state by session
+  - [x] implement create, read, and update flows required by examples
+- Current implementation note:
+  the Stripe simulator core now supports `customer`, `payment_method`, and `payment_intent` objects, declares route matches for the supported `/v1` paths, persists object state under runtime session snapshots, and implements create/read/update plus payment-method attach flows. Webhooks, realistic state-transition rules, and error injection remain in I2/I3.
 
 ### Story I2: Add Stripe business rules and side effects
 
@@ -494,7 +498,7 @@ Use these statuses on your board:
 
 ### Epic I completion checklist
 
-- [ ] Stripe subset is usable for the onboarding/refund examples
+- [x] Stripe subset is usable for the onboarding/refund examples
 - [ ] webhook scheduling works for supported flows
 - [ ] named error injection works
 - [ ] the failure-injection demo passes

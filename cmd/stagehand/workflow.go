@@ -62,6 +62,20 @@ type replayCommandResult struct {
 	FallbackTiersUsed      []string `json:"fallback_tiers_used"`
 }
 
+type runFailure struct {
+	status store.RunLifecycleStatus
+	code   recorder.IntegrityIssueCode
+	err    error
+}
+
+func (e *runFailure) Error() string {
+	return e.err.Error()
+}
+
+func (e *runFailure) Unwrap() error {
+	return e.err
+}
+
 func newRunRecordForMode(session string, cfg config.Config, mode recorder.RunMode) (store.RunRecord, error) {
 	run, err := newRunRecord(session, cfg)
 	if err != nil {
@@ -318,13 +332,33 @@ func normalizeImportedInteractions(runID string, source []recorder.Interaction) 
 	return normalized
 }
 
+func prepareImportedInteractions(runID string, source []recorder.Interaction) ([]recorder.Interaction, error) {
+	normalized := normalizeImportedInteractions(runID, source)
+	for idx, interaction := range normalized {
+		if err := interaction.Validate(runID, ""); err != nil {
+			return nil, fmt.Errorf(
+				"validate imported interaction %d (%q): %w",
+				idx,
+				interaction.InteractionID,
+				err,
+			)
+		}
+	}
+
+	return normalized, nil
+}
+
 func persistImportedInteractions(
 	ctx context.Context,
 	writer *recording.Writer,
 	runID string,
 	source []recorder.Interaction,
 ) (int, error) {
-	normalized := normalizeImportedInteractions(runID, source)
+	normalized, err := prepareImportedInteractions(runID, source)
+	if err != nil {
+		return 0, err
+	}
+
 	for _, interaction := range normalized {
 		if _, err := writer.PersistInteraction(ctx, interaction); err != nil {
 			return 0, err
@@ -332,6 +366,43 @@ func persistImportedInteractions(
 	}
 
 	return len(normalized), nil
+}
+
+func incompleteRunFailure(operation string, err error) error {
+	return classifiedRunFailure(store.RunLifecycleStatusIncomplete, recorder.IntegrityIssueRecorderShutdown, operation, err)
+}
+
+func corruptedRunFailure(code recorder.IntegrityIssueCode, operation string, err error) error {
+	return classifiedRunFailure(store.RunLifecycleStatusCorrupted, code, operation, err)
+}
+
+func interruptedWriteFailure(operation string, err error) error {
+	return corruptedRunFailure(recorder.IntegrityIssueInterruptedWrite, operation, err)
+}
+
+func schemaValidationFailure(operation string, err error) error {
+	return corruptedRunFailure(recorder.IntegrityIssueSchemaValidation, operation, err)
+}
+
+func missingEndStateFailure(operation string, err error) error {
+	return corruptedRunFailure(recorder.IntegrityIssueMissingEndState, operation, err)
+}
+
+func classifiedRunFailure(
+	status store.RunLifecycleStatus,
+	code recorder.IntegrityIssueCode,
+	operation string,
+	err error,
+) error {
+	if err == nil {
+		return nil
+	}
+
+	return &runFailure{
+		status: status,
+		code:   code,
+		err:    fmt.Errorf("%s: %w", operation, err),
+	}
 }
 
 func emitJSON(w io.Writer, value any) error {

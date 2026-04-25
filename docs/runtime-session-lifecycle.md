@@ -105,7 +105,7 @@ Local destroy removes:
 
 - no CLI commands expose session lifecycle directly yet
 - event queue state is persisted separately and is not embedded in snapshots yet
-- no simulator-specific state schema exists yet
+- Stripe simulator state is now stored under the `stripe` snapshot key; other simulator-specific state schemas are not defined yet
 - local mode hard-deletes destroyed sessions instead of preserving tombstones
 
 ## Validation Coverage

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -121,7 +122,7 @@ func runRecord(args []string, stdout io.Writer, stderr io.Writer) (runErr error)
 		}
 	}()
 
-	runErr = runManagedCommand(
+	if err := runManagedCommand(
 		ctx,
 		commandArgs,
 		map[string]string{
@@ -131,17 +132,19 @@ func runRecord(args []string, stdout io.Writer, stderr io.Writer) (runErr error)
 			envStagehandCaptureOut: capturePath,
 		},
 		stderr,
-	)
+	); err != nil {
+		runErr = incompleteRunFailure("managed record command failed", err)
+	}
 
 	interactionCount := 0
 	if bundle, err := loadInteractionBundle(capturePath); err != nil {
 		if runErr == nil {
-			runErr = fmt.Errorf("load record capture bundle: %w", err)
+			runErr = missingEndStateFailure("load record capture bundle", err)
 		}
 	} else {
 		interactionCount, err = persistImportedInteractions(ctx, writer, runRecord.RunID, bundle.Interactions)
 		if err != nil && runErr == nil {
-			runErr = fmt.Errorf("persist recorded interactions: %w", err)
+			runErr = importFailure("persist recorded interactions", err)
 		}
 	}
 	if err := finalizeRun(ctx, sqliteStore, runRecord, runErr); err != nil {
@@ -247,7 +250,8 @@ func runReplay(args []string, stdout io.Writer, stderr io.Writer) error {
 		return fmt.Errorf("write replay seed bundle: %w", err)
 	}
 
-	commandErr := runManagedCommand(
+	commandErr := error(nil)
+	if err := runManagedCommand(
 		ctx,
 		commandArgs,
 		map[string]string{
@@ -258,21 +262,23 @@ func runReplay(args []string, stdout io.Writer, stderr io.Writer) error {
 			envStagehandReplayInput: seedPath,
 		},
 		stderr,
-	)
+	); err != nil {
+		commandErr = incompleteRunFailure("managed replay command failed", err)
+	}
 
 	interactionCount := 0
 	if bundle, err := loadInteractionBundle(capturePath); err != nil {
 		if commandErr == nil {
-			commandErr = fmt.Errorf("load replay capture bundle: %w", err)
+			commandErr = missingEndStateFailure("load replay capture bundle", err)
 		}
 	} else {
 		interactionCount, err = persistImportedInteractions(ctx, writer, replayRun.RunID, bundle.Interactions)
 		if err != nil && commandErr == nil {
-			commandErr = fmt.Errorf("persist replayed interactions: %w", err)
+			commandErr = importFailure("persist replayed interactions", err)
 		}
 	}
 	if commandErr == nil && interactionCount == 0 {
-		commandErr = fmt.Errorf("replay command did not produce any interactions")
+		commandErr = missingEndStateFailure("validate replay capture bundle", fmt.Errorf("replay command did not produce any interactions"))
 	}
 	if err := finalizeRun(ctx, sqliteStore, replayRun, commandErr); err != nil {
 		return err
@@ -303,10 +309,18 @@ func finalizeRun(ctx context.Context, artifactStore store.ArtifactStore, runReco
 		final.Status = store.RunLifecycleStatusComplete
 		final.IntegrityIssues = nil
 	} else {
-		final.Status = store.RunLifecycleStatusCorrupted
+		status := store.RunLifecycleStatusCorrupted
+		code := recorder.IntegrityIssueRecorderShutdown
+		var classified *runFailure
+		if errors.As(runErr, &classified) {
+			status = classified.status
+			code = classified.code
+		}
+
+		final.Status = status
 		final.IntegrityIssues = []recorder.IntegrityIssue{
 			{
-				Code:    recorder.IntegrityIssueRecorderShutdown,
+				Code:    code,
 				Message: runErr.Error(),
 			},
 		}
@@ -317,6 +331,13 @@ func finalizeRun(ctx context.Context, artifactStore store.ArtifactStore, runReco
 	}
 
 	return nil
+}
+
+func importFailure(operation string, err error) error {
+	if strings.Contains(err.Error(), "validate imported interaction") {
+		return schemaValidationFailure(operation, err)
+	}
+	return interruptedWriteFailure(operation, err)
 }
 
 func newRunRecord(session string, cfg config.Config) (store.RunRecord, error) {

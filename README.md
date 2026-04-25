@@ -36,6 +36,8 @@ Current status:
 - Story H1 runtime session lifecycle implemented for create, snapshot, restore, fork, destroy, and session isolation
 - Story H2 runtime event queue implemented for persisted scheduled events, session sim clocks, `AdvanceTime`, and push/pull delivery modes
 - Story H3 runtime fallback tiers 0-2 implemented for exact matching, nearest-neighbor matching, state-synthesis hooks, and persisted fallback tier tracking
+- Story H4 runtime resilience implemented for terminal run classification, import preflight validation, and actionable integrity issues
+- Story I1 Stripe simulator subset implemented for customers, payment methods, and payment intents with session-backed state
 - Dashboard remains deferred in Plan A and is represented by a placeholder
 
 Primary planning docs live under `docs/`.
@@ -51,6 +53,8 @@ Current schema references:
 - runtime session lifecycle: `docs/runtime-session-lifecycle.md`
 - runtime event queue and sim time: `docs/runtime-event-queue.md`
 - runtime fallback tiers: `docs/runtime-fallback-tiers.md`
+- runtime resilience behavior: `docs/runtime-resilience.md`
+- Stripe simulator subset: `docs/stripe-simulator-subset.md`
 - local SQLite store and migrations: `docs/sqlite-local-store.md`
 
 Baseline local checks:
