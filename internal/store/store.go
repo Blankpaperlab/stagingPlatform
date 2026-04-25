@@ -293,6 +293,7 @@ type RunRecord struct {
 	GitSHA             string
 	StartedAt          time.Time
 	EndedAt            *time.Time
+	Metadata           map[string]any
 	IntegrityIssues    []recorder.IntegrityIssue
 }
 
@@ -311,6 +312,7 @@ func RunRecordFromRun(run recorder.Run) RunRecord {
 		GitSHA:             run.GitSHA,
 		StartedAt:          run.StartedAt,
 		EndedAt:            run.EndedAt,
+		Metadata:           run.Metadata,
 		IntegrityIssues:    run.IntegrityIssues,
 	}
 }
@@ -335,6 +337,7 @@ func (r RunRecord) ToRun(interactions []recorder.Interaction) (recorder.Run, err
 		GitSHA:             r.GitSHA,
 		StartedAt:          r.StartedAt,
 		EndedAt:            r.EndedAt,
+		Metadata:           r.Metadata,
 		Interactions:       interactions,
 		IntegrityIssues:    r.IntegrityIssues,
 	}, nil

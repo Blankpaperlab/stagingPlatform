@@ -189,11 +189,11 @@ type ErrorInjectionRule struct {
 }
 
 type ErrorMatch struct {
-	Service     string  `yaml:"service"`
-	Operation   string  `yaml:"operation"`
-	NthCall     int     `yaml:"nth_call"`
-	AnyCall     bool    `yaml:"any_call"`
-	Probability float64 `yaml:"probability"`
+	Service     string   `yaml:"service"`
+	Operation   string   `yaml:"operation"`
+	NthCall     int      `yaml:"nth_call"`
+	AnyCall     bool     `yaml:"any_call"`
+	Probability *float64 `yaml:"probability"`
 }
 
 type ErrorInject struct {
@@ -617,7 +617,7 @@ func validateErrorRule(index int, rule ErrorInjectionRule, verr *ValidationError
 		verr.add("%s.match cannot set both nth_call and any_call", prefix)
 	}
 
-	if rule.Match.Probability < 0 || rule.Match.Probability > 1 {
+	if rule.Match.Probability != nil && (*rule.Match.Probability < 0 || *rule.Match.Probability > 1) {
 		verr.add("%s.match.probability must be between 0 and 1", prefix)
 	}
 

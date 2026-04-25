@@ -1,0 +1,2 @@
+ALTER TABLE runs
+ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';

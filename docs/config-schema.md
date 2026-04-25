@@ -173,13 +173,13 @@ Canonical tier order:
 
 Per-rule match fields:
 
-| Field               | Required | Validation                             |
-| ------------------- | -------- | -------------------------------------- |
-| `match.service`     | yes      | non-empty                              |
-| `match.operation`   | yes      | non-empty                              |
-| `match.nth_call`    | no       | must be `>= 0`                         |
-| `match.any_call`    | no       | cannot be combined with `nth_call > 0` |
-| `match.probability` | no       | must be between `0` and `1`            |
+| Field               | Required | Validation                              |
+| ------------------- | -------- | --------------------------------------- |
+| `match.service`     | yes      | non-empty                               |
+| `match.operation`   | yes      | non-empty                               |
+| `match.nth_call`    | no       | must be `>= 0`                          |
+| `match.any_call`    | no       | cannot be combined with `nth_call > 0`  |
+| `match.probability` | no       | if present, must be between `0` and `1` |
 
 Per-rule inject fields:
 
@@ -190,6 +190,17 @@ Per-rule inject fields:
 | `inject.body`    | conditional | optional alongside `inject.status`         |
 
 Rules cannot mix `inject.library` with explicit `status/body`.
+
+If `match.probability` is omitted, the rule is treated as deterministic once its service, operation, and call-count matcher pass.
+
+Current named library entries:
+
+- `stripe.card_declined`
+- `stripe.insufficient_funds`
+- `stripe.expired_card`
+- `stripe.authentication_error`
+- `stripe.rate_limit`
+- `stripe.api_connection_error`
 
 ### `ci`
 

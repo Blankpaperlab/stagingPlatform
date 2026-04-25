@@ -125,6 +125,9 @@ func TestRunRecordRunsManagedCommandPersistsInteractionsAndEmitsJSON(t *testing.
 	if gotRun.Status != recorder.RunStatusComplete {
 		t.Fatalf("GetRun().Status = %q, want %q", gotRun.Status, recorder.RunStatusComplete)
 	}
+	if gotRun.Metadata["mode"] != "record" || gotRun.Metadata["session"] != "onboarding-flow" {
+		t.Fatalf("GetRun().Metadata = %#v, want captured bundle metadata", gotRun.Metadata)
+	}
 	if len(gotRun.Interactions) != 1 {
 		t.Fatalf("len(GetRun().Interactions) = %d, want 1", len(gotRun.Interactions))
 	}

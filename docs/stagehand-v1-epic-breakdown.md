@@ -481,27 +481,31 @@ Use these statuses on your board:
 
 - Outcome: replay is more than a static mock.
 - To do:
-  - [ ] enforce state consistency rules
-  - [ ] reject invalid state transitions with realistic errors
-  - [ ] schedule webhooks for supported flows
-  - [ ] extract entities for customer identity
+  - [x] enforce state consistency rules
+  - [x] reject invalid state transitions with realistic errors
+  - [x] schedule webhooks for supported flows
+  - [x] extract entities for customer identity
+- Current implementation note:
+  the Stripe simulator now enforces payment method/customer consistency, validates supported PaymentIntent transitions, returns Stripe-shaped invalid-request and resource-missing errors, schedules persisted webhook events for supported customer, payment method, and payment intent flows, and exposes customer identity extraction from customer and attached payment method data.
 
 ### Story I3: Implement error injection
 
 - Outcome: users can force realistic failures and prove agent behavior in CI.
 - To do:
-  - [ ] implement matcher by service, operation, nth call, and probability
-  - [ ] implement response override injection
-  - [ ] add named error library entries
-  - [ ] persist injection provenance in run metadata
-  - [ ] add tests for deterministic third-call failure behavior
+  - [x] implement matcher by service, operation, nth call, and probability
+  - [x] implement response override injection
+  - [x] add named error library entries
+  - [x] persist injection provenance in run metadata
+  - [x] add tests for deterministic third-call failure behavior
+- Current implementation note:
+  the runtime injection engine now evaluates ordered rules by service, operation, call count, and optional probability; returns explicit response overrides; includes named Stripe error entries; records applied-rule provenance under run metadata; and SQLite persists top-level run metadata through `runs.metadata_json`. The Stripe simulator calls the engine before supported operations, returns injected Stripe-shaped errors, records provenance, and does not mutate state for injected failures. The executable failure-injection demo lives in `examples/failure-injection-demo` and is covered by `TestFailureInjectionDemoPasses`.
 
 ### Epic I completion checklist
 
 - [x] Stripe subset is usable for the onboarding/refund examples
-- [ ] webhook scheduling works for supported flows
-- [ ] named error injection works
-- [ ] the failure-injection demo passes
+- [x] webhook scheduling works for supported flows
+- [x] named error injection works
+- [x] the failure-injection demo passes
 
 ## Epic J: Assertion Engine
 

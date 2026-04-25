@@ -490,13 +490,17 @@ func (s *Store) CreateRun(ctx context.Context, run store.RunRecord) error {
 	if err != nil {
 		return fmt.Errorf("marshal run integrity issues for %q: %w", run.RunID, err)
 	}
+	metadataJSON, err := marshalJSON(nonNilMap(run.Metadata))
+	if err != nil {
+		return fmt.Errorf("marshal run metadata for %q: %w", run.RunID, err)
+	}
 
 	_, err = s.db.ExecContext(
 		ctx,
 		`INSERT INTO runs (
 			run_id, session_name, mode, status, schema_version, sdk_version, runtime_version,
-			scrub_policy_version, base_snapshot_id, agent_version, git_sha, started_at, ended_at, integrity_issues_json
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			scrub_policy_version, base_snapshot_id, agent_version, git_sha, started_at, ended_at, integrity_issues_json, metadata_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.RunID,
 		run.SessionName,
 		string(run.Mode),
@@ -511,6 +515,7 @@ func (s *Store) CreateRun(ctx context.Context, run store.RunRecord) error {
 		formatTime(run.StartedAt),
 		formatOptionalTime(run.EndedAt),
 		string(integrityJSON),
+		string(metadataJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("insert run %q: %w", run.RunID, err)
@@ -573,6 +578,10 @@ func (s *Store) UpdateRun(ctx context.Context, run store.RunRecord) error {
 	if err != nil {
 		return fmt.Errorf("marshal run integrity issues for %q: %w", run.RunID, err)
 	}
+	metadataJSON, err := marshalJSON(nonNilMap(run.Metadata))
+	if err != nil {
+		return fmt.Errorf("marshal run metadata for %q: %w", run.RunID, err)
+	}
 
 	result, err := s.db.ExecContext(
 		ctx,
@@ -589,7 +598,8 @@ func (s *Store) UpdateRun(ctx context.Context, run store.RunRecord) error {
 			git_sha = ?,
 			started_at = ?,
 			ended_at = ?,
-			integrity_issues_json = ?
+			integrity_issues_json = ?,
+			metadata_json = ?
 		WHERE run_id = ?`,
 		run.SessionName,
 		string(run.Mode),
@@ -604,6 +614,7 @@ func (s *Store) UpdateRun(ctx context.Context, run store.RunRecord) error {
 		formatTime(run.StartedAt),
 		formatOptionalTime(run.EndedAt),
 		string(integrityJSON),
+		string(metadataJSON),
 		run.RunID,
 	)
 	if err != nil {
@@ -1137,6 +1148,7 @@ func (s *Store) getRunRecord(ctx context.Context, runID string) (store.RunRecord
 		gitSHA         sql.NullString
 		endedAt        sql.NullString
 		integrityJSON  string
+		metadataJSON   string
 		startedAt      string
 	)
 
@@ -1145,7 +1157,7 @@ func (s *Store) getRunRecord(ctx context.Context, runID string) (store.RunRecord
 		`SELECT
 			schema_version, sdk_version, runtime_version, scrub_policy_version,
 			run_id, session_name, mode, status, base_snapshot_id, agent_version, git_sha,
-			started_at, ended_at, integrity_issues_json
+			started_at, ended_at, integrity_issues_json, metadata_json
 		FROM runs
 		WHERE run_id = ?`,
 		runID,
@@ -1164,6 +1176,7 @@ func (s *Store) getRunRecord(ctx context.Context, runID string) (store.RunRecord
 		&startedAt,
 		&endedAt,
 		&integrityJSON,
+		&metadataJSON,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.RunRecord{}, fmt.Errorf("get run %q: %w", runID, store.ErrNotFound)
@@ -1192,6 +1205,9 @@ func (s *Store) getRunRecord(ctx context.Context, runID string) (store.RunRecord
 
 	if err := unmarshalJSONString(integrityJSON, &record.IntegrityIssues); err != nil {
 		return store.RunRecord{}, fmt.Errorf("decode integrity issues for run %q: %w", runID, err)
+	}
+	if err := unmarshalJSONString(metadataJSON, &record.Metadata); err != nil {
+		return store.RunRecord{}, fmt.Errorf("decode metadata for run %q: %w", runID, err)
 	}
 
 	return record, nil
@@ -1453,6 +1469,13 @@ func (s *Store) ensureRunExists(ctx context.Context, runID string) error {
 
 func marshalJSON(value any) ([]byte, error) {
 	return json.Marshal(value)
+}
+
+func nonNilMap(value map[string]any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	return value
 }
 
 func unmarshalJSONString(raw string, target any) error {

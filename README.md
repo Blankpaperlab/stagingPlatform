@@ -38,6 +38,9 @@ Current status:
 - Story H3 runtime fallback tiers 0-2 implemented for exact matching, nearest-neighbor matching, state-synthesis hooks, and persisted fallback tier tracking
 - Story H4 runtime resilience implemented for terminal run classification, import preflight validation, and actionable integrity issues
 - Story I1 Stripe simulator subset implemented for customers, payment methods, and payment intents with session-backed state
+- Story I2 Stripe business rules and side effects implemented for state consistency, realistic transition errors, webhook scheduling, and customer identity extraction
+- Story I3 runtime error injection implemented for service/operation/call/probability matching, response overrides, named Stripe errors, and persisted provenance metadata
+- Stripe failure-injection demo lives in `examples/failure-injection-demo` and is covered by CI
 - Dashboard remains deferred in Plan A and is represented by a placeholder
 
 Primary planning docs live under `docs/`.
@@ -54,6 +57,7 @@ Current schema references:
 - runtime event queue and sim time: `docs/runtime-event-queue.md`
 - runtime fallback tiers: `docs/runtime-fallback-tiers.md`
 - runtime resilience behavior: `docs/runtime-resilience.md`
+- runtime error injection: `docs/runtime-error-injection.md`
 - Stripe simulator subset: `docs/stripe-simulator-subset.md`
 - local SQLite store and migrations: `docs/sqlite-local-store.md`
 

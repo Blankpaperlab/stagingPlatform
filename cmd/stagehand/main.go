@@ -142,6 +142,7 @@ func runRecord(args []string, stdout io.Writer, stderr io.Writer) (runErr error)
 			runErr = missingEndStateFailure("load record capture bundle", err)
 		}
 	} else {
+		runRecord.Metadata = mergeRunMetadata(runRecord.Metadata, bundle.Metadata)
 		interactionCount, err = persistImportedInteractions(ctx, writer, runRecord.RunID, bundle.Interactions)
 		if err != nil && runErr == nil {
 			runErr = importFailure("persist recorded interactions", err)
@@ -272,6 +273,7 @@ func runReplay(args []string, stdout io.Writer, stderr io.Writer) error {
 			commandErr = missingEndStateFailure("load replay capture bundle", err)
 		}
 	} else {
+		replayRun.Metadata = mergeRunMetadata(replayRun.Metadata, bundle.Metadata)
 		interactionCount, err = persistImportedInteractions(ctx, writer, replayRun.RunID, bundle.Interactions)
 		if err != nil && commandErr == nil {
 			commandErr = importFailure("persist replayed interactions", err)

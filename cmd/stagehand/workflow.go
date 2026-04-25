@@ -368,6 +368,20 @@ func persistImportedInteractions(
 	return len(normalized), nil
 }
 
+func mergeRunMetadata(base map[string]any, overlay map[string]any) map[string]any {
+	if len(overlay) == 0 {
+		return base
+	}
+	merged := map[string]any{}
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range overlay {
+		merged[key] = value
+	}
+	return merged
+}
+
 func incompleteRunFailure(operation string, err error) error {
 	return classifiedRunFailure(store.RunLifecycleStatusIncomplete, recorder.IntegrityIssueRecorderShutdown, operation, err)
 }

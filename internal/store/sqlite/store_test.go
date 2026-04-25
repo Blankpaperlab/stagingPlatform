@@ -19,6 +19,16 @@ func TestStoreCreateGetAndUpdateRun(t *testing.T) {
 	defer sqliteStore.Close()
 
 	run := validRunRecord()
+	run.Metadata = map[string]any{
+		"error_injection": map[string]any{
+			"applied": []any{
+				map[string]any{
+					"rule_index": float64(0),
+					"service":    "stripe",
+				},
+			},
+		},
+	}
 	if err := sqliteStore.CreateRun(context.Background(), run); err != nil {
 		t.Fatalf("CreateRun() error = %v", err)
 	}
@@ -31,10 +41,23 @@ func TestStoreCreateGetAndUpdateRun(t *testing.T) {
 	if gotRun.RunID != run.RunID {
 		t.Fatalf("GetRun().RunID = %q, want %q", gotRun.RunID, run.RunID)
 	}
+	if gotRun.Metadata["error_injection"] == nil {
+		t.Fatalf("GetRun().Metadata = %#v, want error_injection metadata", gotRun.Metadata)
+	}
 
 	updated := run
 	updated.AgentVersion = "agent-v2"
 	updated.GitSHA = "def456"
+	updated.Metadata = map[string]any{
+		"error_injection": map[string]any{
+			"applied": []any{
+				map[string]any{
+					"rule_index": float64(1),
+					"service":    "openai",
+				},
+			},
+		},
+	}
 
 	if err := sqliteStore.UpdateRun(context.Background(), updated); err != nil {
 		t.Fatalf("UpdateRun() error = %v", err)
@@ -51,6 +74,12 @@ func TestStoreCreateGetAndUpdateRun(t *testing.T) {
 
 	if gotUpdatedRun.GitSHA != updated.GitSHA {
 		t.Fatalf("GetRun().GitSHA = %q, want %q", gotUpdatedRun.GitSHA, updated.GitSHA)
+	}
+	gotMetadata := gotUpdatedRun.Metadata["error_injection"].(map[string]any)
+	gotApplied := gotMetadata["applied"].([]any)
+	gotAppliedEntry := gotApplied[0].(map[string]any)
+	if gotAppliedEntry["service"] != "openai" {
+		t.Fatalf("GetRun().Metadata service = %q, want openai", gotAppliedEntry["service"])
 	}
 }
 
@@ -936,7 +965,13 @@ func TestMigrationCountMatchesEmbeddedMigrations(t *testing.T) {
 		versions = append(versions, migration.Version)
 	}
 
-	if !slices.Equal(versions, []string{"0001_initial", "0002_add_run_integrity_issues", "0003_session_lifecycle", "0004_event_queue"}) {
+	if !slices.Equal(versions, []string{
+		"0001_initial",
+		"0002_add_run_integrity_issues",
+		"0003_session_lifecycle",
+		"0004_event_queue",
+		"0005_add_run_metadata",
+	}) {
 		t.Fatalf("migration versions = %v", versions)
 	}
 }

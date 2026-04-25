@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"stagehand/internal/runtime/injection"
+	runtimequeue "stagehand/internal/runtime/queue"
 	"stagehand/internal/runtime/session"
 	"stagehand/internal/store"
 )
@@ -31,25 +34,78 @@ const (
 	OperationPaymentIntentsCreate   = "payment_intents.create"
 	OperationPaymentIntentsRetrieve = "payment_intents.retrieve"
 	OperationPaymentIntentsUpdate   = "payment_intents.update"
+
+	PaymentIntentStatusRequiresPaymentMethod = "requires_payment_method"
+	PaymentIntentStatusRequiresConfirmation  = "requires_confirmation"
+	PaymentIntentStatusRequiresAction        = "requires_action"
+	PaymentIntentStatusRequiresCapture       = "requires_capture"
+	PaymentIntentStatusSucceeded             = "succeeded"
+	PaymentIntentStatusCanceled              = "canceled"
+
+	WebhookCustomerCreated               = "customer.created"
+	WebhookCustomerUpdated               = "customer.updated"
+	WebhookPaymentMethodAttached         = "payment_method.attached"
+	WebhookPaymentIntentCreated          = "payment_intent.created"
+	WebhookPaymentIntentSucceeded        = "payment_intent.succeeded"
+	WebhookPaymentIntentCanceled         = "payment_intent.canceled"
+	WebhookPaymentIntentAmountCapturable = "payment_intent.amount_capturable_updated"
 )
 
 var (
 	ErrInvalidRequest = errors.New("stripe invalid request")
 	ErrNotFound       = errors.New("stripe object not found")
+	ErrInjected       = errors.New("stripe injected error")
 )
 
+type Error struct {
+	Type       string `json:"type"`
+	Code       string `json:"code"`
+	Param      string `json:"param,omitempty"`
+	Message    string `json:"message"`
+	StatusCode int    `json:"status_code"`
+	cause      error
+}
+
+func (e *Error) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Param != "" {
+		return fmt.Sprintf("stripe %s: %s (param: %s, code: %s)", e.Type, e.Message, e.Param, e.Code)
+	}
+	return fmt.Sprintf("stripe %s: %s (code: %s)", e.Type, e.Message, e.Code)
+}
+
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
 type Simulator struct {
-	store    store.SessionStore
-	sessions *session.Manager
-	now      func() time.Time
-	mu       sync.Mutex
+	store           store.SessionStore
+	sessions        *session.Manager
+	eventQueue      *runtimequeue.Manager
+	now             func() time.Time
+	webhookDelay    time.Duration
+	webhookDelivery store.ScheduledEventDeliveryMode
+	errorInjector   *injection.Engine
+	injectionMu     sync.Mutex
+	injections      []injection.Provenance
+	mu              sync.Mutex
 }
 
 type Option func(*simulatorOptions)
 
 type simulatorOptions struct {
-	now           func() time.Time
-	snapshotNewID func(prefix string) (string, error)
+	now             func() time.Time
+	snapshotNewID   func(prefix string) (string, error)
+	eventStore      store.EventQueueStore
+	eventNewID      func(prefix string) (string, error)
+	webhookDelay    time.Duration
+	webhookDelivery store.ScheduledEventDeliveryMode
+	errorInjector   *injection.Engine
 }
 
 func WithClock(now func() time.Time) Option {
@@ -68,6 +124,36 @@ func WithSnapshotIDGenerator(newID func(prefix string) (string, error)) Option {
 	}
 }
 
+func WithEventQueueStore(eventStore store.EventQueueStore) Option {
+	return func(opts *simulatorOptions) {
+		if eventStore != nil {
+			opts.eventStore = eventStore
+		}
+	}
+}
+
+func WithEventIDGenerator(newID func(prefix string) (string, error)) Option {
+	return func(opts *simulatorOptions) {
+		if newID != nil {
+			opts.eventNewID = newID
+		}
+	}
+}
+
+func WithWebhookDelay(delay time.Duration) Option {
+	return func(opts *simulatorOptions) {
+		if delay >= 0 {
+			opts.webhookDelay = delay
+		}
+	}
+}
+
+func WithErrorInjection(engine *injection.Engine) Option {
+	return func(opts *simulatorOptions) {
+		opts.errorInjector = engine
+	}
+}
+
 func NewSimulator(sessionStore store.SessionStore, opts ...Option) (*Simulator, error) {
 	if sessionStore == nil {
 		return nil, fmt.Errorf("stripe simulator session store is required")
@@ -77,6 +163,8 @@ func NewSimulator(sessionStore store.SessionStore, opts ...Option) (*Simulator, 
 		now: func() time.Time {
 			return time.Now().UTC()
 		},
+		webhookDelay:    time.Minute,
+		webhookDelivery: store.ScheduledEventDeliveryModePush,
 	}
 	for _, opt := range opts {
 		opt(&options)
@@ -94,15 +182,54 @@ func NewSimulator(sessionStore store.SessionStore, opts ...Option) (*Simulator, 
 		return nil, err
 	}
 
+	eventStore := options.eventStore
+	if eventStore == nil {
+		if inferredEventStore, ok := sessionStore.(store.EventQueueStore); ok {
+			eventStore = inferredEventStore
+		}
+	}
+
+	var eventQueue *runtimequeue.Manager
+	if eventStore != nil {
+		queueOptions := []runtimequeue.Option{
+			runtimequeue.WithClock(options.now),
+		}
+		if options.eventNewID != nil {
+			queueOptions = append(queueOptions, runtimequeue.WithIDGenerator(options.eventNewID))
+		}
+		eventQueue, err = runtimequeue.NewManager(eventStore, queueOptions...)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &Simulator{
-		store:    sessionStore,
-		sessions: sessionManager,
-		now:      options.now,
+		store:           sessionStore,
+		sessions:        sessionManager,
+		eventQueue:      eventQueue,
+		now:             options.now,
+		webhookDelay:    options.webhookDelay,
+		webhookDelivery: options.webhookDelivery,
+		errorInjector:   options.errorInjector,
 	}, nil
 }
 
 func (s *Simulator) CreateSession(ctx context.Context, sessionName string) (store.SessionRecord, error) {
 	return s.sessions.Create(ctx, sessionName)
+}
+
+func (s *Simulator) AppliedErrorInjections() []injection.Provenance {
+	s.injectionMu.Lock()
+	defer s.injectionMu.Unlock()
+
+	return append([]injection.Provenance(nil), s.injections...)
+}
+
+func (s *Simulator) ErrorInjectionMetadata(metadata map[string]any) map[string]any {
+	for _, provenance := range s.AppliedErrorInjections() {
+		metadata = injection.AppendProvenance(metadata, provenance)
+	}
+	return metadata
 }
 
 type State struct {
@@ -126,6 +253,15 @@ type Customer struct {
 	Description string            `json:"description,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	Created     int64             `json:"created"`
+}
+
+type CustomerIdentity struct {
+	CustomerID       string            `json:"customer_id"`
+	Email            string            `json:"email,omitempty"`
+	Name             string            `json:"name,omitempty"`
+	Phone            string            `json:"phone,omitempty"`
+	PaymentMethodIDs []string          `json:"payment_method_ids,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
 }
 
 type BillingDetails struct {
@@ -291,6 +427,10 @@ func MatchRequest(method string, rawURL string) (Match, bool) {
 }
 
 func (s *Simulator) CreateCustomer(ctx context.Context, sessionName string, params CreateCustomerParams) (Customer, error) {
+	if err := s.maybeInject(OperationCustomersCreate); err != nil {
+		return Customer{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -314,10 +454,22 @@ func (s *Simulator) CreateCustomer(ctx context.Context, sessionName string, para
 	if err := s.saveState(ctx, sessionName, sessionState, state); err != nil {
 		return Customer{}, err
 	}
+	if err := s.scheduleWebhook(ctx, sessionName, WebhookCustomerCreated, operationTime(customer.Created), customer, CustomerIdentity{
+		CustomerID: customer.ID,
+		Email:      customer.Email,
+		Name:       customer.Name,
+		Metadata:   cloneStringMap(customer.Metadata),
+	}); err != nil {
+		return Customer{}, err
+	}
 	return customer, nil
 }
 
 func (s *Simulator) GetCustomer(ctx context.Context, sessionName string, customerID string) (Customer, error) {
+	if err := s.maybeInject(OperationCustomersRetrieve); err != nil {
+		return Customer{}, err
+	}
+
 	state, _, err := s.loadState(ctx, sessionName)
 	if err != nil {
 		return Customer{}, err
@@ -330,7 +482,19 @@ func (s *Simulator) GetCustomer(ctx context.Context, sessionName string, custome
 	return customer, nil
 }
 
+func (s *Simulator) ExtractCustomerIdentity(ctx context.Context, sessionName string, customerID string) (CustomerIdentity, error) {
+	state, _, err := s.loadState(ctx, sessionName)
+	if err != nil {
+		return CustomerIdentity{}, err
+	}
+	return state.extractCustomerIdentity(customerID)
+}
+
 func (s *Simulator) UpdateCustomer(ctx context.Context, sessionName string, customerID string, params UpdateCustomerParams) (Customer, error) {
+	if err := s.maybeInject(OperationCustomersUpdate); err != nil {
+		return Customer{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -362,10 +526,21 @@ func (s *Simulator) UpdateCustomer(ctx context.Context, sessionName string, cust
 	if err := s.saveState(ctx, sessionName, sessionState, state); err != nil {
 		return Customer{}, err
 	}
+	identity, err := state.extractCustomerIdentity(customer.ID)
+	if err != nil {
+		return Customer{}, err
+	}
+	if err := s.scheduleWebhook(ctx, sessionName, WebhookCustomerUpdated, s.now(), customer, identity); err != nil {
+		return Customer{}, err
+	}
 	return customer, nil
 }
 
 func (s *Simulator) CreatePaymentMethod(ctx context.Context, sessionName string, params CreatePaymentMethodParams) (PaymentMethod, error) {
+	if err := s.maybeInject(OperationPaymentMethodsCreate); err != nil {
+		return PaymentMethod{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -377,6 +552,9 @@ func (s *Simulator) CreatePaymentMethod(ctx context.Context, sessionName string,
 	paymentMethodType := strings.TrimSpace(params.Type)
 	if paymentMethodType == "" {
 		paymentMethodType = "card"
+	}
+	if err := validatePaymentMethod(paymentMethodType, params.Card); err != nil {
+		return PaymentMethod{}, err
 	}
 
 	state.Counters.PaymentMethod++
@@ -398,6 +576,10 @@ func (s *Simulator) CreatePaymentMethod(ctx context.Context, sessionName string,
 }
 
 func (s *Simulator) GetPaymentMethod(ctx context.Context, sessionName string, paymentMethodID string) (PaymentMethod, error) {
+	if err := s.maybeInject(OperationPaymentMethodsRetrieve); err != nil {
+		return PaymentMethod{}, err
+	}
+
 	state, _, err := s.loadState(ctx, sessionName)
 	if err != nil {
 		return PaymentMethod{}, err
@@ -411,6 +593,10 @@ func (s *Simulator) GetPaymentMethod(ctx context.Context, sessionName string, pa
 }
 
 func (s *Simulator) UpdatePaymentMethod(ctx context.Context, sessionName string, paymentMethodID string, params UpdatePaymentMethodParams) (PaymentMethod, error) {
+	if err := s.maybeInject(OperationPaymentMethodsUpdate); err != nil {
+		return PaymentMethod{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -429,6 +615,9 @@ func (s *Simulator) UpdatePaymentMethod(ctx context.Context, sessionName string,
 		paymentMethod.BillingDetails = *params.BillingDetails
 	}
 	if params.Card != nil {
+		if err := validatePaymentMethod(paymentMethod.Type, *params.Card); err != nil {
+			return PaymentMethod{}, err
+		}
 		paymentMethod.Card = *params.Card
 	}
 	if params.Metadata != nil {
@@ -443,6 +632,10 @@ func (s *Simulator) UpdatePaymentMethod(ctx context.Context, sessionName string,
 }
 
 func (s *Simulator) AttachPaymentMethod(ctx context.Context, sessionName string, paymentMethodID string, params AttachPaymentMethodParams) (PaymentMethod, error) {
+	if err := s.maybeInject(OperationPaymentMethodsAttach); err != nil {
+		return PaymentMethod{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -461,16 +654,37 @@ func (s *Simulator) AttachPaymentMethod(ctx context.Context, sessionName string,
 	if !ok {
 		return PaymentMethod{}, objectNotFound("payment_method", paymentMethodID)
 	}
+	if paymentMethod.CustomerID != "" && paymentMethod.CustomerID != customerID {
+		return PaymentMethod{}, stripeInvalid(
+			"payment_method_unexpected_state",
+			"customer",
+			fmt.Sprintf("Payment method %s is already attached to customer %s.", paymentMethod.ID, paymentMethod.CustomerID),
+		)
+	}
+	alreadyAttached := paymentMethod.CustomerID == customerID
 	paymentMethod.CustomerID = customerID
 
 	state.PaymentMethods[paymentMethod.ID] = paymentMethod
 	if err := s.saveState(ctx, sessionName, sessionState, state); err != nil {
 		return PaymentMethod{}, err
 	}
+	if !alreadyAttached {
+		identity, err := state.extractCustomerIdentity(customerID)
+		if err != nil {
+			return PaymentMethod{}, err
+		}
+		if err := s.scheduleWebhook(ctx, sessionName, WebhookPaymentMethodAttached, s.now(), paymentMethod, identity); err != nil {
+			return PaymentMethod{}, err
+		}
+	}
 	return paymentMethod, nil
 }
 
 func (s *Simulator) CreatePaymentIntent(ctx context.Context, sessionName string, params CreatePaymentIntentParams) (PaymentIntent, error) {
+	if err := s.maybeInject(OperationPaymentIntentsCreate); err != nil {
+		return PaymentIntent{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -482,12 +696,17 @@ func (s *Simulator) CreatePaymentIntent(ctx context.Context, sessionName string,
 		return PaymentIntent{}, err
 	}
 	if params.Amount <= 0 {
-		return PaymentIntent{}, invalidRequest("payment_intent amount must be greater than 0")
+		return PaymentIntent{}, stripeInvalid("parameter_invalid_integer", "amount", "PaymentIntent amount must be greater than 0.")
 	}
 
 	currency := normalizeCurrency(params.Currency)
 	if currency == "" {
-		return PaymentIntent{}, invalidRequest("payment_intent currency is required")
+		return PaymentIntent{}, stripeInvalid("parameter_missing", "currency", "PaymentIntent currency is required.")
+	}
+
+	customerID, paymentMethodID, status, err := normalizePaymentIntentCreate(state, params.CustomerID, params.PaymentMethodID, params.Status)
+	if err != nil {
+		return PaymentIntent{}, err
 	}
 
 	state.Counters.PaymentIntent++
@@ -496,9 +715,9 @@ func (s *Simulator) CreatePaymentIntent(ctx context.Context, sessionName string,
 		Object:          "payment_intent",
 		Amount:          params.Amount,
 		Currency:        currency,
-		CustomerID:      strings.TrimSpace(params.CustomerID),
-		PaymentMethodID: strings.TrimSpace(params.PaymentMethodID),
-		Status:          normalizePaymentIntentStatus(params.Status, params.PaymentMethodID),
+		CustomerID:      customerID,
+		PaymentMethodID: paymentMethodID,
+		Status:          status,
 		Metadata:        cloneStringMap(params.Metadata),
 		Created:         s.now().Unix(),
 	}
@@ -508,10 +727,17 @@ func (s *Simulator) CreatePaymentIntent(ctx context.Context, sessionName string,
 	if err := s.saveState(ctx, sessionName, sessionState, state); err != nil {
 		return PaymentIntent{}, err
 	}
+	if err := s.schedulePaymentIntentWebhooks(ctx, sessionName, paymentIntent, "", paymentIntent.Status, state); err != nil {
+		return PaymentIntent{}, err
+	}
 	return paymentIntent, nil
 }
 
 func (s *Simulator) GetPaymentIntent(ctx context.Context, sessionName string, paymentIntentID string) (PaymentIntent, error) {
+	if err := s.maybeInject(OperationPaymentIntentsRetrieve); err != nil {
+		return PaymentIntent{}, err
+	}
+
 	state, _, err := s.loadState(ctx, sessionName)
 	if err != nil {
 		return PaymentIntent{}, err
@@ -525,6 +751,10 @@ func (s *Simulator) GetPaymentIntent(ctx context.Context, sessionName string, pa
 }
 
 func (s *Simulator) UpdatePaymentIntent(ctx context.Context, sessionName string, paymentIntentID string, params UpdatePaymentIntentParams) (PaymentIntent, error) {
+	if err := s.maybeInject(OperationPaymentIntentsUpdate); err != nil {
+		return PaymentIntent{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -539,46 +769,72 @@ func (s *Simulator) UpdatePaymentIntent(ctx context.Context, sessionName string,
 		return PaymentIntent{}, objectNotFound("payment_intent", paymentIntentID)
 	}
 
+	previousStatus := paymentIntent.Status
+	if paymentIntentTerminal(previousStatus) && updateMutatesTerminalPaymentIntent(params, paymentIntent) {
+		return PaymentIntent{}, stripeInvalid(
+			"payment_intent_unexpected_state",
+			"",
+			fmt.Sprintf("Cannot update PaymentIntent %s because it is already %s.", paymentIntent.ID, previousStatus),
+		)
+	}
+
+	nextAmount := paymentIntent.Amount
 	if params.Amount != nil {
 		if *params.Amount <= 0 {
-			return PaymentIntent{}, invalidRequest("payment_intent amount must be greater than 0")
+			return PaymentIntent{}, stripeInvalid("parameter_invalid_integer", "amount", "PaymentIntent amount must be greater than 0.")
 		}
-		paymentIntent.Amount = *params.Amount
+		nextAmount = *params.Amount
 	}
+
+	nextCurrency := paymentIntent.Currency
 	if params.Currency != nil {
 		currency := normalizeCurrency(*params.Currency)
 		if currency == "" {
-			return PaymentIntent{}, invalidRequest("payment_intent currency is required")
+			return PaymentIntent{}, stripeInvalid("parameter_missing", "currency", "PaymentIntent currency is required.")
 		}
-		paymentIntent.Currency = currency
+		nextCurrency = currency
 	}
+
+	nextCustomerID := paymentIntent.CustomerID
 	if params.CustomerID != nil {
-		customerID := strings.TrimSpace(*params.CustomerID)
-		if customerID != "" {
-			if _, ok := state.Customers[customerID]; !ok {
-				return PaymentIntent{}, objectNotFound("customer", customerID)
-			}
-		}
-		paymentIntent.CustomerID = customerID
+		nextCustomerID = strings.TrimSpace(*params.CustomerID)
 	}
+
+	nextPaymentMethodID := paymentIntent.PaymentMethodID
 	if params.PaymentMethodID != nil {
-		paymentMethodID := strings.TrimSpace(*params.PaymentMethodID)
-		if paymentMethodID != "" {
-			if _, ok := state.PaymentMethods[paymentMethodID]; !ok {
-				return PaymentIntent{}, objectNotFound("payment_method", paymentMethodID)
-			}
-		}
-		paymentIntent.PaymentMethodID = paymentMethodID
+		nextPaymentMethodID = strings.TrimSpace(*params.PaymentMethodID)
 	}
+
+	nextStatus := paymentIntent.Status
 	if params.Status != nil {
-		paymentIntent.Status = normalizePaymentIntentStatus(*params.Status, paymentIntent.PaymentMethodID)
+		nextStatus = strings.TrimSpace(*params.Status)
 	}
+	nextCustomerID, nextPaymentMethodID, nextStatus, err = normalizePaymentIntentUpdate(
+		state,
+		paymentIntent,
+		nextCustomerID,
+		nextPaymentMethodID,
+		nextStatus,
+		params.Status != nil,
+	)
+	if err != nil {
+		return PaymentIntent{}, err
+	}
+
+	paymentIntent.Amount = nextAmount
+	paymentIntent.Currency = nextCurrency
+	paymentIntent.CustomerID = nextCustomerID
+	paymentIntent.PaymentMethodID = nextPaymentMethodID
+	paymentIntent.Status = nextStatus
 	if params.Metadata != nil {
 		paymentIntent.Metadata = cloneStringMap(params.Metadata)
 	}
 
 	state.PaymentIntents[paymentIntent.ID] = paymentIntent
 	if err := s.saveState(ctx, sessionName, sessionState, state); err != nil {
+		return PaymentIntent{}, err
+	}
+	if err := s.schedulePaymentIntentWebhooks(ctx, sessionName, paymentIntent, previousStatus, paymentIntent.Status, state); err != nil {
 		return PaymentIntent{}, err
 	}
 	return paymentIntent, nil
@@ -631,6 +887,137 @@ func (s *Simulator) saveState(ctx context.Context, sessionName string, sessionSt
 	return nil
 }
 
+func (s *Simulator) maybeInject(operation string) error {
+	if s.errorInjector == nil {
+		return nil
+	}
+
+	decision, err := s.errorInjector.Evaluate(injection.Request{
+		Service:   Service,
+		Operation: operation,
+	})
+	if err != nil {
+		return err
+	}
+	if !decision.Matched {
+		return nil
+	}
+
+	s.injectionMu.Lock()
+	s.injections = append(s.injections, decision.Provenance)
+	s.injectionMu.Unlock()
+	return injectedStripeError(decision.Override)
+}
+
+func (s *Simulator) schedulePaymentIntentWebhooks(
+	ctx context.Context,
+	sessionName string,
+	paymentIntent PaymentIntent,
+	previousStatus string,
+	currentStatus string,
+	state State,
+) error {
+	identity := CustomerIdentity{}
+	if paymentIntent.CustomerID != "" {
+		extracted, err := state.extractCustomerIdentity(paymentIntent.CustomerID)
+		if err != nil {
+			return err
+		}
+		identity = extracted
+	}
+
+	occurredAt := operationTime(paymentIntent.Created)
+	if previousStatus == "" {
+		if err := s.scheduleWebhook(ctx, sessionName, WebhookPaymentIntentCreated, occurredAt, paymentIntent, identity); err != nil {
+			return err
+		}
+	}
+
+	if previousStatus == currentStatus {
+		return nil
+	}
+
+	eventType := paymentIntentStatusWebhook(currentStatus)
+	if eventType == "" {
+		return nil
+	}
+	return s.scheduleWebhook(ctx, sessionName, eventType, s.now(), paymentIntent, identity)
+}
+
+func (s *Simulator) scheduleWebhook(
+	ctx context.Context,
+	sessionName string,
+	eventType string,
+	occurredAt time.Time,
+	object any,
+	identity CustomerIdentity,
+) error {
+	if s.eventQueue == nil {
+		return nil
+	}
+	if occurredAt.IsZero() {
+		occurredAt = s.now()
+	}
+
+	payload := map[string]any{
+		"object": "event",
+		"type":   eventType,
+		"data": map[string]any{
+			"object": object,
+		},
+	}
+	if identity.CustomerID != "" {
+		payload["customer_identity"] = identity
+	}
+
+	_, err := s.eventQueue.Schedule(ctx, runtimequeue.ScheduleOptions{
+		SessionName:  sessionName,
+		Service:      Service,
+		Topic:        "webhook." + eventType,
+		DeliveryMode: s.webhookDelivery,
+		DueAt:        occurredAt.Add(s.webhookDelay),
+		Payload:      payload,
+	})
+	if err != nil {
+		return fmt.Errorf("schedule stripe webhook %q: %w", eventType, err)
+	}
+	return nil
+}
+
+func (state State) extractCustomerIdentity(customerID string) (CustomerIdentity, error) {
+	customerID = strings.TrimSpace(customerID)
+	customer, ok := state.Customers[customerID]
+	if !ok {
+		return CustomerIdentity{}, objectNotFound("customer", customerID)
+	}
+
+	identity := CustomerIdentity{
+		CustomerID: customer.ID,
+		Email:      customer.Email,
+		Name:       customer.Name,
+		Metadata:   cloneStringMap(customer.Metadata),
+	}
+
+	for _, paymentMethod := range state.PaymentMethods {
+		if paymentMethod.CustomerID != customer.ID {
+			continue
+		}
+		identity.PaymentMethodIDs = append(identity.PaymentMethodIDs, paymentMethod.ID)
+		if identity.Email == "" {
+			identity.Email = paymentMethod.BillingDetails.Email
+		}
+		if identity.Name == "" {
+			identity.Name = paymentMethod.BillingDetails.Name
+		}
+		if identity.Phone == "" {
+			identity.Phone = paymentMethod.BillingDetails.Phone
+		}
+	}
+
+	sort.Strings(identity.PaymentMethodIDs)
+	return identity, nil
+}
+
 func newState() State {
 	state := State{}
 	state.normalize()
@@ -667,6 +1054,95 @@ func validatePaymentIntentReferences(state State, customerID string, paymentMeth
 	return nil
 }
 
+func normalizePaymentIntentCreate(
+	state State,
+	customerID string,
+	paymentMethodID string,
+	status string,
+) (string, string, string, error) {
+	customerID, paymentMethodID, err := normalizePaymentIntentReferences(state, customerID, paymentMethodID)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	status = normalizePaymentIntentStatus(status, paymentMethodID)
+	if err := validatePaymentIntentStatus(status); err != nil {
+		return "", "", "", err
+	}
+	if err := validatePaymentIntentStatusConsistency(status, paymentMethodID); err != nil {
+		return "", "", "", err
+	}
+
+	return customerID, paymentMethodID, status, nil
+}
+
+func normalizePaymentIntentUpdate(
+	state State,
+	current PaymentIntent,
+	customerID string,
+	paymentMethodID string,
+	status string,
+	statusWasRequested bool,
+) (string, string, string, error) {
+	customerID, paymentMethodID, err := normalizePaymentIntentReferences(state, customerID, paymentMethodID)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	if strings.TrimSpace(status) == "" {
+		status = current.Status
+	}
+	status = strings.TrimSpace(status)
+	if !statusWasRequested && current.Status == PaymentIntentStatusRequiresPaymentMethod && strings.TrimSpace(paymentMethodID) != "" {
+		status = PaymentIntentStatusRequiresConfirmation
+	}
+	if err := validatePaymentIntentStatus(status); err != nil {
+		return "", "", "", err
+	}
+	if err := validatePaymentIntentStatusConsistency(status, paymentMethodID); err != nil {
+		return "", "", "", err
+	}
+	if statusWasRequested {
+		if err := validatePaymentIntentTransition(current.Status, status); err != nil {
+			return "", "", "", err
+		}
+	}
+
+	return customerID, paymentMethodID, status, nil
+}
+
+func normalizePaymentIntentReferences(state State, customerID string, paymentMethodID string) (string, string, error) {
+	customerID = strings.TrimSpace(customerID)
+	paymentMethodID = strings.TrimSpace(paymentMethodID)
+
+	if customerID != "" {
+		if _, ok := state.Customers[customerID]; !ok {
+			return "", "", objectNotFound("customer", customerID)
+		}
+	}
+
+	if paymentMethodID == "" {
+		return customerID, paymentMethodID, nil
+	}
+
+	paymentMethod, ok := state.PaymentMethods[paymentMethodID]
+	if !ok {
+		return "", "", objectNotFound("payment_method", paymentMethodID)
+	}
+	if paymentMethod.CustomerID != "" {
+		if customerID != "" && customerID != paymentMethod.CustomerID {
+			return "", "", stripeInvalid(
+				"payment_method_customer_mismatch",
+				"payment_method",
+				fmt.Sprintf("Payment method %s is attached to customer %s and cannot be used with customer %s.", paymentMethodID, paymentMethod.CustomerID, customerID),
+			)
+		}
+		customerID = paymentMethod.CustomerID
+	}
+
+	return customerID, paymentMethodID, nil
+}
+
 func normalizeCurrency(currency string) string {
 	return strings.ToLower(strings.TrimSpace(currency))
 }
@@ -677,9 +1153,143 @@ func normalizePaymentIntentStatus(status string, paymentMethodID string) string 
 		return status
 	}
 	if strings.TrimSpace(paymentMethodID) != "" {
-		return "requires_confirmation"
+		return PaymentIntentStatusRequiresConfirmation
 	}
-	return "requires_payment_method"
+	return PaymentIntentStatusRequiresPaymentMethod
+}
+
+func validatePaymentIntentStatus(status string) error {
+	switch status {
+	case PaymentIntentStatusRequiresPaymentMethod,
+		PaymentIntentStatusRequiresConfirmation,
+		PaymentIntentStatusRequiresAction,
+		PaymentIntentStatusRequiresCapture,
+		PaymentIntentStatusSucceeded,
+		PaymentIntentStatusCanceled:
+		return nil
+	default:
+		return stripeInvalid("parameter_invalid_enum", "status", fmt.Sprintf("PaymentIntent status %q is not supported by the Stagehand Stripe simulator.", status))
+	}
+}
+
+func validatePaymentIntentStatusConsistency(status string, paymentMethodID string) error {
+	hasPaymentMethod := strings.TrimSpace(paymentMethodID) != ""
+	if status == PaymentIntentStatusRequiresPaymentMethod && hasPaymentMethod {
+		return stripeInvalid("payment_intent_unexpected_state", "status", "A PaymentIntent with a payment_method cannot be set to requires_payment_method.")
+	}
+	if status != PaymentIntentStatusRequiresPaymentMethod && !hasPaymentMethod {
+		return stripeInvalid("parameter_missing", "payment_method", fmt.Sprintf("A payment_method is required before a PaymentIntent can be %s.", status))
+	}
+	return nil
+}
+
+func validatePaymentIntentTransition(from string, to string) error {
+	from = strings.TrimSpace(from)
+	to = strings.TrimSpace(to)
+	if from == to {
+		return nil
+	}
+
+	allowed := map[string][]string{
+		PaymentIntentStatusRequiresPaymentMethod: {
+			PaymentIntentStatusRequiresConfirmation,
+			PaymentIntentStatusCanceled,
+		},
+		PaymentIntentStatusRequiresConfirmation: {
+			PaymentIntentStatusRequiresAction,
+			PaymentIntentStatusRequiresCapture,
+			PaymentIntentStatusSucceeded,
+			PaymentIntentStatusCanceled,
+		},
+		PaymentIntentStatusRequiresAction: {
+			PaymentIntentStatusRequiresConfirmation,
+			PaymentIntentStatusCanceled,
+		},
+		PaymentIntentStatusRequiresCapture: {
+			PaymentIntentStatusSucceeded,
+			PaymentIntentStatusCanceled,
+		},
+	}
+
+	for _, candidate := range allowed[from] {
+		if candidate == to {
+			return nil
+		}
+	}
+
+	return stripeInvalid(
+		"payment_intent_unexpected_state",
+		"status",
+		fmt.Sprintf("Cannot transition PaymentIntent from %s to %s.", from, to),
+	)
+}
+
+func paymentIntentTerminal(status string) bool {
+	return status == PaymentIntentStatusSucceeded || status == PaymentIntentStatusCanceled
+}
+
+func updateMutatesTerminalPaymentIntent(params UpdatePaymentIntentParams, current PaymentIntent) bool {
+	if params.Amount != nil && *params.Amount != current.Amount {
+		return true
+	}
+	if params.Currency != nil && normalizeCurrency(*params.Currency) != current.Currency {
+		return true
+	}
+	if params.CustomerID != nil && strings.TrimSpace(*params.CustomerID) != current.CustomerID {
+		return true
+	}
+	if params.PaymentMethodID != nil && strings.TrimSpace(*params.PaymentMethodID) != current.PaymentMethodID {
+		return true
+	}
+	if params.Status != nil && strings.TrimSpace(*params.Status) != current.Status {
+		return true
+	}
+	return false
+}
+
+func paymentIntentStatusWebhook(status string) string {
+	switch status {
+	case PaymentIntentStatusRequiresCapture:
+		return WebhookPaymentIntentAmountCapturable
+	case PaymentIntentStatusSucceeded:
+		return WebhookPaymentIntentSucceeded
+	case PaymentIntentStatusCanceled:
+		return WebhookPaymentIntentCanceled
+	default:
+		return ""
+	}
+}
+
+func validatePaymentMethod(paymentMethodType string, card Card) error {
+	if paymentMethodType != "card" {
+		return stripeInvalid("parameter_invalid_enum", "type", fmt.Sprintf("PaymentMethod type %q is not supported by the Stagehand Stripe simulator.", paymentMethodType))
+	}
+	if card.Last4 != "" && (len(card.Last4) != 4 || !asciiDigitsOnly(card.Last4)) {
+		return stripeInvalid("parameter_invalid_string", "card[last4]", "Card last4 must contain exactly four digits.")
+	}
+	if card.ExpMonth < 0 || card.ExpMonth > 12 {
+		return stripeInvalid("parameter_invalid_integer", "card[exp_month]", "Card exp_month must be between 1 and 12.")
+	}
+	if card.ExpMonth == 0 && card.ExpYear != 0 {
+		return stripeInvalid("parameter_missing", "card[exp_month]", "Card exp_month is required when exp_year is set.")
+	}
+	return nil
+}
+
+func asciiDigitsOnly(value string) bool {
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func operationTime(unixSeconds int64) time.Time {
+	if unixSeconds == 0 {
+		return time.Time{}
+	}
+	return time.Unix(unixSeconds, 0).UTC()
 }
 
 func cloneStringMap(source map[string]string) map[string]string {
@@ -713,9 +1323,58 @@ func unescapePathPart(value string) string {
 }
 
 func objectNotFound(kind string, id string) error {
-	return fmt.Errorf("%w: %s %q", ErrNotFound, kind, strings.TrimSpace(id))
+	id = strings.TrimSpace(id)
+	return &Error{
+		Type:       "invalid_request_error",
+		Code:       "resource_missing",
+		Param:      kind,
+		Message:    fmt.Sprintf("No such %s: %q.", kind, id),
+		StatusCode: 404,
+		cause:      ErrNotFound,
+	}
 }
 
 func invalidRequest(message string) error {
-	return fmt.Errorf("%w: %s", ErrInvalidRequest, message)
+	return stripeInvalid("invalid_request", "", message)
+}
+
+func stripeInvalid(code string, param string, message string) error {
+	return &Error{
+		Type:       "invalid_request_error",
+		Code:       code,
+		Param:      param,
+		Message:    message,
+		StatusCode: 400,
+		cause:      ErrInvalidRequest,
+	}
+}
+
+func injectedStripeError(override injection.ResponseOverride) error {
+	errorType := "api_error"
+	code := "stagehand_injected_error"
+	param := ""
+	message := "Injected Stagehand Stripe error."
+
+	if errorBody, ok := override.Body["error"].(map[string]any); ok {
+		errorType = stringFromAny(errorBody["type"], errorType)
+		code = stringFromAny(errorBody["code"], code)
+		param = stringFromAny(errorBody["param"], param)
+		message = stringFromAny(errorBody["message"], message)
+	}
+
+	return &Error{
+		Type:       errorType,
+		Code:       code,
+		Param:      param,
+		Message:    message,
+		StatusCode: override.Status,
+		cause:      ErrInjected,
+	}
+}
+
+func stringFromAny(value any, fallback string) string {
+	if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
+		return text
+	}
+	return fallback
 }

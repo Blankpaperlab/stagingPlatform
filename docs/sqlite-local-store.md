@@ -14,6 +14,7 @@ The Go source of truth is:
 - `internal/store/sqlite/migrations/0002_add_run_integrity_issues.sql`
 - `internal/store/sqlite/migrations/0003_session_lifecycle.sql`
 - `internal/store/sqlite/migrations/0004_event_queue.sql`
+- `internal/store/sqlite/migrations/0005_add_run_metadata.sql`
 
 ## Scope
 
@@ -129,6 +130,8 @@ Current migrations:
   Adds `sessions` and `session_snapshots` for runtime session create, fork, snapshot, restore, and destroy behavior.
 - `0004_event_queue.sql`
   Adds `session_clocks` and `scheduled_events` for runtime event scheduling and deterministic simulation-time delivery.
+- `0005_add_run_metadata.sql`
+  Adds `metadata_json` to `runs` for runtime provenance such as applied error-injection rules.
 
 ## Tables
 
@@ -152,6 +155,7 @@ Key fields:
 - `started_at`
 - `ended_at`
 - `integrity_issues_json`
+- `metadata_json`
 
 Status semantics:
 

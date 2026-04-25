@@ -18,14 +18,10 @@ error_injection:
   rules:
     - match:
         service: stripe
-        operation: create_charge
+        operation: payment_intents.create
         nth_call: 3
       inject:
-        status: 402
-        body:
-          error:
-            code: card_declined
-            message: Your card was declined.
+        library: stripe.card_declined
 
 ci:
   fail_on:

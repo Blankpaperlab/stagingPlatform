@@ -118,6 +118,7 @@ type Run struct {
 	GitSHA             string           `json:"git_sha,omitempty"`
 	StartedAt          time.Time        `json:"started_at"`
 	EndedAt            *time.Time       `json:"ended_at,omitempty"`
+	Metadata           map[string]any   `json:"metadata,omitempty"`
 	Interactions       []Interaction    `json:"interactions"`
 	IntegrityIssues    []IntegrityIssue `json:"integrity_issues,omitempty"`
 }
@@ -294,6 +295,12 @@ func (r Run) Validate() error {
 
 	if r.EndedAt != nil && !r.StartedAt.IsZero() && r.EndedAt.Before(r.StartedAt) {
 		verr.add("ended_at cannot be before started_at")
+	}
+
+	if r.Metadata != nil {
+		if _, err := json.Marshal(r.Metadata); err != nil {
+			verr.add("metadata must be JSON serializable: %v", err)
+		}
 	}
 
 	switch r.Status {

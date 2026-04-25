@@ -50,6 +50,9 @@ Optional lifecycle and provenance fields:
 - `base_snapshot_id`
 - `agent_version`
 - `git_sha`
+- `metadata`
+
+`metadata` is a JSON object for runtime provenance that is not part of the core matching schema. Current V1 usage includes error-injection provenance under `metadata.error_injection.applied`.
 
 Contained collections:
 
