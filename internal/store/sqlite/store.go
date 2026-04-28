@@ -49,6 +49,15 @@ type queryRowContext interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+func inspectRowsAffected(result sql.Result, operation string) (int64, error) {
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("%s rows affected: %w", operation, err)
+	}
+
+	return rowsAffected, nil
+}
+
 func (s *Store) CreateSession(ctx context.Context, session store.SessionRecord) error {
 	if err := session.Validate(); err != nil {
 		return fmt.Errorf("validate session record %q: %w", session.SessionName, err)
@@ -178,8 +187,11 @@ func (s *Store) UpdateSession(ctx context.Context, session store.SessionRecord) 
 		return fmt.Errorf("update session %q: %w", session.SessionName, err)
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err == nil && rowsAffected == 0 {
+	rowsAffected, err := inspectRowsAffected(result, fmt.Sprintf("update session %q", session.SessionName))
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
 		return fmt.Errorf("update session %q: %w", session.SessionName, store.ErrNotFound)
 	}
 
@@ -335,8 +347,11 @@ func (s *Store) AppendSessionSnapshot(
 			return fmt.Errorf("update session %q current snapshot: %w", updatedSession.SessionName, err)
 		}
 
-		rowsAffected, err := result.RowsAffected()
-		if err == nil && rowsAffected == 0 {
+		rowsAffected, err := inspectRowsAffected(result, fmt.Sprintf("update session %q current snapshot", updatedSession.SessionName))
+		if err != nil {
+			return err
+		}
+		if rowsAffected == 0 {
 			return fmt.Errorf("update session %q current snapshot: %w", updatedSession.SessionName, store.ErrNotFound)
 		}
 
@@ -427,7 +442,11 @@ func (s *Store) EnsureSessionClock(ctx context.Context, clock store.SessionClock
 		return store.SessionClock{}, false, fmt.Errorf("insert session clock if absent %q: %w", clock.SessionName, err)
 	}
 
-	rowsAffected, _ := result.RowsAffected()
+	rowsAffected, err := inspectRowsAffected(result, fmt.Sprintf("insert session clock if absent %q", clock.SessionName))
+	if err != nil {
+		_ = tx.Rollback()
+		return store.SessionClock{}, false, err
+	}
 	created := rowsAffected > 0
 
 	ensured, err := getSessionClockTx(ctx, tx, clock.SessionName)
@@ -720,8 +739,12 @@ func (s *Store) MarkScheduledEventsDelivered(
 			return fmt.Errorf("mark scheduled event %q delivered: %w", eventID, err)
 		}
 
-		rowsAffected, err := result.RowsAffected()
-		if err == nil && rowsAffected == 0 {
+		rowsAffected, err := inspectRowsAffected(result, fmt.Sprintf("mark scheduled event %q delivered", eventID))
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		if rowsAffected == 0 {
 			_ = tx.Rollback()
 			return fmt.Errorf("mark scheduled event %q delivered: %w", eventID, store.ErrNotFound)
 		}
@@ -874,8 +897,11 @@ func (s *Store) UpdateRun(ctx context.Context, run store.RunRecord) error {
 		return fmt.Errorf("update run %q: %w", run.RunID, err)
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err == nil && rowsAffected == 0 {
+	rowsAffected, err := inspectRowsAffected(result, fmt.Sprintf("update run %q", run.RunID))
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
 		return fmt.Errorf("update run %q: %w", run.RunID, store.ErrNotFound)
 	}
 
@@ -888,8 +914,11 @@ func (s *Store) DeleteRun(ctx context.Context, runID string) error {
 		return fmt.Errorf("delete run %q: %w", runID, err)
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err == nil && rowsAffected == 0 {
+	rowsAffected, err := inspectRowsAffected(result, fmt.Sprintf("delete run %q", runID))
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
 		return fmt.Errorf("delete run %q: %w", runID, store.ErrNotFound)
 	}
 
@@ -1272,8 +1301,11 @@ func (s *Store) CreateScrubSaltIfAbsent(
 		)
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err == nil && rowsAffected == 1 {
+	rowsAffected, err := inspectRowsAffected(result, fmt.Sprintf("insert scrub salt if absent %q", salt.SessionName))
+	if err != nil {
+		return store.ScrubSalt{}, false, err
+	}
+	if rowsAffected == 1 {
 		return salt, true, nil
 	}
 

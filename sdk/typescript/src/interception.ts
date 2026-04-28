@@ -54,15 +54,36 @@ export function installRequestInterception({
       let responseHeaders: CapturedHeaders = {};
       let recorded = false;
       const abortSignal = (options as { signal?: AbortSignal }).signal;
+      let removeAbortListener = (): void => {};
 
       if (mode === 'replay') {
         try {
+          if (abortSignal?.aborted) {
+            const capturedAbort = captureBuffer.recordFailure({
+              service,
+              operation,
+              protocol,
+              request,
+              elapsedMs: elapsedSince(startedAt),
+              failureType: 'timeout',
+              errorClass: abortReason(abortSignal).name || undefined,
+              message: abortReason(abortSignal).message || undefined,
+            });
+            throw new ReplayFailureError({
+              interaction: capturedAbort,
+              terminalEventType: 'aborted',
+              errorClass: abortReason(abortSignal).name || undefined,
+              detail: abortReason(abortSignal).message || undefined,
+            });
+          }
+
           const match = replayStore.popMatch(request);
           captureBuffer.recordReplayInteraction(match.interaction, 'exact');
           return dispatchReplayInteraction({
             request,
             interaction: match.interaction,
             handler,
+            abortSignal,
           });
         } catch (error) {
           throw wrapReplayError(error, request);
@@ -139,7 +160,7 @@ export function installRequestInterception({
       const finalizeAbort = (): void => {
         finalizeFailure(abortReason(abortSignal));
       };
-      const removeAbortListener = (): void => {
+      removeAbortListener = (): void => {
         abortSignal?.removeEventListener('abort', finalizeAbort);
       };
 
@@ -223,10 +244,12 @@ function dispatchReplayInteraction({
   request,
   interaction,
   handler,
+  abortSignal,
 }: {
   request: CapturedRequest;
   interaction: CapturedInteraction;
   handler: Dispatcher.DispatchHandler;
+  abortSignal?: AbortSignal;
 }): boolean {
   const terminalEvent = terminalReplayEvent(interaction.events);
   if (terminalEvent === undefined) {
@@ -276,8 +299,13 @@ function dispatchReplayInteraction({
   queueMicrotask(() => {
     const controller = createReplayController();
     const rawHeaders = flattenHeaders(headers);
+    const replayAbortReason = (): Error => abortReason(abortSignal);
 
     try {
+      if (abortSignal?.aborted) {
+        throw replayAbortReason();
+      }
+
       handler.onRequestStart?.(controller, { replay: true, request });
       handler.onConnect?.(() => controller.abort(new Error('replay request aborted')));
       handler.onResponseStarted?.();
@@ -286,12 +314,18 @@ function dispatchReplayInteraction({
 
       if (streaming) {
         for (const chunk of replayChunks) {
+          if (abortSignal?.aborted) {
+            throw replayAbortReason();
+          }
           handler.onData?.(chunk);
           handler.onResponseData?.(controller, chunk);
         }
       } else {
         const body = encodeReplayBody(responseData.body, headers['content-type']?.[0] ?? '');
         if (body.length > 0) {
+          if (abortSignal?.aborted) {
+            throw replayAbortReason();
+          }
           handler.onData?.(body);
           handler.onResponseData?.(controller, body);
         }

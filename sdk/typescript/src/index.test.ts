@@ -383,6 +383,49 @@ test(
 );
 
 test(
+  'replay mode rejects already-aborted requests without returning seeded responses',
+  withCleanRuntime(async () => {
+    let hitCount = 0;
+    const { close, url } = await createTestServer((_request, response) => {
+      hitCount += 1;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ source: 'live' }));
+    });
+
+    try {
+      const replayRuntime = init({ session: 'ts-replay-aborted', mode: 'replay' });
+      replayRuntime.seedReplayInteractions([
+        makeSeededInteraction({
+          runId: 'run_seed_abort',
+          url: `${url}/abort`,
+          method: 'GET',
+          terminal: {
+            type: 'response_received',
+            data: {
+              status_code: 200,
+              headers: { 'content-type': ['application/json'] },
+              body: { source: 'seeded' },
+            },
+          },
+        }),
+      ]);
+
+      const hitsBeforeReplay = hitCount;
+      await assertFetchRejectsWithCause(
+        fetch(`${url}/abort`, { signal: AbortSignal.abort() }),
+        ReplayFailureError,
+        (error) => {
+          assert.equal((error as ReplayFailureError).terminalEventType, 'aborted');
+        }
+      );
+      assert.equal(hitCount, hitsBeforeReplay);
+    } finally {
+      await close();
+    }
+  })
+);
+
+test(
   'replay mode raises typed failure for seeded timeout interactions without hitting the network',
   withCleanRuntime(async () => {
     let hitCount = 0;

@@ -2,10 +2,12 @@ package sqlite
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +15,28 @@ import (
 	"stagehand/internal/recorder"
 	"stagehand/internal/store"
 )
+
+type rowsAffectedErrorResult struct{}
+
+func (rowsAffectedErrorResult) LastInsertId() (int64, error) {
+	return 0, nil
+}
+
+func (rowsAffectedErrorResult) RowsAffected() (int64, error) {
+	return 0, driver.ErrBadConn
+}
+
+func TestInspectRowsAffectedReturnsDriverErrors(t *testing.T) {
+	t.Parallel()
+
+	_, err := inspectRowsAffected(rowsAffectedErrorResult{}, "test operation")
+	if err == nil {
+		t.Fatal("inspectRowsAffected() expected error")
+	}
+	if !strings.Contains(err.Error(), "test operation rows affected") {
+		t.Fatalf("inspectRowsAffected() error = %q, want operation context", err)
+	}
+}
 
 func TestStoreCreateGetAndUpdateRun(t *testing.T) {
 	t.Parallel()
