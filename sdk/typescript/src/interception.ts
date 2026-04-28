@@ -53,6 +53,7 @@ export function installRequestInterception({
       let responseStatusText = '';
       let responseHeaders: CapturedHeaders = {};
       let recorded = false;
+      const abortSignal = (options as { signal?: AbortSignal }).signal;
 
       if (mode === 'replay') {
         try {
@@ -73,6 +74,7 @@ export function installRequestInterception({
           return;
         }
         recorded = true;
+        removeAbortListener();
         const elapsedMs = elapsedSince(startedAt);
         const contentType = responseHeaders['content-type']?.[0] ?? '';
 
@@ -122,6 +124,7 @@ export function installRequestInterception({
           return;
         }
         recorded = true;
+        removeAbortListener();
         captureBuffer.recordFailure({
           service,
           operation,
@@ -133,6 +136,18 @@ export function installRequestInterception({
           message: error.message || undefined,
         });
       };
+      const finalizeAbort = (): void => {
+        finalizeFailure(abortReason(abortSignal));
+      };
+      const removeAbortListener = (): void => {
+        abortSignal?.removeEventListener('abort', finalizeAbort);
+      };
+
+      if (abortSignal?.aborted) {
+        finalizeAbort();
+      } else {
+        abortSignal?.addEventListener('abort', finalizeAbort, { once: true });
+      }
 
       const wrappedHandler: Dispatcher.DispatchHandler = {
         onRequestStart(controller, context) {
@@ -683,6 +698,17 @@ function timeoutLike(error: Error): boolean {
     message.includes('timeout') ||
     message.includes('aborted')
   );
+}
+
+function abortReason(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+  if (reason instanceof Error) {
+    return reason;
+  }
+  if (reason !== undefined) {
+    return new DOMException(String(reason), 'AbortError');
+  }
+  return new DOMException('This operation was aborted', 'AbortError');
 }
 
 function elapsedSince(startedAt: number): number {
