@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,6 +141,75 @@ func TestManagerForkCopiesCurrentSnapshotAndIsolatesChild(t *testing.T) {
 	}
 }
 
+func TestManagerSnapshotConcurrentWritesDoNotOrphanLineage(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openSessionTestStore(t)
+	defer sqliteStore.Close()
+	manager := newTestManager(t, sqliteStore)
+
+	ctx := context.Background()
+	created, err := manager.Create(ctx, "lineage-race")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	const concurrent = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, concurrent)
+	results := make(chan store.SessionSnapshot, concurrent)
+	for idx := 0; idx < concurrent; idx++ {
+		idx := idx
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			snapshot, err := manager.Snapshot(ctx, created.SessionName, map[string]any{
+				"counter": idx,
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- snapshot
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(results)
+
+	for err := range errs {
+		t.Fatalf("Snapshot() concurrent error = %v", err)
+	}
+
+	created, err = sqliteStore.GetSession(ctx, created.SessionName)
+	if err != nil {
+		t.Fatalf("GetSession() error = %v", err)
+	}
+	if created.CurrentSnapshotID == "" {
+		t.Fatal("CurrentSnapshotID = empty, want last snapshot id")
+	}
+
+	depth := 0
+	cursor := created.CurrentSnapshotID
+	visited := map[string]bool{}
+	for cursor != "" {
+		if visited[cursor] {
+			t.Fatalf("snapshot cycle at %q", cursor)
+		}
+		visited[cursor] = true
+		snap, err := sqliteStore.GetSessionSnapshot(ctx, cursor)
+		if err != nil {
+			t.Fatalf("GetSessionSnapshot(%q) error = %v", cursor, err)
+		}
+		depth++
+		cursor = snap.ParentSnapshotID
+	}
+
+	if depth != concurrent {
+		t.Fatalf("reachable lineage depth = %d, want %d (concurrent Snapshot calls produced sibling forks rather than a linear chain)", depth, concurrent)
+	}
+}
+
 func TestManagerRejectsCrossSessionRestore(t *testing.T) {
 	t.Parallel()
 
@@ -180,15 +250,20 @@ func openSessionTestStore(t *testing.T) *sqlitestore.Store {
 func newTestManager(t *testing.T, sessionStore store.SessionStore) *Manager {
 	t.Helper()
 
+	var mu sync.Mutex
 	now := time.Date(2026, time.April, 24, 12, 0, 0, 0, time.UTC)
 	nextID := 0
 	manager, err := NewManager(
 		sessionStore,
 		WithClock(func() time.Time {
+			mu.Lock()
+			defer mu.Unlock()
 			now = now.Add(time.Second)
 			return now
 		}),
 		WithIDGenerator(func(prefix string) (string, error) {
+			mu.Lock()
+			defer mu.Unlock()
 			nextID++
 			return prefix + "_test_" + time.Unix(int64(nextID), 0).UTC().Format("20060102150405"), nil
 		}),

@@ -17,7 +17,7 @@ type Result struct {
 	ReplayEligible    bool     `json:"replay_eligible"`
 }
 
-func Exact(run recorder.Run) (Result, error) {
+func SummarizeExactSource(run recorder.Run) (Result, error) {
 	if !run.ReplayEligible() {
 		return Result{}, fmt.Errorf("run %q is not replay-eligible; status is %q", run.RunID, run.Status)
 	}

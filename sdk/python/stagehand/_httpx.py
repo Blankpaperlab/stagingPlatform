@@ -36,7 +36,7 @@ def install_httpx_interception(
             started = perf_counter()
             streamed = bool(kwargs.get("stream", False))
 
-            if mode == "replay" and is_openai_request(request):
+            if mode == "replay":
                 match = replay_store.pop_match(request)
                 return _build_replay_response(
                     request=request,
@@ -93,7 +93,7 @@ def install_httpx_interception(
             started = perf_counter()
             streamed = bool(kwargs.get("stream", False))
 
-            if mode == "replay" and is_openai_request(request):
+            if mode == "replay":
                 match = replay_store.pop_match(request)
                 return _build_replay_response(
                     request=request,

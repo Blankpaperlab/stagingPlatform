@@ -213,7 +213,7 @@ func runReplay(args []string, stdout io.Writer, stderr io.Writer) error {
 		return err
 	}
 
-	sourceSummary, err := runtimereplay.Exact(sourceRun)
+	sourceSummary, err := runtimereplay.SummarizeExactSource(sourceRun)
 	if err != nil {
 		return fmt.Errorf("exact replay failed for run %q: %w", sourceRun.RunID, err)
 	}

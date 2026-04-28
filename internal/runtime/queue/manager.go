@@ -111,14 +111,9 @@ func (m *Manager) AdvanceTime(ctx context.Context, sessionName string, by time.D
 	}
 
 	sessionName = strings.TrimSpace(sessionName)
-	clock, err := m.ensureClock(ctx, sessionName)
+	now := m.now()
+	clock, err := m.store.AdvanceSessionClock(ctx, sessionName, by, now, now)
 	if err != nil {
-		return AdvanceResult{}, err
-	}
-
-	clock.CurrentTime = clock.CurrentTime.Add(by)
-	clock.UpdatedAt = m.now()
-	if err := m.store.PutSessionClock(ctx, clock); err != nil {
 		return AdvanceResult{}, err
 	}
 
@@ -171,7 +166,8 @@ func (m *Manager) ensureClock(ctx context.Context, sessionName string) (store.Se
 		CurrentTime: now,
 		UpdatedAt:   now,
 	}
-	if err := m.store.PutSessionClock(ctx, clock); err != nil {
+	clock, _, err = m.store.EnsureSessionClock(ctx, clock)
+	if err != nil {
 		return store.SessionClock{}, err
 	}
 

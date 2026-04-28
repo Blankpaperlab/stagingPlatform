@@ -54,6 +54,7 @@ type SessionStore interface {
 	GetSession(ctx context.Context, sessionName string) (SessionRecord, error)
 	UpdateSession(ctx context.Context, session SessionRecord) error
 	PutSessionSnapshot(ctx context.Context, snapshot SessionSnapshot) error
+	AppendSessionSnapshot(ctx context.Context, snapshot SessionSnapshot, sessionUpdatedAt time.Time) (SessionSnapshot, error)
 	GetSessionSnapshot(ctx context.Context, snapshotID string) (SessionSnapshot, error)
 	GetLatestSessionSnapshot(ctx context.Context, sessionName string) (SessionSnapshot, error)
 	DeleteSession(ctx context.Context, sessionName string) error
@@ -62,6 +63,8 @@ type SessionStore interface {
 
 type EventQueueStore interface {
 	PutSessionClock(ctx context.Context, clock SessionClock) error
+	EnsureSessionClock(ctx context.Context, clock SessionClock) (SessionClock, bool, error)
+	AdvanceSessionClock(ctx context.Context, sessionName string, by time.Duration, initialTime time.Time, updatedAt time.Time) (SessionClock, error)
 	GetSessionClock(ctx context.Context, sessionName string) (SessionClock, error)
 	PutScheduledEvent(ctx context.Context, event ScheduledEvent) error
 	GetScheduledEvent(ctx context.Context, eventID string) (ScheduledEvent, error)

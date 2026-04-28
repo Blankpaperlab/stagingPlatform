@@ -127,6 +127,24 @@ func TestEngineSupportsProbabilityAndExplicitResponseOverride(t *testing.T) {
 	}
 }
 
+func TestNamedLibraryEntriesDeepCloneNestedBodies(t *testing.T) {
+	t.Parallel()
+
+	entries := NamedLibraryEntries()
+	cardDeclined := entries["stripe.card_declined"]
+	errorBody := cardDeclined.Body["error"].(map[string]any)
+	errorBody["code"] = "mutated"
+
+	next, ok := NamedLibrary("stripe.card_declined")
+	if !ok {
+		t.Fatal("NamedLibrary(stripe.card_declined) ok = false")
+	}
+	nextErrorBody := next.Body["error"].(map[string]any)
+	if nextErrorBody["code"] != "card_declined" {
+		t.Fatalf("NamedLibrary() nested code = %#v, want card_declined", nextErrorBody["code"])
+	}
+}
+
 func TestEngineFromConfigUsesNamedLibraryEntries(t *testing.T) {
 	t.Parallel()
 

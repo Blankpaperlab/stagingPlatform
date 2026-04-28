@@ -519,36 +519,42 @@ Use these statuses on your board:
 
 - Outcome: assertion files validate before execution.
 - To do:
-  - [ ] define assertion YAML schema
-  - [ ] implement parser
-  - [ ] validate field combinations per assertion type
-  - [ ] return clear validation errors
+  - [x] define assertion YAML schema
+  - [x] implement parser
+  - [x] validate field combinations per assertion type
+  - [x] return clear validation errors
+- Current implementation note:
+  assertion files now parse through `internal/analysis/assertions`, reject unknown YAML fields, validate the six planned assertion types (`count`, `ordering`, `payload-field`, `forbidden-operation`, `fallback-prohibition`, and `cross-service`), and return indexed field-path validation errors before any execution step.
 
 ### Story J2: Implement core assertion types
 
 - Outcome: the common behavioral checks are executable.
 - To do:
-  - [ ] implement `count`
-  - [ ] implement `ordering`
-  - [ ] implement `payload-field`
-  - [ ] implement `forbidden-operation`
-  - [ ] implement `fallback-prohibition`
+  - [x] implement `count`
+  - [x] implement `ordering`
+  - [x] implement `payload-field`
+  - [x] implement `forbidden-operation`
+  - [x] implement `fallback-prohibition`
+- Current implementation note:
+  the assertion evaluator now executes the five core assertion types against `recorder.Run` interactions and returns per-assertion `passed`, `failed`, or `unsupported` results with concrete evidence, including matched interaction IDs, violating interaction IDs, observed counts, actual payload values, and disallowed fallback tiers. `cross-service` remains parsed but explicitly `unsupported` until J3.
 
 ### Story J3: Implement cross-service assertions
 
 - Outcome: assertions can span entities across service boundaries.
 - To do:
-  - [ ] define minimal rule-evaluation model
-  - [ ] add entity lookup helpers
-  - [ ] support 1-hop and 2-hop matching
-  - [ ] produce evidence-rich failure output
+  - [x] define minimal rule-evaluation model
+  - [x] add entity lookup helpers
+  - [x] support 1-hop and 2-hop matching
+  - [x] produce evidence-rich failure output
+- Current implementation note:
+  `cross-service` assertions now execute through shallow entity extraction on the declared left and right references, support `equals` links across direct scalar paths and nested scalar leaves, and return evidence for extracted left entities, right entities, and linked pairs.
 
 ### Epic J completion checklist
 
-- [ ] all six assertion types are implemented
-- [ ] schema validation catches invalid files
-- [ ] failure output names concrete interactions
-- [ ] cross-service rules work for at least one example flow
+- [x] all six assertion types are implemented
+- [x] schema validation catches invalid files
+- [x] failure output names concrete interactions for core assertion types
+- [x] cross-service rules work for at least one example flow
 
 ## Epic K: Diff Engine and Baseline Logic
 

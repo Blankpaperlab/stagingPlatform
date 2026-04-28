@@ -188,7 +188,7 @@ Purpose:
 
 | Function or Method | Signature                                      | Purpose                                                                   |
 | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------- |
-| `Exact`            | `func Exact(run recorder.Run) (Result, error)` | Validates replay eligibility and builds a source summary for exact replay |
+| `SummarizeExactSource` | `func SummarizeExactSource(run recorder.Run) (Result, error)` | Validates replay eligibility and builds a source summary for exact replay |
 
 ### Tests
 

@@ -349,6 +349,51 @@ def test_openai_replay_returns_exact_non_stream_response() -> None:
     assert replayed_interaction.streaming is False
 
 
+def test_replay_returns_exact_non_openai_response_without_network() -> None:
+    record_runtime = stagehand.init(session="stripe-record", mode="record")
+
+    def record_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            json={"id": "cus_123", "object": "customer"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(record_handler)) as client:
+        recorded_response = client.get("https://api.stripe.com/v1/customers/cus_123")
+
+    assert recorded_response.status_code == 200
+    recorded_interactions = record_runtime.captured_interactions()
+    assert recorded_interactions[0].service == "stripe"
+    _reset_for_tests()
+
+    replay_runtime = stagehand.init(session="stripe-replay", mode="replay")
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("non-OpenAI replay should not call the underlying transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        replayed_response = client.get("https://api.stripe.com/v1/customers/cus_123")
+
+    assert replayed_response.status_code == 200
+    assert replayed_response.json() == {"id": "cus_123", "object": "customer"}
+    replayed_interaction = replay_runtime.captured_interactions()[0]
+    assert replayed_interaction.service == "stripe"
+    assert replayed_interaction.fallback_tier == "exact"
+
+
+def test_replay_miss_for_non_openai_request_fails_before_network() -> None:
+    stagehand.init(session="stripe-miss", mode="replay")
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("non-OpenAI replay miss should fail before transport use")
+
+    with pytest.raises(stagehand.ReplayMissError, match="api.stripe.com"):
+        with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+            client.get("https://api.stripe.com/v1/customers/cus_missing")
+
+
 def test_openai_replay_strips_transport_encoding_headers() -> None:
     stagehand.init(session="demo-encoded-replay", mode="replay")
     assert (

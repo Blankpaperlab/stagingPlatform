@@ -136,11 +136,6 @@ func (m *Manager) Fork(ctx context.Context, parentSessionName string, childSessi
 }
 
 func (m *Manager) Snapshot(ctx context.Context, sessionName string, state map[string]any) (store.SessionSnapshot, error) {
-	session, err := m.store.GetSession(ctx, strings.TrimSpace(sessionName))
-	if err != nil {
-		return store.SessionSnapshot{}, err
-	}
-
 	snapshotID, err := m.newID("snap")
 	if err != nil {
 		return store.SessionSnapshot{}, err
@@ -153,23 +148,12 @@ func (m *Manager) Snapshot(ctx context.Context, sessionName string, state map[st
 	}
 
 	snapshot := store.SessionSnapshot{
-		SnapshotID:       snapshotID,
-		SessionName:      session.SessionName,
-		ParentSnapshotID: session.CurrentSnapshotID,
-		State:            clonedState,
-		CreatedAt:        now,
+		SnapshotID:  snapshotID,
+		SessionName: strings.TrimSpace(sessionName),
+		State:       clonedState,
+		CreatedAt:   now,
 	}
-	if err := m.store.PutSessionSnapshot(ctx, snapshot); err != nil {
-		return store.SessionSnapshot{}, err
-	}
-
-	session.CurrentSnapshotID = snapshot.SnapshotID
-	session.UpdatedAt = now
-	if err := m.store.UpdateSession(ctx, session); err != nil {
-		return store.SessionSnapshot{}, err
-	}
-
-	return snapshot, nil
+	return m.store.AppendSessionSnapshot(ctx, snapshot, now)
 }
 
 func (m *Manager) Restore(ctx context.Context, sessionName string, snapshotID string) (store.SessionRecord, error) {

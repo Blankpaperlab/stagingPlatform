@@ -3,8 +3,10 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -646,6 +648,100 @@ func TestStoreSessionLifecycleStateAndSnapshots(t *testing.T) {
 	}
 }
 
+func TestStoreAppendSessionSnapshotChainsConcurrentWriters(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, time.April, 24, 11, 0, 0, 0, time.UTC)
+	session := store.SessionRecord{
+		SessionName: "runtime-session-concurrent",
+		Status:      store.SessionStatusActive,
+		CreatedAt:   base,
+		UpdatedAt:   base,
+	}
+	if err := sqliteStore.CreateSession(ctx, session); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	const concurrent = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, concurrent)
+	ids := make(chan string, concurrent)
+	for idx := 0; idx < concurrent; idx++ {
+		idx := idx
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			snapshotID := fmt.Sprintf("snap_runtime_%03d", idx)
+			createdAt := base.Add(time.Duration(idx+1) * time.Second)
+			snapshot, err := sqliteStore.AppendSessionSnapshot(ctx, store.SessionSnapshot{
+				SnapshotID:  snapshotID,
+				SessionName: session.SessionName,
+				State: map[string]any{
+					"counter": idx,
+				},
+				CreatedAt: createdAt,
+			}, createdAt)
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- snapshot.SnapshotID
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(ids)
+
+	for err := range errs {
+		t.Fatalf("AppendSessionSnapshot() concurrent error = %v", err)
+	}
+
+	expected := map[string]bool{}
+	for snapshotID := range ids {
+		expected[snapshotID] = true
+	}
+	if len(expected) != concurrent {
+		t.Fatalf("unique snapshot ids = %d, want %d", len(expected), concurrent)
+	}
+
+	gotSession, err := sqliteStore.GetSession(ctx, session.SessionName)
+	if err != nil {
+		t.Fatalf("GetSession() error = %v", err)
+	}
+	if gotSession.CurrentSnapshotID == "" {
+		t.Fatal("CurrentSnapshotID = empty, want latest appended snapshot")
+	}
+
+	visited := map[string]bool{}
+	cursor := gotSession.CurrentSnapshotID
+	for cursor != "" {
+		if visited[cursor] {
+			t.Fatalf("snapshot cycle at %q", cursor)
+		}
+		visited[cursor] = true
+
+		snapshot, err := sqliteStore.GetSessionSnapshot(ctx, cursor)
+		if err != nil {
+			t.Fatalf("GetSessionSnapshot(%q) error = %v", cursor, err)
+		}
+		cursor = snapshot.ParentSnapshotID
+	}
+
+	if len(visited) != concurrent {
+		t.Fatalf("reachable lineage size = %d, want %d", len(visited), concurrent)
+	}
+	for snapshotID := range expected {
+		if !visited[snapshotID] {
+			t.Fatalf("snapshot %q was orphaned from the current lineage", snapshotID)
+		}
+	}
+}
+
 func TestStorePersistsSessionClockAndScheduledEvents(t *testing.T) {
 	t.Parallel()
 
@@ -729,6 +825,65 @@ func TestStorePersistsSessionClockAndScheduledEvents(t *testing.T) {
 	}
 	if len(duePush) != 0 {
 		t.Fatalf("due push after delivery = %#v, want empty", duePush)
+	}
+}
+
+func TestStoreEnsuresAndAdvancesSessionClockAtomically(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openTestStore(t)
+	defer sqliteStore.Close()
+
+	ctx := context.Background()
+	base := time.Date(2026, time.April, 24, 13, 0, 0, 0, time.UTC)
+	session := store.SessionRecord{
+		SessionName: "queue-clock-atomic",
+		Status:      store.SessionStatusActive,
+		CreatedAt:   base,
+		UpdatedAt:   base,
+	}
+	if err := sqliteStore.CreateSession(ctx, session); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	clock := store.SessionClock{
+		SessionName: session.SessionName,
+		CurrentTime: base,
+		UpdatedAt:   base,
+	}
+	ensured, created, err := sqliteStore.EnsureSessionClock(ctx, clock)
+	if err != nil {
+		t.Fatalf("EnsureSessionClock(first) error = %v", err)
+	}
+	if !created {
+		t.Fatal("EnsureSessionClock(first) created = false, want true")
+	}
+	if !ensured.CurrentTime.Equal(base) {
+		t.Fatalf("ensured.CurrentTime = %s, want %s", ensured.CurrentTime, base)
+	}
+
+	later := base.Add(time.Hour)
+	ensuredAgain, createdAgain, err := sqliteStore.EnsureSessionClock(ctx, store.SessionClock{
+		SessionName: session.SessionName,
+		CurrentTime: later,
+		UpdatedAt:   later,
+	})
+	if err != nil {
+		t.Fatalf("EnsureSessionClock(second) error = %v", err)
+	}
+	if createdAgain {
+		t.Fatal("EnsureSessionClock(second) created = true, want false")
+	}
+	if !ensuredAgain.CurrentTime.Equal(base) {
+		t.Fatalf("ensuredAgain.CurrentTime = %s, want original %s", ensuredAgain.CurrentTime, base)
+	}
+
+	advanced, err := sqliteStore.AdvanceSessionClock(ctx, session.SessionName, 5*time.Second, later, later)
+	if err != nil {
+		t.Fatalf("AdvanceSessionClock() error = %v", err)
+	}
+	if !advanced.CurrentTime.Equal(base.Add(5 * time.Second)) {
+		t.Fatalf("advanced.CurrentTime = %s, want %s", advanced.CurrentTime, base.Add(5*time.Second))
 	}
 }
 

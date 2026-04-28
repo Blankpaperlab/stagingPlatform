@@ -41,6 +41,9 @@ Current status:
 - Story I2 Stripe business rules and side effects implemented for state consistency, realistic transition errors, webhook scheduling, and customer identity extraction
 - Story I3 runtime error injection implemented for service/operation/call/probability matching, response overrides, named Stripe errors, and persisted provenance metadata
 - Stripe failure-injection demo lives in `examples/failure-injection-demo` and is covered by CI
+- Story J1 assertion schema and parser implemented with strict YAML validation and per-type field-combination checks
+- Story J2 core assertion evaluator implemented for count, ordering, payload-field, forbidden-operation, and fallback-prohibition checks
+- Story J3 cross-service assertion evaluator implemented for shallow entity equality checks with linked-pair evidence
 - Dashboard remains deferred in Plan A and is represented by a placeholder
 
 Primary planning docs live under `docs/`.
@@ -58,6 +61,7 @@ Current schema references:
 - runtime fallback tiers: `docs/runtime-fallback-tiers.md`
 - runtime resilience behavior: `docs/runtime-resilience.md`
 - runtime error injection: `docs/runtime-error-injection.md`
+- assertion schema: `docs/assertion-schema.md`
 - Stripe simulator subset: `docs/stripe-simulator-subset.md`
 - local SQLite store and migrations: `docs/sqlite-local-store.md`
 

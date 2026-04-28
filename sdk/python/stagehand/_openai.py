@@ -14,7 +14,7 @@ from ._providers import is_openai_host
 
 
 class ReplayMissError(RuntimeError):
-    """Raised when replay mode cannot find an exact OpenAI interaction match."""
+    """Raised when replay mode cannot find an exact interaction match."""
 
 
 class ReplayFailureError(RuntimeError):
@@ -34,7 +34,7 @@ class ReplayFailureError(RuntimeError):
         self.detail = detail
 
         parts = [
-            "matched OpenAI replay interaction ended with",
+            "matched replay interaction ended with",
             terminal_event_type,
         ]
         if error_class:
@@ -59,8 +59,6 @@ class OpenAIReplayStore:
         count = 0
         with self._lock:
             for interaction in interactions:
-                if interaction.service != "openai":
-                    continue
                 self._entries[_request_key_from_interaction(interaction)].append(interaction)
                 count += 1
         return count
@@ -71,7 +69,7 @@ class OpenAIReplayStore:
             matches = self._entries.get(key)
             if not matches:
                 raise ReplayMissError(
-                    f"no exact replay match for OpenAI request {request.method} {request.url}"
+                    f"no exact replay match for request {request.method} {request.url}"
                 )
 
             return ExactReplayMatch(interaction=matches.popleft())

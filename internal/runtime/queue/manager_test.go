@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -170,6 +171,57 @@ func TestManagerRejectsNegativeAdvanceTime(t *testing.T) {
 	}
 	if !gotClock.CurrentTime.Equal(clock.CurrentTime) {
 		t.Fatalf("CurrentTime after rejected advance = %s, want %s", gotClock.CurrentTime, clock.CurrentTime)
+	}
+}
+
+func TestManagerAdvanceTimeIsAtomicAcrossConcurrentManagers(t *testing.T) {
+	t.Parallel()
+
+	sqliteStore := openQueueTestStore(t)
+	defer sqliteStore.Close()
+
+	ctx := context.Background()
+	session := createQueueSession(t, sqliteStore, "concurrent-advance-session")
+	initial := fixedQueueTime()
+	managerA := newQueueTestManager(t, sqliteStore, initial)
+	managerB := newQueueTestManager(t, sqliteStore, initial)
+
+	clock, err := managerA.Now(ctx, session.SessionName)
+	if err != nil {
+		t.Fatalf("Now() error = %v", err)
+	}
+
+	const advanceCount = 50
+	var wg sync.WaitGroup
+	errs := make(chan error, advanceCount)
+	for idx := 0; idx < advanceCount; idx++ {
+		manager := managerA
+		if idx%2 == 1 {
+			manager = managerB
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := manager.AdvanceTime(ctx, session.SessionName, time.Second)
+			if err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("AdvanceTime() concurrent error = %v", err)
+	}
+
+	gotClock, err := sqliteStore.GetSessionClock(ctx, session.SessionName)
+	if err != nil {
+		t.Fatalf("GetSessionClock() error = %v", err)
+	}
+	want := clock.CurrentTime.Add(advanceCount * time.Second)
+	if !gotClock.CurrentTime.Equal(want) {
+		t.Fatalf("CurrentTime after concurrent advances = %s, want %s", gotClock.CurrentTime, want)
 	}
 }
 

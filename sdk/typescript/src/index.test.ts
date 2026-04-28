@@ -921,6 +921,91 @@ test(
   })
 );
 
+test(
+  'reset and re-init produces an isolated capture buffer',
+  withCleanRuntime(async () => {
+    const firstRuntime = init({ session: 'first', mode: 'record' });
+
+    const handler = (_req: http.IncomingMessage, res: http.ServerResponse) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    };
+    const server = http.createServer(handler);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      throw new Error('failed to bind test server');
+    }
+    const baseURL = `http://127.0.0.1:${address.port}`;
+
+    try {
+      await undiciFetch(`${baseURL}/first`);
+      assert.equal(firstRuntime.snapshotCapturedInteractions().length, 1);
+
+      _resetForTests();
+
+      const secondRuntime = init({ session: 'second', mode: 'record' });
+      assert.equal(secondRuntime.snapshotCapturedInteractions().length, 0);
+
+      await undiciFetch(`${baseURL}/second`);
+      const interactions = secondRuntime.snapshotCapturedInteractions();
+      assert.equal(interactions.length, 1);
+      assert.equal(interactions[0].request.url.endsWith('/second'), true);
+      assert.equal(interactions[0].run_id, secondRuntime.runId);
+      assert.notEqual(interactions[0].run_id, firstRuntime.runId);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  })
+);
+
+test(
+  'concurrent record-mode fetches assign unique strictly-increasing sequences',
+  withCleanRuntime(async () => {
+    const runtime = init({ session: 'concurrent-record', mode: 'record' });
+
+    const handler = (_req: http.IncomingMessage, res: http.ServerResponse) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    };
+    const server = http.createServer(handler);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      server.close();
+      throw new Error('failed to bind test server');
+    }
+    const baseURL = `http://127.0.0.1:${address.port}`;
+
+    try {
+      const total = 16;
+      await Promise.all(
+        Array.from({ length: total }, (_, idx) => undiciFetch(`${baseURL}/req-${idx}`))
+      );
+
+      const interactions = runtime.snapshotCapturedInteractions();
+      assert.equal(interactions.length, total);
+
+      const sequences = interactions.map((interaction) => interaction.sequence);
+      const sorted = [...sequences].sort((a, b) => a - b);
+      assert.deepEqual(sequences, sorted, 'snapshot must already be sorted by sequence');
+
+      const seen = new Set<number>();
+      for (const sequence of sequences) {
+        if (seen.has(sequence)) {
+          throw new Error(`duplicate sequence ${sequence}`);
+        }
+        seen.add(sequence);
+      }
+      assert.equal(seen.size, total);
+      assert.deepEqual(sorted, Array.from({ length: total }, (_, idx) => idx + 1));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  })
+);
+
 function escapeForRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -740,6 +741,96 @@ func TestSimulatorExtractsCustomerIdentityFromCustomerAndPaymentMethods(t *testi
 	}
 	if identity.Metadata["external_id"] != "acct_123" {
 		t.Fatalf("Metadata[external_id] = %q, want acct_123", identity.Metadata["external_id"])
+	}
+}
+
+func TestSimulatorConcurrentCustomerCreatesAreIsolatedAndCounted(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	sqliteStore := openStripeTestStore(t)
+	defer sqliteStore.Close()
+
+	sim := newStripeTestSimulator(t, sqliteStore)
+	if _, err := sim.CreateSession(ctx, "concurrent-creates"); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	const concurrent = 12
+	var wg sync.WaitGroup
+	errs := make(chan error, concurrent)
+	ids := make(chan string, concurrent)
+	for idx := 0; idx < concurrent; idx++ {
+		idx := idx
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			customer, err := sim.CreateCustomer(ctx, "concurrent-creates", CreateCustomerParams{
+				Email: fmt.Sprintf("user-%02d@example.com", idx),
+				Name:  fmt.Sprintf("User %02d", idx),
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- customer.ID
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(ids)
+
+	for err := range errs {
+		t.Fatalf("CreateCustomer() concurrent error = %v", err)
+	}
+
+	seen := map[string]bool{}
+	for id := range ids {
+		if seen[id] {
+			t.Fatalf("duplicate customer id %q produced under concurrent creates", id)
+		}
+		seen[id] = true
+	}
+	if len(seen) != concurrent {
+		t.Fatalf("unique customer ids = %d, want %d", len(seen), concurrent)
+	}
+
+	for id := range seen {
+		got, err := sim.GetCustomer(ctx, "concurrent-creates", id)
+		if err != nil {
+			t.Fatalf("GetCustomer(%q) error = %v", id, err)
+		}
+		if got.ID != id {
+			t.Fatalf("GetCustomer(%q).ID = %q, want %q", id, got.ID, id)
+		}
+	}
+}
+
+func TestSimulatorRejectsAttachToMissingCustomer(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	sqliteStore := openStripeTestStore(t)
+	defer sqliteStore.Close()
+
+	sim := newStripeTestSimulator(t, sqliteStore)
+	if _, err := sim.CreateSession(ctx, "missing-customer"); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	paymentMethod, err := sim.CreatePaymentMethod(ctx, "missing-customer", CreatePaymentMethodParams{
+		BillingDetails: BillingDetails{Name: "Missing"},
+		Card:           Card{Brand: "visa", Last4: "0000"},
+	})
+	if err != nil {
+		t.Fatalf("CreatePaymentMethod() error = %v", err)
+	}
+
+	_, err = sim.AttachPaymentMethod(ctx, "missing-customer", paymentMethod.ID, AttachPaymentMethodParams{
+		CustomerID: "cus_does_not_exist",
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("AttachPaymentMethod(missing customer) error = %v, want ErrNotFound", err)
 	}
 }
 

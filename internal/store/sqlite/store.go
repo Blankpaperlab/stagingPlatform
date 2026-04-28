@@ -45,6 +45,10 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+type queryRowContext interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 func (s *Store) CreateSession(ctx context.Context, session store.SessionRecord) error {
 	if err := session.Validate(); err != nil {
 		return fmt.Errorf("validate session record %q: %w", session.SessionName, err)
@@ -70,6 +74,10 @@ func (s *Store) CreateSession(ctx context.Context, session store.SessionRecord) 
 }
 
 func (s *Store) GetSession(ctx context.Context, sessionName string) (store.SessionRecord, error) {
+	return getSessionQuery(ctx, s.db, sessionName)
+}
+
+func getSessionQuery(ctx context.Context, querier queryRowContext, sessionName string) (store.SessionRecord, error) {
 	var (
 		session         store.SessionRecord
 		parentSession   sql.NullString
@@ -79,7 +87,7 @@ func (s *Store) GetSession(ctx context.Context, sessionName string) (store.Sessi
 		sessionStatus   string
 	)
 
-	err := s.db.QueryRowContext(
+	err := querier.QueryRowContext(
 		ctx,
 		`SELECT session_name, parent_session_name, current_snapshot_id, status, created_at, updated_at
 		FROM sessions
@@ -121,6 +129,18 @@ func (s *Store) GetSession(ctx context.Context, sessionName string) (store.Sessi
 	}
 
 	return session, nil
+}
+
+func ensureSessionExistsTx(ctx context.Context, tx *sql.Tx, sessionName string) error {
+	var exists int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM sessions WHERE session_name = ?`, sessionName).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("get session %q: %w", sessionName, store.ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("get session %q: %w", sessionName, err)
+	}
+	return nil
 }
 
 func (s *Store) UpdateSession(ctx context.Context, session store.SessionRecord) error {
@@ -221,6 +241,114 @@ func (s *Store) PutSessionSnapshot(ctx context.Context, snapshot store.SessionSn
 	return nil
 }
 
+func (s *Store) AppendSessionSnapshot(
+	ctx context.Context,
+	snapshot store.SessionSnapshot,
+	sessionUpdatedAt time.Time,
+) (store.SessionSnapshot, error) {
+	if err := snapshot.Validate(); err != nil {
+		return store.SessionSnapshot{}, fmt.Errorf("validate session snapshot %q: %w", snapshot.SnapshotID, err)
+	}
+	if sessionUpdatedAt.IsZero() {
+		return store.SessionSnapshot{}, fmt.Errorf("session updated_at is required")
+	}
+
+	stateJSON, err := marshalJSON(snapshot.State)
+	if err != nil {
+		return store.SessionSnapshot{}, fmt.Errorf("marshal session snapshot state for %q: %w", snapshot.SnapshotID, err)
+	}
+
+	snapshot.ParentSnapshotID = ""
+	appended := snapshot
+	err = s.withImmediateTransaction(ctx, func(conn *sql.Conn) error {
+		session, err := getSessionQuery(ctx, conn, snapshot.SessionName)
+		if err != nil {
+			return err
+		}
+
+		if strings.TrimSpace(session.CurrentSnapshotID) != "" {
+			parentSessionName, err := lookupSessionSnapshotSessionName(ctx, conn, session.CurrentSnapshotID)
+			if err != nil {
+				return err
+			}
+			if parentSessionName != session.SessionName {
+				return fmt.Errorf(
+					"session %q current snapshot %q belongs to session %q",
+					session.SessionName,
+					session.CurrentSnapshotID,
+					parentSessionName,
+				)
+			}
+			appended.ParentSnapshotID = session.CurrentSnapshotID
+		}
+
+		if strings.TrimSpace(appended.SourceRunID) != "" {
+			runSessionName, err := lookupRunSessionName(ctx, conn, appended.SourceRunID)
+			if err != nil {
+				return err
+			}
+			if runSessionName != appended.SessionName {
+				return fmt.Errorf(
+					"snapshot %q source run session %q must match snapshot session %q",
+					appended.SnapshotID,
+					runSessionName,
+					appended.SessionName,
+				)
+			}
+		}
+
+		effectiveUpdatedAt := sessionUpdatedAt
+		if effectiveUpdatedAt.Before(session.UpdatedAt) {
+			effectiveUpdatedAt = session.UpdatedAt
+		}
+
+		updatedSession := session
+		updatedSession.CurrentSnapshotID = appended.SnapshotID
+		updatedSession.UpdatedAt = effectiveUpdatedAt
+		if err := updatedSession.Validate(); err != nil {
+			return fmt.Errorf("validate session record %q: %w", updatedSession.SessionName, err)
+		}
+
+		if _, err := conn.ExecContext(
+			ctx,
+			`INSERT INTO session_snapshots (
+				snapshot_id, session_name, parent_snapshot_id, source_run_id, state_json, created_at
+			) VALUES (?, ?, ?, ?, ?, ?)`,
+			appended.SnapshotID,
+			appended.SessionName,
+			nullIfEmpty(appended.ParentSnapshotID),
+			nullIfEmpty(appended.SourceRunID),
+			string(stateJSON),
+			formatTime(appended.CreatedAt),
+		); err != nil {
+			return fmt.Errorf("insert session snapshot %q: %w", appended.SnapshotID, err)
+		}
+
+		result, err := conn.ExecContext(
+			ctx,
+			`UPDATE sessions SET current_snapshot_id = ?, updated_at = ? WHERE session_name = ?`,
+			updatedSession.CurrentSnapshotID,
+			formatTime(updatedSession.UpdatedAt),
+			updatedSession.SessionName,
+		)
+		if err != nil {
+			return fmt.Errorf("update session %q current snapshot: %w", updatedSession.SessionName, err)
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err == nil && rowsAffected == 0 {
+			return fmt.Errorf("update session %q current snapshot: %w", updatedSession.SessionName, store.ErrNotFound)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return store.SessionSnapshot{}, err
+	}
+
+	return appended, nil
+}
+
 func (s *Store) GetSessionSnapshot(ctx context.Context, snapshotID string) (store.SessionSnapshot, error) {
 	return s.getSessionSnapshotByQuery(
 		ctx,
@@ -270,14 +398,139 @@ func (s *Store) PutSessionClock(ctx context.Context, clock store.SessionClock) e
 	return nil
 }
 
+func (s *Store) EnsureSessionClock(ctx context.Context, clock store.SessionClock) (store.SessionClock, bool, error) {
+	if err := clock.Validate(); err != nil {
+		return store.SessionClock{}, false, fmt.Errorf("validate session clock %q: %w", clock.SessionName, err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return store.SessionClock{}, false, fmt.Errorf("begin ensure session clock %q: %w", clock.SessionName, err)
+	}
+
+	if err := ensureSessionExistsTx(ctx, tx, clock.SessionName); err != nil {
+		_ = tx.Rollback()
+		return store.SessionClock{}, false, err
+	}
+
+	result, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO session_clocks(session_name, sim_time, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(session_name) DO NOTHING`,
+		clock.SessionName,
+		formatTime(clock.CurrentTime),
+		formatTime(clock.UpdatedAt),
+	)
+	if err != nil {
+		_ = tx.Rollback()
+		return store.SessionClock{}, false, fmt.Errorf("insert session clock if absent %q: %w", clock.SessionName, err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	created := rowsAffected > 0
+
+	ensured, err := getSessionClockTx(ctx, tx, clock.SessionName)
+	if err != nil {
+		_ = tx.Rollback()
+		return store.SessionClock{}, false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return store.SessionClock{}, false, fmt.Errorf("commit ensure session clock %q: %w", clock.SessionName, err)
+	}
+
+	return ensured, created, nil
+}
+
+func (s *Store) AdvanceSessionClock(
+	ctx context.Context,
+	sessionName string,
+	by time.Duration,
+	initialTime time.Time,
+	updatedAt time.Time,
+) (store.SessionClock, error) {
+	sessionName = strings.TrimSpace(sessionName)
+	if sessionName == "" {
+		return store.SessionClock{}, fmt.Errorf("session clock session_name is required")
+	}
+	if by < 0 {
+		return store.SessionClock{}, fmt.Errorf("session clock advance duration cannot be negative")
+	}
+	if initialTime.IsZero() {
+		return store.SessionClock{}, fmt.Errorf("session clock initial_time is required")
+	}
+	if updatedAt.IsZero() {
+		return store.SessionClock{}, fmt.Errorf("session clock updated_at is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return store.SessionClock{}, fmt.Errorf("begin advance session clock %q: %w", sessionName, err)
+	}
+
+	if err := ensureSessionExistsTx(ctx, tx, sessionName); err != nil {
+		_ = tx.Rollback()
+		return store.SessionClock{}, err
+	}
+
+	current := initialTime
+	existing, err := getSessionClockTx(ctx, tx, sessionName)
+	if err == nil {
+		current = existing.CurrentTime
+	} else if !errors.Is(err, store.ErrNotFound) {
+		_ = tx.Rollback()
+		return store.SessionClock{}, err
+	}
+
+	advanced := store.SessionClock{
+		SessionName: sessionName,
+		CurrentTime: current.Add(by),
+		UpdatedAt:   updatedAt,
+	}
+	if err := advanced.Validate(); err != nil {
+		_ = tx.Rollback()
+		return store.SessionClock{}, fmt.Errorf("validate advanced session clock %q: %w", sessionName, err)
+	}
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`INSERT INTO session_clocks(session_name, sim_time, updated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(session_name) DO UPDATE SET
+			sim_time = excluded.sim_time,
+			updated_at = excluded.updated_at`,
+		advanced.SessionName,
+		formatTime(advanced.CurrentTime),
+		formatTime(advanced.UpdatedAt),
+	); err != nil {
+		_ = tx.Rollback()
+		return store.SessionClock{}, fmt.Errorf("advance session clock %q: %w", sessionName, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return store.SessionClock{}, fmt.Errorf("commit advance session clock %q: %w", sessionName, err)
+	}
+
+	return advanced, nil
+}
+
 func (s *Store) GetSessionClock(ctx context.Context, sessionName string) (store.SessionClock, error) {
+	return getSessionClockQuery(ctx, s.db, sessionName)
+}
+
+func getSessionClockTx(ctx context.Context, tx *sql.Tx, sessionName string) (store.SessionClock, error) {
+	return getSessionClockQuery(ctx, tx, sessionName)
+}
+
+func getSessionClockQuery(ctx context.Context, querier queryRowContext, sessionName string) (store.SessionClock, error) {
 	var (
 		clock       store.SessionClock
 		currentTime string
 		updatedAt   string
 	)
 
-	err := s.db.QueryRowContext(
+	err := querier.QueryRowContext(
 		ctx,
 		`SELECT session_name, sim_time, updated_at
 		FROM session_clocks
@@ -1464,6 +1717,70 @@ func (s *Store) ensureRunExists(ctx context.Context, runID string) error {
 		return fmt.Errorf("check run %q existence: %w", runID, err)
 	}
 
+	return nil
+}
+
+func lookupRunSessionName(ctx context.Context, querier queryRowContext, runID string) (string, error) {
+	var sessionName string
+	err := querier.QueryRowContext(
+		ctx,
+		`SELECT session_name FROM runs WHERE run_id = ?`,
+		runID,
+	).Scan(&sessionName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("get run %q: %w", runID, store.ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("get run %q: %w", runID, err)
+	}
+
+	return sessionName, nil
+}
+
+func lookupSessionSnapshotSessionName(ctx context.Context, querier queryRowContext, snapshotID string) (string, error) {
+	var sessionName string
+	err := querier.QueryRowContext(
+		ctx,
+		`SELECT session_name FROM session_snapshots WHERE snapshot_id = ?`,
+		snapshotID,
+	).Scan(&sessionName)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("session snapshot lookup %q: %w", snapshotID, store.ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("session snapshot lookup %q: %w", snapshotID, err)
+	}
+
+	return sessionName, nil
+}
+
+func (s *Store) withImmediateTransaction(ctx context.Context, fn func(conn *sql.Conn) error) error {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open sqlite connection: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("begin immediate transaction: %w", err)
+	}
+
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+	}()
+
+	if err := fn(conn); err != nil {
+		return err
+	}
+
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("commit immediate transaction: %w", err)
+	}
+	committed = true
 	return nil
 }
 

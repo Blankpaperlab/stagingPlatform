@@ -6,7 +6,7 @@ import (
 	"stagehand/internal/recorder"
 )
 
-func TestExactSummarizesReplayEligibleRun(t *testing.T) {
+func TestSummarizeExactSourceSummarizesReplayEligibleRun(t *testing.T) {
 	run := recorder.Run{
 		RunID:       "run_123",
 		SessionName: "onboarding-flow",
@@ -18,9 +18,9 @@ func TestExactSummarizesReplayEligibleRun(t *testing.T) {
 		},
 	}
 
-	result, err := Exact(run)
+	result, err := SummarizeExactSource(run)
 	if err != nil {
-		t.Fatalf("Exact() error = %v", err)
+		t.Fatalf("SummarizeExactSource() error = %v", err)
 	}
 
 	if result.Mode != "exact" {
@@ -63,15 +63,15 @@ func TestExactSummarizesReplayEligibleRun(t *testing.T) {
 	}
 }
 
-func TestExactRejectsNonReplayEligibleRun(t *testing.T) {
+func TestSummarizeExactSourceRejectsNonReplayEligibleRun(t *testing.T) {
 	run := recorder.Run{
 		RunID:       "run_456",
 		SessionName: "refund-flow",
 		Status:      recorder.RunStatusCorrupted,
 	}
 
-	_, err := Exact(run)
+	_, err := SummarizeExactSource(run)
 	if err == nil {
-		t.Fatal("Exact() error = nil, want replay eligibility error")
+		t.Fatal("SummarizeExactSource() error = nil, want replay eligibility error")
 	}
 }
