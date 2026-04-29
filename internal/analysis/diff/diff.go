@@ -222,7 +222,7 @@ func normalizedURL(raw string) string {
 
 func removeIgnoredFields(value any, ignored map[string]bool) {
 	for path := range ignored {
-		removePath(value, strings.Split(path, "."))
+		removePath(value, splitIgnorePath(path))
 	}
 }
 
@@ -230,6 +230,29 @@ func removePath(value any, parts []string) {
 	if len(parts) == 0 {
 		return
 	}
+
+	if items, ok := value.([]any); ok {
+		segment := parts[0]
+		switch {
+		case segment == "*":
+			for _, item := range items {
+				removePath(item, parts[1:])
+			}
+			return
+		case isArrayIndex(segment):
+			index, _ := parseArrayIndex(segment)
+			if index >= 0 && index < len(items) {
+				removePath(items[index], parts[1:])
+			}
+			return
+		default:
+			for _, item := range items {
+				removePath(item, parts)
+			}
+			return
+		}
+	}
+
 	object, ok := value.(map[string]any)
 	if !ok {
 		return
@@ -239,6 +262,55 @@ func removePath(value any, parts []string) {
 		return
 	}
 	removePath(object[parts[0]], parts[1:])
+}
+
+func splitIgnorePath(path string) []string {
+	rawParts := strings.Split(path, ".")
+	parts := make([]string, 0, len(rawParts))
+	for _, raw := range rawParts {
+		for raw != "" {
+			bracket := strings.Index(raw, "[")
+			if bracket < 0 {
+				parts = append(parts, raw)
+				break
+			}
+			if bracket > 0 {
+				parts = append(parts, raw[:bracket])
+			}
+			closeBracket := strings.Index(raw[bracket:], "]")
+			if closeBracket < 0 {
+				parts = append(parts, raw[bracket:])
+				break
+			}
+			selector := raw[bracket+1 : bracket+closeBracket]
+			if selector == "*" {
+				parts = append(parts, "*")
+			} else {
+				parts = append(parts, selector)
+			}
+			raw = raw[bracket+closeBracket+1:]
+		}
+	}
+	return parts
+}
+
+func isArrayIndex(value string) bool {
+	_, ok := parseArrayIndex(value)
+	return ok
+}
+
+func parseArrayIndex(value string) (int, bool) {
+	if value == "" {
+		return 0, false
+	}
+	index := 0
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+		index = index*10 + int(r-'0')
+	}
+	return index, true
 }
 
 func canonicalJSON(value any) string {
@@ -302,10 +374,13 @@ func normalizeValue(value any) any {
 
 func normalizeIgnoredFields(fields []string) map[string]bool {
 	ignored := map[string]bool{
-		"run_id":         true,
-		"interaction_id": true,
-		"sequence":       true,
-		"fallback_tier":  true,
+		"run_id":             true,
+		"interaction_id":     true,
+		"sequence":           true,
+		"fallback_tier":      true,
+		"latency_ms":         true,
+		"events[*].t_ms":     true,
+		"events[*].sim_t_ms": true,
 	}
 	for _, field := range fields {
 		field = strings.TrimSpace(field)

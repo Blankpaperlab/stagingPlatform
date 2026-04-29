@@ -113,7 +113,6 @@ func TestCompareIgnoresConfiguredFields(t *testing.T) {
 }
 
 func TestCompareDoesNotFlagTimingOnlyDifferencesAsModified(t *testing.T) {
-	t.Skip("known limitation: latency_ms is in default scrub set but events[*].t_ms differences cannot be ignored via path traversal; remove skip when removePath supports array element wildcards or when timing fields are removed from canonicalInteraction by default")
 	t.Parallel()
 
 	base := timingPollutionFixture("run_base", 0, 1, 1)
@@ -137,7 +136,7 @@ func TestCompareDoesNotFlagTimingOnlyDifferencesAsModified(t *testing.T) {
 	}
 }
 
-func TestCompareCannotIgnoreEventArrayFieldsViaPathTraversal(t *testing.T) {
+func TestCompareCanIgnoreEventArrayFieldsViaPathTraversal(t *testing.T) {
 	t.Parallel()
 
 	base := timingPollutionFixture("run_base", 0, 1, 0)
@@ -148,13 +147,13 @@ func TestCompareCannotIgnoreEventArrayFieldsViaPathTraversal(t *testing.T) {
 			result, err := Compare(
 				runFixture("run_base", "session-a", []recorder.Interaction{base}),
 				runFixture("run_candidate", "session-a", []recorder.Interaction{candidate}),
-				Options{IgnoredFields: []string{ignorePath}},
+				Options{IgnoredFields: []string{ignorePath, "events[*].sim_t_ms"}},
 			)
 			if err != nil {
 				t.Fatalf("Compare() error = %v", err)
 			}
-			if len(result.Changes) == 0 {
-				t.Fatalf("ignore path %q unexpectedly suppressed event-array changes; if the engine has gained array-path support, retire this regression and update the default scrub set", ignorePath)
+			if len(result.Changes) != 0 {
+				t.Fatalf("ignore path %q produced changes after event-array timing suppression: %#v", ignorePath, result.Changes)
 			}
 		})
 	}
