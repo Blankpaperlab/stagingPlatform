@@ -1,0 +1,148 @@
+name: Stagehand Replay Diff
+description: Run Stagehand replay and diff in GitHub Actions.
+inputs:
+  command:
+    description: Command to run under stagehand replay.
+    required: true
+  sessions:
+    description: Comma or newline separated Stagehand sessions. Defaults to stagehand.test.yml session.
+    required: false
+  config:
+    description: Path to stagehand.yml.
+    required: false
+    default: stagehand.yml
+  test-config:
+    description: Path to stagehand.test.yml.
+    required: false
+    default: stagehand.test.yml
+  stagehand-binary:
+    description: Path to the stagehand CLI binary.
+    required: false
+    default: bin/stagehand
+  baseline-source:
+    description: 'Baseline selector type: latest, baseline-id, or run-id.'
+    required: false
+    default: latest
+  baseline-id:
+    description: Baseline id when baseline-source is baseline-id.
+    required: false
+  baseline-run-id:
+    description: Base run id when baseline-source is run-id.
+    required: false
+  report-format:
+    description: 'Diff report format: github-markdown, terminal, or json. Defaults to ci.report_format.'
+    required: false
+  fail-on:
+    description: 'Comma or newline separated fail conditions: behavior_diff, assertion_failure, fallback_regression. Defaults to ci.fail_on.'
+    required: false
+  ignore-fields:
+    description: Comma or newline separated diff ignore paths.
+    required: false
+  assertions:
+    description: Optional path to a Stagehand assertions YAML file to evaluate against each replay run.
+    required: false
+  artifact-paths:
+    description: Additional comma or newline separated artifact paths to upload with the reports.
+    required: false
+    default: .stagehand/runs
+  upload-artifact:
+    description: Whether to upload Stagehand reports and run artifacts.
+    required: false
+    default: 'true'
+  artifact-name:
+    description: Name for the uploaded GitHub Actions artifact.
+    required: false
+    default: stagehand-run
+  artifact-retention-days:
+    description: Retention period for uploaded artifacts. Empty uses the repository default.
+    required: false
+  post-pr-comment:
+    description: Whether to post or update a Stagehand PR comment.
+    required: false
+    default: 'true'
+  github-token:
+    description: GitHub token used for PR comments.
+    required: false
+  output-dir:
+    description: Directory for generated reports.
+    required: false
+    default: .stagehand/action
+outputs:
+  report-path:
+    description: Path to the combined report file.
+    value: ${{ steps.stagehand.outputs.report-path }}
+  summary-path:
+    description: Path to the machine-readable JSON summary.
+    value: ${{ steps.stagehand.outputs.summary-path }}
+  comment-preview-path:
+    description: Path to the rendered PR comment markdown preview.
+    value: ${{ steps.stagehand.outputs.comment-preview-path }}
+  failed:
+    description: Whether configured fail conditions were triggered.
+    value: ${{ steps.stagehand.outputs.failed }}
+  output-dir:
+    description: Directory containing generated reports.
+    value: ${{ steps.stagehand.outputs.output-dir }}
+  artifact-paths:
+    description: Newline separated paths uploaded by the artifact step.
+    value: ${{ steps.stagehand.outputs.artifact-paths }}
+  artifact-id:
+    description: GitHub Actions artifact id.
+    value: ${{ steps.upload-artifact-default.outputs.artifact-id || steps.upload-artifact-retained.outputs.artifact-id }}
+  artifact-url:
+    description: GitHub Actions artifact URL.
+    value: ${{ steps.upload-artifact-default.outputs.artifact-url || steps.upload-artifact-retained.outputs.artifact-url }}
+runs:
+  using: composite
+  steps:
+    - id: stagehand
+      shell: bash
+      env:
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_SESSIONS: ${{ inputs.sessions }}
+        INPUT_CONFIG: ${{ inputs.config }}
+        INPUT_TEST_CONFIG: ${{ inputs.test-config }}
+        INPUT_STAGEHAND_BINARY: ${{ inputs.stagehand-binary }}
+        INPUT_BASELINE_SOURCE: ${{ inputs.baseline-source }}
+        INPUT_BASELINE_ID: ${{ inputs.baseline-id }}
+        INPUT_BASELINE_RUN_ID: ${{ inputs.baseline-run-id }}
+        INPUT_REPORT_FORMAT: ${{ inputs.report-format }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_IGNORE_FIELDS: ${{ inputs.ignore-fields }}
+        INPUT_ASSERTIONS: ${{ inputs.assertions }}
+        INPUT_ARTIFACT_PATHS: ${{ inputs.artifact-paths }}
+        INPUT_OUTPUT_DIR: ${{ inputs.output-dir }}
+        INPUT_POST_PR_COMMENT: ${{ inputs.post-pr-comment }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token || github.token }}
+      run: node "$GITHUB_ACTION_PATH/scripts/stagehand-github-action.mjs"
+    - id: upload-artifact-default
+      # Keep reporting available even when Stagehand found configured failures.
+      if: ${{ inputs.upload-artifact == 'true' && inputs.artifact-retention-days == '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.stagehand.outputs.artifact-paths }}
+        if-no-files-found: warn
+    - id: upload-artifact-retained
+      if: ${{ inputs.upload-artifact == 'true' && inputs.artifact-retention-days != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.stagehand.outputs.artifact-paths }}
+        retention-days: ${{ inputs.artifact-retention-days }}
+        if-no-files-found: warn
+    - id: pr-comment
+      if: ${{ always() && inputs.post-pr-comment == 'true' && steps.stagehand.outputs.report-path != '' }}
+      shell: bash
+      env:
+        STAGEHAND_COMMENT_ONLY: '1'
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token || github.token }}
+        INPUT_REPORT_PATH: ${{ steps.stagehand.outputs.report-path }}
+        INPUT_SUMMARY_PATH: ${{ steps.stagehand.outputs.summary-path }}
+        INPUT_ARTIFACT_URL: ${{ steps.upload-artifact-default.outputs.artifact-url || steps.upload-artifact-retained.outputs.artifact-url }}
+      run: node "$GITHUB_ACTION_PATH/scripts/stagehand-github-action.mjs"
+    - if: ${{ steps.stagehand.outputs.failed == 'true' }}
+      shell: bash
+      run: |
+        echo "Stagehand configured fail conditions were triggered."
+        exit 1

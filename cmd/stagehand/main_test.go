@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	analysisdiff "stagehand/internal/analysis/diff"
 	"stagehand/internal/config"
 	"stagehand/internal/recorder"
 	"stagehand/internal/store"
@@ -37,6 +38,15 @@ func TestRunWritesRootHelpWithNoArgs(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "inspect") {
 		t.Fatalf("stdout = %q, want inspect command in help", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "diff") {
+		t.Fatalf("stdout = %q, want diff command in help", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "assert") {
+		t.Fatalf("stdout = %q, want assert command in help", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "conformance") {
+		t.Fatalf("stdout = %q, want conformance command in help", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "baseline") {
 		t.Fatalf("stdout = %q, want baseline command in help", stdout.String())
@@ -613,6 +623,191 @@ func TestRunBaselinePromoteRejectsIncompleteRuns(t *testing.T) {
 	}
 }
 
+func TestRunBaselineShowResolvesLatestSessionBaseline(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedReplayRun(t, sqliteStore, "baseline-show-flow")
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_show_001",
+		SessionName: "baseline-show-flow",
+		SourceRunID: sourceRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Date(2026, time.April, 25, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"baseline", "show", "--session", "baseline-show-flow", "--config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(baseline show) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	result := decodeJSONOutput[baselineShowResult](t, stdout.Bytes())
+	if result.Mode != "baseline_show" {
+		t.Fatalf("result.Mode = %q, want baseline_show", result.Mode)
+	}
+	if result.BaselineID != "base_show_001" || result.SourceRunID != sourceRunID {
+		t.Fatalf("baseline show result = %#v, want latest baseline source", result)
+	}
+}
+
+func TestRunDiffRendersJSONAgainstLatestBaseline(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	baseRunID := seedDiffRun(t, sqliteStore, "diff-flow", "hello", recorder.FallbackTierExact, time.Date(2026, time.April, 25, 12, 0, 0, 0, time.UTC))
+	candidateRunID := seedDiffRun(t, sqliteStore, "diff-flow", "goodbye", recorder.FallbackTierExact, time.Date(2026, time.April, 25, 12, 5, 0, 0, time.UTC))
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_diff_001",
+		SessionName: "diff-flow",
+		SourceRunID: baseRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Date(2026, time.April, 25, 12, 10, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"diff", "--session", "diff-flow", "--candidate-run-id", candidateRunID, "--format", "json", "--config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(diff) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	report := decodeJSONOutput[analysisdiff.JSONReport](t, stdout.Bytes())
+	if report.BaseRunID != baseRunID || report.CandidateRunID != candidateRunID {
+		t.Fatalf("diff report base/candidate = %q/%q, want %q/%q", report.BaseRunID, report.CandidateRunID, baseRunID, candidateRunID)
+	}
+	if report.Summary.FailingChanges != 1 || len(report.FailingChanges) != 1 {
+		t.Fatalf("diff failing changes = %#v, want one failing modification", report.FailingChanges)
+	}
+	if report.FailingChanges[0].Type != analysisdiff.ChangeModified {
+		t.Fatalf("failing change type = %q, want %q", report.FailingChanges[0].Type, analysisdiff.ChangeModified)
+	}
+}
+
+func TestRunDiffRequiresExactlyOneBaseSelector(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	err := run([]string{"diff", "--candidate-run-id", "run_candidate"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(diff) expected selector validation error")
+	}
+	if !strings.Contains(err.Error(), "exactly one of --base-run-id, --baseline-id, or --session") {
+		t.Fatalf("run(diff) error = %v", err)
+	}
+}
+
+func TestRunAssertRendersJSONFailures(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	assertionsPath := filepath.Join(workdir, "stagehand.assertions.yml")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+	writeFile(t, assertionsPath, `schema_version: v1alpha1
+assertions:
+  - id: no-openai-calls
+    type: forbidden-operation
+    match:
+      service: openai
+      operation: chat.completions.create
+`)
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	runID := seedReplayRun(t, sqliteStore, "assert-flow")
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"assert", "--run-id", runID, "--assertions", assertionsPath, "--format", "json", "--config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(assert) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	report := decodeJSONOutput[assertionReport](t, stdout.Bytes())
+	if report.RunID != runID {
+		t.Fatalf("assert report RunID = %q, want %q", report.RunID, runID)
+	}
+	if report.Summary.Failed != 1 || len(report.Results) != 1 {
+		t.Fatalf("assert summary/results = %#v/%#v, want one failure", report.Summary, report.Results)
+	}
+}
+
+func TestRunConformanceRunWritesOutputsForSkippedCases(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	casesPath := filepath.Join(workdir, "conformance.yml")
+	outputDir := filepath.Join(workdir, "conformance-results")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+	writeFile(t, casesPath, `schema_version: v1alpha1
+cases:
+  - id: openai-smoke
+    service: openai
+    inputs:
+      steps:
+        - id: chat
+          operation: chat.completions.create
+          request:
+            model: gpt-5.4-mini
+    real_service:
+      credentials:
+        - env: OPENAI_API_KEY
+          required: true
+          purpose: OpenAI test key.
+    comparison:
+      match:
+        strategy: operation_sequence
+`)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"conformance", "run", "--cases", casesPath, "--config", configPath, "--output-dir", outputDir, "--format", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(conformance run) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	report := decodeJSONOutput[conformanceReportForTest](t, stdout.Bytes())
+	if report.Summary.Skipped != 1 {
+		t.Fatalf("Skipped = %d, want 1", report.Summary.Skipped)
+	}
+	if _, err := os.Stat(filepath.Join(outputDir, "conformance-results.json")); err != nil {
+		t.Fatalf("conformance-results.json missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outputDir, "conformance-summary.md")); err != nil {
+		t.Fatalf("conformance-summary.md missing: %v", err)
+	}
+}
+
+type conformanceReportForTest struct {
+	Summary struct {
+		Skipped int `json:"skipped"`
+	} `json:"summary"`
+}
+
 func TestHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
@@ -765,6 +960,59 @@ func seedReplayRunAt(
 			Body: map[string]any{
 				"model":    "gpt-5.4",
 				"messages": []map[string]string{{"role": "user", "content": "say hello"}},
+			},
+		},
+		Events: []recorder.Event{
+			{Sequence: 1, TMS: 0, SimTMS: 0, Type: recorder.EventTypeRequestSent},
+			{Sequence: 2, TMS: 1, SimTMS: 1, Type: recorder.EventTypeResponseReceived},
+		},
+		ScrubReport: recorder.ScrubReport{
+			ScrubPolicyVersion: "v1",
+			SessionSaltID:      "salt_fixture",
+		},
+	}
+	if err := artifactStore.WriteInteraction(context.Background(), interaction); err != nil {
+		t.Fatalf("WriteInteraction() error = %v", err)
+	}
+	if err := finalizeRun(context.Background(), artifactStore, run, nil); err != nil {
+		t.Fatalf("finalizeRun() error = %v", err)
+	}
+
+	return run.RunID
+}
+
+func seedDiffRun(
+	t *testing.T,
+	artifactStore store.ArtifactStore,
+	session string,
+	message string,
+	fallbackTier recorder.FallbackTier,
+	startedAt time.Time,
+) string {
+	t.Helper()
+
+	run, err := newRunRecordForMode(session, minimalConfig(), recorder.RunModeRecord)
+	if err != nil {
+		t.Fatalf("newRunRecordForMode() error = %v", err)
+	}
+	run.StartedAt = startedAt
+	if err := artifactStore.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	interaction := recorder.Interaction{
+		RunID:         run.RunID,
+		InteractionID: "int_" + run.RunID,
+		Sequence:      1,
+		Service:       "openai",
+		Operation:     "chat.completions.create",
+		Protocol:      recorder.ProtocolHTTPS,
+		FallbackTier:  fallbackTier,
+		Request: recorder.Request{
+			URL:    "https://api.openai.com/v1/chat/completions",
+			Method: "POST",
+			Body: map[string]any{
+				"model":    "gpt-5.4",
+				"messages": []map[string]string{{"role": "user", "content": message}},
 			},
 		},
 		Events: []recorder.Event{

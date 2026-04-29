@@ -1,0 +1,87 @@
+schema_version: v1alpha1
+cases:
+  - id: openai-chat-smoke
+    service: openai
+    description: Check that chat completion response shape remains compatible with the deterministic simulator path.
+    tags:
+      - nightly
+      - smoke
+      - openai
+    inputs:
+      scenario: openai_chat_smoke
+      steps:
+        - id: create-chat
+          operation: chat.completions.create
+          request:
+            model: gpt-5.4-mini
+            messages:
+              - role: user
+                content: Reply with pong.
+          expect:
+            status_code: 200
+    real_service:
+      network: true
+      test_mode: false
+      cost_estimate: one minimal chat completion
+      credentials:
+        - env: OPENAI_API_KEY
+          required: true
+          purpose: OpenAI API key for nightly conformance.
+    comparison:
+      match:
+        strategy: operation_sequence
+      tolerated_diff_fields:
+        - path: response.body.id
+          reason: OpenAI generates unique response IDs.
+        - path: response.body.created
+          reason: OpenAI timestamps are wall-clock values.
+        - path: response.body.usage
+          reason: Token accounting is provider-owned metadata.
+        - path: response.body.system_fingerprint
+          reason: Backend fingerprint can change independently of simulator semantics.
+
+  - id: stripe-customer-smoke
+    service: stripe
+    description: Check Stripe customer creation response shape against the stateful simulator.
+    tags:
+      - nightly
+      - smoke
+      - stripe
+    inputs:
+      scenario: stripe_customer_smoke
+      steps:
+        - id: create-customer
+          operation: customers.create
+          request:
+            email: conformance@example.com
+            name: Stagehand Conformance
+            metadata:
+              stagehand_case: stripe_customer_smoke
+          expect:
+            status_code: 200
+    real_service:
+      network: true
+      test_mode: true
+      cost_estimate: no charge in Stripe test mode
+      credentials:
+        - env: STRIPE_SECRET_KEY
+          required: true
+          purpose: Stripe test-mode secret key for nightly conformance.
+    comparison:
+      match:
+        strategy: operation_sequence
+      tolerated_diff_fields:
+        - path: response.body.id
+          reason: Real Stripe and simulator generate different customer IDs.
+        - path: response.body.created
+          reason: Real service timestamps are wall-clock values.
+        - path: response.body.livemode
+          reason: Real Stripe includes environment metadata not modeled by the simulator.
+        - path: response.body.invoice_settings
+          reason: Real Stripe may include default nested customer settings outside the V1 simulator subset.
+        - path: response.body.address
+          reason: Real Stripe may materialize omitted nullable customer fields.
+        - path: response.body.phone
+          reason: Real Stripe may materialize omitted nullable customer fields.
+        - path: response.body.description
+          reason: Real Stripe may materialize omitted nullable customer fields.

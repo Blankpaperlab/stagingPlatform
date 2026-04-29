@@ -1,0 +1,54 @@
+name: Conformance Nightly
+
+on:
+  schedule:
+    - cron: '17 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  conformance:
+    name: Real vs simulator conformance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Stagehand CLI
+        run: go build -o bin/stagehand ./cmd/stagehand
+
+      - name: Run conformance cases
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: |
+          mkdir -p .stagehand/conformance
+          bin/stagehand conformance run \
+            --cases conformance/smoke.yml \
+            --config stagehand.yml \
+            --output-dir .stagehand/conformance \
+            --format github-markdown | tee .stagehand/conformance/conformance-summary.md
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          if [ -f .stagehand/conformance/conformance-summary.md ]; then
+            cat .stagehand/conformance/conformance-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload conformance results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stagehand-conformance-${{ github.run_id }}
+          path: .stagehand/conformance
+          if-no-files-found: warn

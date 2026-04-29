@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	analysisassertions "stagehand/internal/analysis/assertions"
 	"stagehand/internal/config"
 	"stagehand/internal/recorder"
 	"stagehand/internal/recording"
@@ -69,6 +70,30 @@ type baselinePromoteResult struct {
 	SourceRunID string `json:"source_run_id"`
 	GitSHA      string `json:"git_sha"`
 	StoragePath string `json:"storage_path"`
+}
+
+type baselineShowResult struct {
+	Mode        string `json:"mode"`
+	BaselineID  string `json:"baseline_id"`
+	SessionName string `json:"session_name"`
+	SourceRunID string `json:"source_run_id"`
+	GitSHA      string `json:"git_sha"`
+	CreatedAt   string `json:"created_at"`
+	StoragePath string `json:"storage_path"`
+}
+
+type assertionSummary struct {
+	Total       int `json:"total"`
+	Passed      int `json:"passed"`
+	Failed      int `json:"failed"`
+	Unsupported int `json:"unsupported"`
+}
+
+type assertionReport struct {
+	RunID       string                      `json:"run_id"`
+	SessionName string                      `json:"session_name"`
+	Summary     assertionSummary            `json:"summary"`
+	Results     []analysisassertions.Result `json:"results"`
 }
 
 type runFailure struct {

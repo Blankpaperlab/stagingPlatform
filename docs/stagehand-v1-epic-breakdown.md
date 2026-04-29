@@ -617,25 +617,31 @@ Use these statuses on your board:
 
 - Outcome: the action can run replay and diff with a small config surface.
 - To do:
-  - [ ] define action inputs
-  - [ ] wire inputs to CLI commands
-  - [ ] support session list and baseline source
-  - [ ] support fail conditions for assertions and fallback regressions
+  - [x] define action inputs
+  - [x] wire inputs to CLI commands
+  - [x] support session list and baseline source
+  - [x] support fail conditions for assertions and fallback regressions
+
+L1 ships a root `action.yml` backed by `scripts/stagehand-github-action.mjs`. The wrapper resolves baselines through `stagehand baseline show`, replays from the selected source run, emits diffs through `stagehand diff`, and can evaluate an optional assertions file through `stagehand assert`. `fail_on` now distinguishes generic behavior diffs, assertion failures, and fallback regressions.
 
 ### Story L2: Add artifact and PR reporting
 
 - Outcome: CI leaves usable output behind.
 - To do:
-  - [ ] upload run artifacts
-  - [ ] upload diff reports
-  - [ ] post PR markdown summary
-  - [ ] link to local inspection guidance if hosted is not used
+  - [x] upload run artifacts
+  - [x] upload diff reports
+  - [x] post PR markdown summary
+  - [x] link to local inspection guidance if hosted is not used
+
+L2 turns the action into a composite wrapper so generated reports and configured run-artifact paths are uploaded with `actions/upload-artifact`. The action also posts or updates a stable PR comment with the GitHub markdown diff, artifact link when available, and local `stagehand inspect` / `stagehand diff` commands for each replay run.
 
 ### Epic L completion checklist
 
-- [ ] action runs in a sample repository
-- [ ] PR comments are readable
-- [ ] artifacts upload successfully
+- [x] action runs in a sample repository
+- [x] PR comments are readable
+- [x] artifacts upload successfully
+
+Epic L is complete with the repository-root action, sample workflow guidance in `docs/github-action.md` and `examples/github-action-sample`, uploaded report/run artifacts, and a generated PR-comment preview that mirrors the live comment body.
 
 ## Epic M: Conformance Harness First Pass
 
@@ -649,35 +655,41 @@ Use these statuses on your board:
 
 - Outcome: simulator-owned conformance cases have a reusable format.
 - To do:
-  - [ ] define case inputs
-  - [ ] define real-service credential requirements
-  - [ ] define tolerated diff fields
-  - [ ] define match/fail result shape
+  - [x] define case inputs
+  - [x] define real-service credential requirements
+  - [x] define tolerated diff fields
+  - [x] define match/fail result shape
+
+M1 defines the `v1alpha1` conformance case YAML and result contract in `docs/conformance-case-model.md`, backed by the validated Go parser in `internal/analysis/conformance`. Cases now have ordered operation steps, real-service credential declarations, match strategies, tolerated diff paths with reasons, and a JSON result shape for passed/failed/skipped/error outcomes.
 
 ### Story M2: Implement real-vs-sim runner
 
 - Outcome: a case can run once against the real API and once against the simulator.
 - To do:
-  - [ ] implement real-service runner for OpenAI
-  - [ ] implement real-service runner for Stripe test mode
-  - [ ] implement simulator runner path
-  - [ ] capture structural diffs
+  - [x] implement real-service runner for OpenAI
+  - [x] implement real-service runner for Stripe test mode
+  - [x] implement simulator runner path
+  - [x] capture structural diffs
+
+M2 adds an injectable conformance runner in `internal/analysis/conformance`. It executes real OpenAI and Stripe test-mode requests when required credentials are present, skips safely when required credentials are missing, runs Stripe cases against the in-process simulator, provides a deterministic OpenAI simulator placeholder, and captures structural match/fail diffs using the M1 match strategy and tolerated field paths.
 
 ### Story M3: Add nightly execution and result storage
 
 - Outcome: drift is visible and trackable.
 - To do:
-  - [ ] create nightly workflow
-  - [ ] store conformance results
-  - [ ] highlight new drift
-  - [ ] document cost and run-frequency expectations
+  - [x] create nightly workflow
+  - [x] store conformance results
+  - [x] highlight new drift
+  - [x] document cost and run-frequency expectations
+
+M3 adds `stagehand conformance run`, the smoke case file at `conformance/smoke.yml`, and `.github/workflows/conformance-nightly.yml`. Nightly runs write JSON and markdown results under `.stagehand/conformance`, upload them as artifacts, append the markdown drift summary to the GitHub job summary, and fail only on `failed` or `error` cases. Missing real-service credentials are tracked as `skipped`. Cost/frequency expectations are documented in `docs/conformance-case-model.md`.
 
 ### Epic M completion checklist
 
-- [ ] OpenAI smoke conformance runs
-- [ ] Stripe smoke conformance runs
-- [ ] nightly runner exists
-- [ ] drift results are stored and reviewable
+- [x] OpenAI smoke conformance runs
+- [x] Stripe smoke conformance runs
+- [x] nightly runner exists
+- [x] drift results are stored and reviewable
 
 ## Epic N: Generic HTTP Simulator
 

@@ -14,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	analysisassertions "stagehand/internal/analysis/assertions"
+	analysisconformance "stagehand/internal/analysis/conformance"
+	analysisdiff "stagehand/internal/analysis/diff"
 	"stagehand/internal/config"
 	"stagehand/internal/recorder"
 	runtimereplay "stagehand/internal/runtime/replay"
@@ -47,6 +50,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runReplay(args[1:], stdout, stderr)
 	case "inspect":
 		return runInspect(args[1:], stdout, stderr)
+	case "diff":
+		return runDiff(args[1:], stdout, stderr)
+	case "assert":
+		return runAssert(args[1:], stdout, stderr)
+	case "conformance":
+		return runConformance(args[1:], stdout, stderr)
 	case "baseline":
 		return runBaseline(args[1:], stdout, stderr)
 	default:
@@ -349,6 +358,8 @@ func runBaseline(args []string, stdout io.Writer, stderr io.Writer) error {
 		return nil
 	case "promote":
 		return runBaselinePromote(args[1:], stdout, stderr)
+	case "show":
+		return runBaselineShow(args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown baseline subcommand %q\n\n%s", args[0], baselineHelpText())
 	}
@@ -426,6 +437,365 @@ func runBaselinePromote(args []string, stdout io.Writer, _ io.Writer) error {
 		GitSHA:      baseline.GitSHA,
 		StoragePath: dbPath,
 	})
+}
+
+func runBaselineShow(args []string, stdout io.Writer, _ io.Writer) error {
+	flags := flag.NewFlagSet("baseline show", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	baselineID := flags.String("baseline-id", "", "Baseline identifier to show")
+	session := flags.String("session", "", "Session name to resolve the latest baseline for")
+	configPath := flags.String("config", "", "Path to stagehand.yml")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse baseline show flags: %w\n\n%s", err, baselineShowHelpText())
+	}
+
+	resolvedBaselineID := strings.TrimSpace(*baselineID)
+	resolvedSession := strings.TrimSpace(*session)
+	if (resolvedBaselineID == "" && resolvedSession == "") || (resolvedBaselineID != "" && resolvedSession != "") {
+		return fmt.Errorf("baseline show requires exactly one of --baseline-id or --session\n\n%s", baselineShowHelpText())
+	}
+
+	cfgPath := strings.TrimSpace(*configPath)
+	if cfgPath == "" {
+		cfgPath = defaultRuntimeConfigPath
+	}
+
+	ctx := context.Background()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load runtime config %q: %w", cfgPath, err)
+	}
+
+	dbPath := sqliteDatabasePath(cfg.Record.StoragePath)
+	sqliteStore, err := sqlitestore.OpenStore(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open local store %q: %w", dbPath, err)
+	}
+	defer sqliteStore.Close()
+
+	baseline, err := loadBaseline(ctx, sqliteStore, resolvedBaselineID, resolvedSession)
+	if err != nil {
+		return err
+	}
+
+	return emitJSON(stdout, baselineShowResult{
+		Mode:        "baseline_show",
+		BaselineID:  baseline.BaselineID,
+		SessionName: baseline.SessionName,
+		SourceRunID: baseline.SourceRunID,
+		GitSHA:      baseline.GitSHA,
+		CreatedAt:   baseline.CreatedAt.Format(time.RFC3339Nano),
+		StoragePath: dbPath,
+	})
+}
+
+type repeatedStringFlag []string
+
+func (f *repeatedStringFlag) String() string {
+	return strings.Join(*f, ",")
+}
+
+func (f *repeatedStringFlag) Set(value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed != "" {
+		*f = append(*f, trimmed)
+	}
+	return nil
+}
+
+func runDiff(args []string, stdout io.Writer, _ io.Writer) error {
+	flags := flag.NewFlagSet("diff", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	baseRunID := flags.String("base-run-id", "", "Base run identifier")
+	baselineID := flags.String("baseline-id", "", "Baseline identifier to use as base")
+	session := flags.String("session", "", "Session name to resolve latest baseline as base")
+	candidateRunID := flags.String("candidate-run-id", "", "Candidate run identifier")
+	format := flags.String("format", string(config.ReportFormatTerminal), "Output format: terminal, json, or github-markdown")
+	configPath := flags.String("config", "", "Path to stagehand.yml")
+	var ignoredFields repeatedStringFlag
+	flags.Var(&ignoredFields, "ignore-field", "Additional interaction field path to ignore; may be repeated")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse diff flags: %w\n\n%s", err, diffHelpText())
+	}
+
+	resolvedCandidateRunID := strings.TrimSpace(*candidateRunID)
+	if resolvedCandidateRunID == "" {
+		return fmt.Errorf("diff requires --candidate-run-id\n\n%s", diffHelpText())
+	}
+
+	selectors := 0
+	for _, selector := range []string{*baseRunID, *baselineID, *session} {
+		if strings.TrimSpace(selector) != "" {
+			selectors++
+		}
+	}
+	if selectors != 1 {
+		return fmt.Errorf("diff requires exactly one of --base-run-id, --baseline-id, or --session\n\n%s", diffHelpText())
+	}
+
+	cfgPath := strings.TrimSpace(*configPath)
+	if cfgPath == "" {
+		cfgPath = defaultRuntimeConfigPath
+	}
+
+	ctx := context.Background()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load runtime config %q: %w", cfgPath, err)
+	}
+
+	dbPath := sqliteDatabasePath(cfg.Record.StoragePath)
+	sqliteStore, err := sqlitestore.OpenStore(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open local store %q: %w", dbPath, err)
+	}
+	defer sqliteStore.Close()
+
+	resolvedBaseRunID := strings.TrimSpace(*baseRunID)
+	if resolvedBaseRunID == "" {
+		baseline, err := loadBaseline(ctx, sqliteStore, strings.TrimSpace(*baselineID), strings.TrimSpace(*session))
+		if err != nil {
+			return err
+		}
+		resolvedBaseRunID = baseline.SourceRunID
+	}
+
+	baseRun, err := sqliteStore.GetRun(ctx, resolvedBaseRunID)
+	if err != nil {
+		return fmt.Errorf("load base run %q: %w", resolvedBaseRunID, err)
+	}
+	candidateRun, err := sqliteStore.GetRun(ctx, resolvedCandidateRunID)
+	if err != nil {
+		return fmt.Errorf("load candidate run %q: %w", resolvedCandidateRunID, err)
+	}
+
+	result, err := analysisdiff.Compare(baseRun, candidateRun, analysisdiff.Options{IgnoredFields: ignoredFields})
+	if err != nil {
+		return fmt.Errorf("compare runs: %w", err)
+	}
+
+	switch config.ReportFormat(strings.TrimSpace(*format)) {
+	case config.ReportFormatTerminal, "":
+		_, err = io.WriteString(stdout, analysisdiff.RenderTerminal(result))
+		return err
+	case config.ReportFormatJSON:
+		report, err := analysisdiff.RenderJSON(result)
+		if err != nil {
+			return err
+		}
+		_, err = stdout.Write(report)
+		return err
+	case config.ReportFormatGitHubMarkdown:
+		_, err = io.WriteString(stdout, analysisdiff.RenderGitHubMarkdown(result))
+		return err
+	default:
+		return fmt.Errorf("diff --format must be one of %q, %q, or %q\n\n%s", config.ReportFormatTerminal, config.ReportFormatJSON, config.ReportFormatGitHubMarkdown, diffHelpText())
+	}
+}
+
+func runAssert(args []string, stdout io.Writer, _ io.Writer) error {
+	flags := flag.NewFlagSet("assert", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	runID := flags.String("run-id", "", "Run identifier to evaluate")
+	assertionsPath := flags.String("assertions", "", "Path to stagehand assertions YAML")
+	format := flags.String("format", string(config.ReportFormatTerminal), "Output format: terminal or json")
+	configPath := flags.String("config", "", "Path to stagehand.yml")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse assert flags: %w\n\n%s", err, assertHelpText())
+	}
+
+	resolvedRunID := strings.TrimSpace(*runID)
+	if resolvedRunID == "" {
+		return fmt.Errorf("assert requires --run-id\n\n%s", assertHelpText())
+	}
+	resolvedAssertionsPath := strings.TrimSpace(*assertionsPath)
+	if resolvedAssertionsPath == "" {
+		return fmt.Errorf("assert requires --assertions\n\n%s", assertHelpText())
+	}
+
+	cfgPath := strings.TrimSpace(*configPath)
+	if cfgPath == "" {
+		cfgPath = defaultRuntimeConfigPath
+	}
+
+	ctx := context.Background()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load runtime config %q: %w", cfgPath, err)
+	}
+
+	dbPath := sqliteDatabasePath(cfg.Record.StoragePath)
+	sqliteStore, err := sqlitestore.OpenStore(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open local store %q: %w", dbPath, err)
+	}
+	defer sqliteStore.Close()
+
+	run, err := sqliteStore.GetRun(ctx, resolvedRunID)
+	if err != nil {
+		return fmt.Errorf("load run %q: %w", resolvedRunID, err)
+	}
+	assertionFile, err := analysisassertions.Load(resolvedAssertionsPath)
+	if err != nil {
+		return err
+	}
+	results, err := analysisassertions.Evaluate(run, assertionFile)
+	if err != nil {
+		return err
+	}
+	report := newAssertionReport(run, results)
+
+	switch config.ReportFormat(strings.TrimSpace(*format)) {
+	case config.ReportFormatTerminal, "":
+		_, err = io.WriteString(stdout, renderAssertionTerminal(report))
+		return err
+	case config.ReportFormatJSON:
+		return emitJSON(stdout, report)
+	default:
+		return fmt.Errorf("assert --format must be one of %q or %q\n\n%s", config.ReportFormatTerminal, config.ReportFormatJSON, assertHelpText())
+	}
+}
+
+func newAssertionReport(run recorder.Run, results []analysisassertions.Result) assertionReport {
+	report := assertionReport{
+		RunID:       run.RunID,
+		SessionName: run.SessionName,
+		Results:     append([]analysisassertions.Result(nil), results...),
+	}
+	report.Summary.Total = len(results)
+	for _, result := range results {
+		switch result.Status {
+		case analysisassertions.ResultStatusPassed:
+			report.Summary.Passed++
+		case analysisassertions.ResultStatusFailed:
+			report.Summary.Failed++
+		case analysisassertions.ResultStatusUnsupported:
+			report.Summary.Unsupported++
+		}
+	}
+	return report
+}
+
+func renderAssertionTerminal(report assertionReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Stagehand assertions: %s\n", report.RunID)
+	fmt.Fprintf(&b, "Session: %s\n", report.SessionName)
+	fmt.Fprintf(&b, "Results: %d passed, %d failed, %d unsupported, %d total\n", report.Summary.Passed, report.Summary.Failed, report.Summary.Unsupported, report.Summary.Total)
+	for _, result := range report.Results {
+		fmt.Fprintf(&b, "- %s %s %s: %s\n", result.Status, result.Type, result.AssertionID, result.Message)
+	}
+	return b.String()
+}
+
+func runConformance(args []string, stdout io.Writer, stderr io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("conformance requires a subcommand\n\n%s", conformanceHelpText())
+	}
+	switch args[0] {
+	case "-h", "--help", "help":
+		_, _ = io.WriteString(stdout, conformanceHelpText())
+		return nil
+	case "run":
+		return runConformanceRun(args[1:], stdout, stderr)
+	default:
+		return fmt.Errorf("unknown conformance subcommand %q\n\n%s", args[0], conformanceHelpText())
+	}
+}
+
+func runConformanceRun(args []string, stdout io.Writer, _ io.Writer) error {
+	flags := flag.NewFlagSet("conformance run", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	casesPath := flags.String("cases", "", "Path to conformance case YAML")
+	configPath := flags.String("config", "", "Path to stagehand.yml")
+	outputDir := flags.String("output-dir", "", "Directory for conformance-results.json and conformance-summary.md")
+	format := flags.String("format", string(config.ReportFormatJSON), "Output format: json or github-markdown")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse conformance run flags: %w\n\n%s", err, conformanceRunHelpText())
+	}
+
+	resolvedCasesPath := strings.TrimSpace(*casesPath)
+	if resolvedCasesPath == "" {
+		return fmt.Errorf("conformance run requires --cases\n\n%s", conformanceRunHelpText())
+	}
+
+	cfgPath := strings.TrimSpace(*configPath)
+	if cfgPath == "" {
+		cfgPath = defaultRuntimeConfigPath
+	}
+
+	ctx := context.Background()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load runtime config %q: %w", cfgPath, err)
+	}
+
+	caseFile, err := analysisconformance.Load(resolvedCasesPath)
+	if err != nil {
+		return err
+	}
+
+	dbPath := sqliteDatabasePath(cfg.Record.StoragePath)
+	sqliteStore, err := sqlitestore.OpenStore(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open local store %q: %w", dbPath, err)
+	}
+	defer sqliteStore.Close()
+
+	runner := analysisconformance.NewRunner(analysisconformance.WithSessionStore(sqliteStore))
+	results := make([]analysisconformance.Result, 0, len(caseFile.Cases))
+	for _, testCase := range caseFile.Cases {
+		results = append(results, runner.RunCase(ctx, testCase))
+	}
+	report := analysisconformance.NewReport(time.Now().UTC(), results)
+
+	if dir := strings.TrimSpace(*outputDir); dir != "" {
+		if err := writeConformanceOutputs(dir, report); err != nil {
+			return err
+		}
+	}
+
+	switch config.ReportFormat(strings.TrimSpace(*format)) {
+	case config.ReportFormatJSON, "":
+		encoded, err := analysisconformance.RenderJSON(report)
+		if err != nil {
+			return err
+		}
+		if _, err := stdout.Write(encoded); err != nil {
+			return err
+		}
+	case config.ReportFormatGitHubMarkdown, config.ReportFormatTerminal:
+		if _, err := io.WriteString(stdout, analysisconformance.RenderMarkdown(report)); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("conformance run --format must be one of %q or %q\n\n%s", config.ReportFormatJSON, config.ReportFormatGitHubMarkdown, conformanceRunHelpText())
+	}
+
+	if report.HasDriftOrErrors() {
+		return fmt.Errorf("conformance drift detected: %d failed, %d errors", report.Summary.Failed, report.Summary.Errors)
+	}
+	return nil
+}
+
+func writeConformanceOutputs(outputDir string, report analysisconformance.Report) error {
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return fmt.Errorf("create conformance output directory %q: %w", outputDir, err)
+	}
+	encoded, err := analysisconformance.RenderJSON(report)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "conformance-results.json"), encoded, 0o644); err != nil {
+		return fmt.Errorf("write conformance JSON: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "conformance-summary.md"), []byte(analysisconformance.RenderMarkdown(report)), 0o644); err != nil {
+		return fmt.Errorf("write conformance markdown: %w", err)
+	}
+	return nil
 }
 
 func resolveBaselineGitSHA(explicit string, runRecord store.RunRecord) (string, error) {
@@ -522,6 +892,9 @@ Commands:
   record   Run a command and persist captured interactions
   replay   Replay a stored run against a command
   inspect  Inspect a stored run in the terminal
+  diff     Compare a candidate run against a base run or baseline
+  assert   Evaluate assertions against a stored run
+  conformance Run simulator conformance cases
   baseline Promote and inspect baseline selections
 
 Global help:
@@ -569,6 +942,7 @@ func baselineHelpText() string {
 
 Subcommands:
   promote  Promote a complete run to a session baseline
+  show     Show a baseline by id or latest session selection
 `
 }
 
@@ -581,6 +955,65 @@ Flags:
   --baseline-id string  Optional baseline identifier (default: generated)
   --git-sha string      Git SHA to attach when the source run does not have one
   --config string       Path to stagehand.yml (default: stagehand.yml)
+`
+}
+
+func baselineShowHelpText() string {
+	return `Usage:
+  stagehand baseline show (--baseline-id id | --session name) [--config path]
+
+Flags:
+  --baseline-id string  Baseline identifier to show
+  --session string      Session name to resolve the latest baseline for
+  --config string       Path to stagehand.yml (default: stagehand.yml)
+`
+}
+
+func diffHelpText() string {
+	return `Usage:
+  stagehand diff --candidate-run-id <id> (--base-run-id <id> | --baseline-id <id> | --session <name>) [flags]
+
+Flags:
+  --candidate-run-id string  Candidate run identifier
+  --base-run-id string       Base run identifier
+  --baseline-id string       Baseline identifier to use as base
+  --session string           Session name to resolve the latest baseline as base
+  --format string            Output format: terminal, json, or github-markdown (default: terminal)
+  --ignore-field string      Additional interaction field path to ignore; may be repeated
+  --config string            Path to stagehand.yml (default: stagehand.yml)
+`
+}
+
+func assertHelpText() string {
+	return `Usage:
+  stagehand assert --run-id <id> --assertions <path> [--format terminal|json] [--config path]
+
+Flags:
+  --run-id string      Run identifier to evaluate
+  --assertions string  Path to stagehand assertions YAML
+  --format string      Output format: terminal or json (default: terminal)
+  --config string      Path to stagehand.yml (default: stagehand.yml)
+`
+}
+
+func conformanceHelpText() string {
+	return `Usage:
+  stagehand conformance <subcommand> [flags]
+
+Subcommands:
+  run  Run real-vs-simulator conformance cases
+`
+}
+
+func conformanceRunHelpText() string {
+	return `Usage:
+  stagehand conformance run --cases <path> [--config path] [--output-dir dir] [--format json|github-markdown]
+
+Flags:
+  --cases string       Path to conformance case YAML
+  --config string      Path to stagehand.yml (default: stagehand.yml)
+  --output-dir string  Directory for conformance-results.json and conformance-summary.md
+  --format string      Output format: json or github-markdown (default: json)
 `
 }
 
@@ -598,4 +1031,20 @@ func loadReplayRun(ctx context.Context, artifactStore store.ArtifactStore, runID
 		return recorder.Run{}, fmt.Errorf("load latest run for session %q: %w", session, err)
 	}
 	return run, nil
+}
+
+func loadBaseline(ctx context.Context, artifactStore store.ArtifactStore, baselineID, session string) (store.Baseline, error) {
+	if strings.TrimSpace(baselineID) != "" {
+		baseline, err := artifactStore.GetBaseline(ctx, baselineID)
+		if err != nil {
+			return store.Baseline{}, fmt.Errorf("load baseline %q: %w", baselineID, err)
+		}
+		return baseline, nil
+	}
+
+	baseline, err := artifactStore.GetLatestBaseline(ctx, session)
+	if err != nil {
+		return store.Baseline{}, fmt.Errorf("load latest baseline for session %q: %w", session, err)
+	}
+	return baseline, nil
 }
