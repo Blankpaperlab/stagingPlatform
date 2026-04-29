@@ -568,36 +568,42 @@ Use these statuses on your board:
 
 - Outcome: runs can be promoted to baselines and selected predictably in CI.
 - To do:
-  - [ ] define baseline schema and write path
-  - [ ] implement baseline creation command or API
-  - [ ] define tie-breaking and branch-selection rules
-  - [ ] document when incomplete runs are ineligible
+  - [x] define baseline schema and write path
+  - [x] implement baseline creation command or API
+  - [x] define tie-breaking and branch-selection rules
+  - [x] document when incomplete runs are ineligible
+- Current implementation note:
+  SQLite baselines are stored as `baseline_id`, `session_name`, `source_run_id`, `git_sha`, and `created_at`. `stagehand baseline promote --run-id <id>` promotes a complete stored run to a session baseline, generates a baseline ID when one is not supplied, and emits machine-readable JSON. Local latest-baseline selection is deterministic by `created_at DESC, baseline_id DESC`; branch selection is currently a test-runner config concern through `stagehand.test.yml baseline.branch`, while local baseline rows remain scoped by session. Running, incomplete, and corrupted runs are ineligible because `PutBaseline` requires the source run lifecycle status to be `complete`.
 
 ### Story K2: Implement diff alignment
 
 - Outcome: interactions can be aligned in a stable way before user-facing reporting.
 - To do:
-  - [ ] align runs by session and sequence
-  - [ ] detect added and removed interactions
-  - [ ] detect ordering changes
-  - [ ] detect fallback-tier regressions
-  - [ ] add field-ignore support
+  - [x] align runs by session and sequence
+  - [x] detect added and removed interactions
+  - [x] detect ordering changes
+  - [x] detect fallback-tier regressions
+  - [x] add field-ignore support
+- Current implementation note:
+  `internal/analysis/diff` now compares two same-session runs, aligns interactions by a deterministic request lane plus occurrence count, and orders output by baseline sequence with candidate-only additions placed by candidate sequence. It reports structured `added`, `removed`, `modified`, `ordering_changed`, and `fallback_regression` changes. Run-local fields such as `run_id`, `interaction_id`, `sequence`, and `fallback_tier` are ignored for generic modification checks so ordering and fallback regressions are reported through their dedicated change types. Callers can pass additional ignore paths such as `request.body.request_id` to suppress dynamic fields.
 
 ### Story K3: Implement diff renderers
 
 - Outcome: diffs are useful in terminal, JSON, and CI comment outputs.
 - To do:
-  - [ ] emit machine-readable JSON diff
-  - [ ] emit terminal summary
-  - [ ] emit GitHub markdown summary
-  - [ ] separate failing from informational diffs
+  - [x] emit machine-readable JSON diff
+  - [x] emit terminal summary
+  - [x] emit GitHub markdown summary
+  - [x] separate failing from informational diffs
+- Current implementation note:
+  `internal/analysis/diff` now exposes renderers for indented machine-readable JSON, terminal summaries, and GitHub markdown comments. JSON output includes full changes plus separate `failing_changes` and `informational_changes` arrays. Terminal and markdown output include the same summary counts and split sections. Added, removed, modified, and fallback-regression changes are currently classified as failing; ordering changes are informational until CI policy promotes them.
 
 ### Epic K completion checklist
 
-- [ ] baseline selection is deterministic
-- [ ] run alignment works on the examples
-- [ ] diff renderers exist for terminal, JSON, and GitHub markdown
-- [ ] fallback regressions are clearly surfaced
+- [x] baseline selection is deterministic
+- [x] run alignment works on the examples
+- [x] diff renderers exist for terminal, JSON, and GitHub markdown
+- [x] fallback regressions are clearly surfaced
 
 ## Epic L: GitHub Action
 

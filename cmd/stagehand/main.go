@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -46,6 +47,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runReplay(args[1:], stdout, stderr)
 	case "inspect":
 		return runInspect(args[1:], stdout, stderr)
+	case "baseline":
+		return runBaseline(args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", args[0], rootHelpText())
 	}
@@ -335,6 +338,123 @@ func finalizeRun(ctx context.Context, artifactStore store.ArtifactStore, runReco
 	return nil
 }
 
+func runBaseline(args []string, stdout io.Writer, stderr io.Writer) error {
+	if len(args) == 0 {
+		return fmt.Errorf("baseline requires a subcommand\n\n%s", baselineHelpText())
+	}
+
+	switch args[0] {
+	case "-h", "--help", "help":
+		_, _ = io.WriteString(stdout, baselineHelpText())
+		return nil
+	case "promote":
+		return runBaselinePromote(args[1:], stdout, stderr)
+	default:
+		return fmt.Errorf("unknown baseline subcommand %q\n\n%s", args[0], baselineHelpText())
+	}
+}
+
+func runBaselinePromote(args []string, stdout io.Writer, _ io.Writer) error {
+	flags := flag.NewFlagSet("baseline promote", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	runID := flags.String("run-id", "", "Complete run identifier to promote")
+	baselineID := flags.String("baseline-id", "", "Optional baseline identifier")
+	gitSHA := flags.String("git-sha", "", "Git SHA to attach to the baseline")
+	configPath := flags.String("config", "", "Path to stagehand.yml")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse baseline promote flags: %w\n\n%s", err, baselinePromoteHelpText())
+	}
+
+	resolvedRunID := strings.TrimSpace(*runID)
+	if resolvedRunID == "" {
+		return fmt.Errorf("baseline promote requires --run-id\n\n%s", baselinePromoteHelpText())
+	}
+
+	cfgPath := strings.TrimSpace(*configPath)
+	if cfgPath == "" {
+		cfgPath = defaultRuntimeConfigPath
+	}
+
+	ctx := context.Background()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load runtime config %q: %w", cfgPath, err)
+	}
+
+	dbPath := sqliteDatabasePath(cfg.Record.StoragePath)
+	sqliteStore, err := sqlitestore.OpenStore(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open local store %q: %w", dbPath, err)
+	}
+	defer sqliteStore.Close()
+
+	runRecord, err := sqliteStore.GetRunRecord(ctx, resolvedRunID)
+	if err != nil {
+		return fmt.Errorf("load baseline source run %q: %w", resolvedRunID, err)
+	}
+
+	resolvedGitSHA, err := resolveBaselineGitSHA(*gitSHA, runRecord)
+	if err != nil {
+		return err
+	}
+
+	resolvedBaselineID := strings.TrimSpace(*baselineID)
+	if resolvedBaselineID == "" {
+		resolvedBaselineID, err = generateBaselineID()
+		if err != nil {
+			return fmt.Errorf("generate baseline id: %w", err)
+		}
+	}
+
+	baseline := store.Baseline{
+		BaselineID:  resolvedBaselineID,
+		SessionName: runRecord.SessionName,
+		SourceRunID: runRecord.RunID,
+		GitSHA:      resolvedGitSHA,
+		CreatedAt:   time.Now().UTC(),
+	}
+	if err := sqliteStore.PutBaseline(ctx, baseline); err != nil {
+		return fmt.Errorf("promote run %q to baseline: %w", runRecord.RunID, err)
+	}
+
+	return emitJSON(stdout, baselinePromoteResult{
+		Mode:        "baseline_promote",
+		BaselineID:  baseline.BaselineID,
+		SessionName: baseline.SessionName,
+		SourceRunID: baseline.SourceRunID,
+		GitSHA:      baseline.GitSHA,
+		StoragePath: dbPath,
+	})
+}
+
+func resolveBaselineGitSHA(explicit string, runRecord store.RunRecord) (string, error) {
+	if trimmed := strings.TrimSpace(explicit); trimmed != "" {
+		return trimmed, nil
+	}
+	if trimmed := strings.TrimSpace(runRecord.GitSHA); trimmed != "" {
+		return trimmed, nil
+	}
+
+	sha, err := currentGitSHA()
+	if err != nil {
+		return "", fmt.Errorf("baseline promote requires --git-sha because source run %q has no git_sha and current git SHA could not be resolved: %w", runRecord.RunID, err)
+	}
+	return sha, nil
+}
+
+func currentGitSHA() (string, error) {
+	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", err
+	}
+	sha := strings.TrimSpace(string(out))
+	if sha == "" {
+		return "", fmt.Errorf("git rev-parse HEAD returned empty output")
+	}
+	return sha, nil
+}
+
 func importFailure(operation string, err error) error {
 	if strings.Contains(err.Error(), "validate imported interaction") {
 		return schemaValidationFailure(operation, err)
@@ -370,6 +490,15 @@ func generateRunID() (string, error) {
 	return "run_" + hex.EncodeToString(raw[:]), nil
 }
 
+func generateBaselineID() (string, error) {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+
+	return "base_" + hex.EncodeToString(raw[:]), nil
+}
+
 func sqliteDatabasePath(storagePath string) string {
 	cleaned := filepath.Clean(storagePath)
 	if strings.EqualFold(filepath.Ext(cleaned), ".db") || strings.EqualFold(filepath.Ext(cleaned), ".sqlite") || strings.EqualFold(filepath.Ext(cleaned), ".sqlite3") {
@@ -393,6 +522,7 @@ Commands:
   record   Run a command and persist captured interactions
   replay   Replay a stored run against a command
   inspect  Inspect a stored run in the terminal
+  baseline Promote and inspect baseline selections
 
 Global help:
   stagehand help
@@ -430,6 +560,27 @@ Flags:
   --session string     Session name to inspect the latest stored run from
   --config string      Path to stagehand.yml (default: stagehand.yml)
   --show-bodies        Expand request bodies and event payloads
+`
+}
+
+func baselineHelpText() string {
+	return `Usage:
+  stagehand baseline <subcommand> [flags]
+
+Subcommands:
+  promote  Promote a complete run to a session baseline
+`
+}
+
+func baselinePromoteHelpText() string {
+	return `Usage:
+  stagehand baseline promote --run-id <id> [--baseline-id id] [--git-sha sha] [--config path]
+
+Flags:
+  --run-id string       Complete run identifier to promote
+  --baseline-id string  Optional baseline identifier (default: generated)
+  --git-sha string      Git SHA to attach when the source run does not have one
+  --config string       Path to stagehand.yml (default: stagehand.yml)
 `
 }
 

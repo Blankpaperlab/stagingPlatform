@@ -62,6 +62,15 @@ type replayCommandResult struct {
 	FallbackTiersUsed      []string `json:"fallback_tiers_used"`
 }
 
+type baselinePromoteResult struct {
+	Mode        string `json:"mode"`
+	BaselineID  string `json:"baseline_id"`
+	SessionName string `json:"session_name"`
+	SourceRunID string `json:"source_run_id"`
+	GitSHA      string `json:"git_sha"`
+	StoragePath string `json:"storage_path"`
+}
+
 type runFailure struct {
 	status store.RunLifecycleStatus
 	code   recorder.IntegrityIssueCode

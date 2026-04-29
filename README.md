@@ -44,6 +44,9 @@ Current status:
 - Story J1 assertion schema and parser implemented with strict YAML validation and per-type field-combination checks
 - Story J2 core assertion evaluator implemented for count, ordering, payload-field, forbidden-operation, and fallback-prohibition checks
 - Story J3 cross-service assertion evaluator implemented for shallow entity equality checks with linked-pair evidence
+- Story K1 baseline promotion implemented for complete stored runs with deterministic latest-baseline selection
+- Story K2 diff alignment implemented for added, removed, modified, ordering, and fallback-regression changes
+- Story K3 diff renderers implemented for JSON, terminal summaries, and GitHub markdown
 - Dashboard remains deferred in Plan A and is represented by a placeholder
 
 Primary planning docs live under `docs/`.
@@ -77,7 +80,8 @@ Current local CLI workflow:
 1. Run `stagehand record --session <name> -- <command> [args...]` to launch a Stagehand-aware subprocess, collect its exported capture bundle, scrub it, and persist the run to SQLite.
 2. Run `stagehand replay (--run-id <id> | --session <name>) -- <command> [args...]` to seed a Stagehand-aware subprocess from a stored run and persist the replay run result.
 3. Run `stagehand inspect (--run-id <id> | --session <name>) [--show-bodies]` to inspect ordered interactions, nested calls, and failed-run integrity issues from the terminal.
-4. In Python child processes, call `stagehand.init_from_env()` or `stagehand.init(...)` so the SDK picks up the CLI-provided session/mode wiring.
+4. Run `stagehand baseline promote --run-id <id> [--git-sha <sha>]` to promote a complete run to the latest local baseline for its session.
+5. In Python child processes, call `stagehand.init_from_env()` or `stagehand.init(...)` so the SDK picks up the CLI-provided session/mode wiring.
 
 Minimal OpenAI verification agents:
 

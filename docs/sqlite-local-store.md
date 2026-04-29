@@ -222,6 +222,21 @@ Key fields:
 - `git_sha`
 - `created_at`
 
+Write path and eligibility:
+
+- `stagehand baseline promote --run-id <id>` creates a baseline row for the source run's session.
+- The CLI accepts `--baseline-id` for deterministic IDs in automation; otherwise it generates a `base_<hex>` ID.
+- The CLI uses `--git-sha` when supplied, then the source run's `git_sha`, then the current repository `HEAD`.
+- The store rejects baseline creation unless the source run exists, has lifecycle status `complete`, and belongs to the same session as the baseline.
+- Running, incomplete, and corrupted runs are inspectable, but they are not baseline-eligible because they are not replay-safe regression anchors.
+
+Selection rules:
+
+- Local SQLite baselines are scoped by `session_name`.
+- `GetLatestBaseline(session)` selects the latest row by `created_at DESC, baseline_id DESC`.
+- The `baseline_id` tie-breaker keeps selection deterministic when two rows share the same timestamp.
+- `stagehand.test.yml baseline.branch` is the CI/test-runner branch-selection input; the local SQLite baseline row does not currently persist branch names.
+
 ### `scrub_salts`
 
 Stores encrypted scrub salt material keyed by local session name.

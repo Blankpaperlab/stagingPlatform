@@ -38,6 +38,9 @@ func TestRunWritesRootHelpWithNoArgs(t *testing.T) {
 	if !strings.Contains(stdout.String(), "inspect") {
 		t.Fatalf("stdout = %q, want inspect command in help", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "baseline") {
+		t.Fatalf("stdout = %q, want baseline command in help", stdout.String())
+	}
 }
 
 func TestRunRecordRequiresSession(t *testing.T) {
@@ -504,6 +507,109 @@ func TestRunReplaySurfacesControlledFailureForStoredFailureInteraction(t *testin
 	}
 	if !strings.Contains(stderr.String(), "controlled replay failure: matched source interaction ended with error") {
 		t.Fatalf("stderr missing controlled replay failure\nstderr=%s", stderr.String())
+	}
+}
+
+func TestRunBaselinePromoteCreatesLatestBaseline(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedReplayRun(t, sqliteStore, "baseline-flow")
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	args := []string{
+		"baseline",
+		"promote",
+		"--run-id", sourceRunID,
+		"--baseline-id", "base_cli_001",
+		"--git-sha", "abc123",
+		"--config", configPath,
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("run(baseline promote) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	result := decodeJSONOutput[baselinePromoteResult](t, stdout.Bytes())
+	if result.Mode != "baseline_promote" {
+		t.Fatalf("result.Mode = %q, want baseline_promote", result.Mode)
+	}
+	if result.BaselineID != "base_cli_001" {
+		t.Fatalf("result.BaselineID = %q, want base_cli_001", result.BaselineID)
+	}
+	if result.SourceRunID != sourceRunID {
+		t.Fatalf("result.SourceRunID = %q, want %q", result.SourceRunID, sourceRunID)
+	}
+	if result.SessionName != "baseline-flow" {
+		t.Fatalf("result.SessionName = %q, want baseline-flow", result.SessionName)
+	}
+	if result.GitSHA != "abc123" {
+		t.Fatalf("result.GitSHA = %q, want abc123", result.GitSHA)
+	}
+
+	sqliteStore, err = sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore(reopen) error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	latest, err := sqliteStore.GetLatestBaseline(context.Background(), "baseline-flow")
+	if err != nil {
+		t.Fatalf("GetLatestBaseline() error = %v", err)
+	}
+	if latest.BaselineID != "base_cli_001" || latest.SourceRunID != sourceRunID || latest.GitSHA != "abc123" {
+		t.Fatalf("latest baseline = %#v, want promoted source", latest)
+	}
+}
+
+func TestRunBaselinePromoteRejectsIncompleteRuns(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	runRecord, err := newRunRecordForMode("baseline-incomplete", minimalConfig(), recorder.RunModeRecord)
+	if err != nil {
+		t.Fatalf("newRunRecordForMode() error = %v", err)
+	}
+	if err := sqliteStore.CreateRun(context.Background(), runRecord); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	args := []string{
+		"baseline",
+		"promote",
+		"--run-id", runRecord.RunID,
+		"--baseline-id", "base_incomplete",
+		"--git-sha", "abc123",
+		"--config", configPath,
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = run(args, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(baseline promote incomplete) expected error")
+	}
+	if !strings.Contains(err.Error(), "must be \"complete\"") {
+		t.Fatalf("run(baseline promote incomplete) error = %v, want complete-run eligibility", err)
 	}
 }
 
