@@ -28,6 +28,22 @@ Use these statuses on your board:
 
 ## Plan A Epics
 
+## Product Promise for Plan A
+
+Stagehand is not limited to prebuilt OpenAI and Stripe workflows. The Plan A product promise is:
+
+> Stagehand tests agent workflows across LLM calls, third-party APIs, internal APIs, and custom tools.
+
+OpenAI and Stripe are prebuilt profiles that prove model-aware replay and stateful service simulation. The broader product boundary is generic enough for company-specific workflows: internal billing APIs, CRM wrappers, support/admin APIs, private microservices, MCP-style tools, and local Python or TypeScript functions.
+
+Plan A supports this through three execution boundaries:
+
+1. Model boundary: OpenAI-style and later provider-specific LLM calls.
+2. External API boundary: prebuilt service profiles such as Stripe.
+3. Custom API/tool boundary: generic HTTP replay plus explicit Python and TypeScript tool wrappers.
+
+V1 must not promise automatic stateful simulation for arbitrary private APIs. The V1 promise is generic record/replay, diff, assertions, and failure injection across those boundaries. User-defined simulator hooks and OpenAPI-assisted simulation remain later expansion paths after the core loop is proven.
+
 ## Epic A: Repo Scaffold, CI, Packaging Skeleton
 
 - Epic code: `A`
@@ -691,52 +707,282 @@ M3 adds `stagehand conformance run`, the smoke case file at `conformance/smoke.y
 - [x] nightly runner exists
 - [x] drift results are stored and reviewable
 
-## Epic N: Generic HTTP Simulator
+## Epic N: Custom API Replay Layer
 
 - Epic code: `N`
 - Milestone span: `M2`
-- Estimate: `4d`
-- Goal: cover long-tail APIs without exploding simulator count.
-- Depends on: `H`
+- Estimate: `7d`
+- Goal: make internal APIs and long-tail HTTP services first-class in the record/replay/diff/assertion loop without building a dedicated simulator for each service.
+- Depends on: `H`, `F`, `J`, `K`
 
-### Story N1: Implement exact replay path
+### Story N1: Generic HTTP exact replay
 
-- Outcome: generic HTTP can replay recorded responses with no service-specific logic.
+- Outcome: any HTTP API captured by the SDKs can be replayed exactly without touching the live service.
 - To do:
-  - [ ] implement generic request matching
+  - [ ] match by method, host, path, query, selected headers, and normalized body
   - [ ] store and replay status, headers, and body
-  - [ ] normalize dynamic but ignorable fields where necessary
+  - [ ] fail closed on replay miss before live network dispatch
+  - [ ] preserve scrubbed request and response payload shape
+  - [ ] add tests for internal-style REST endpoints with JSON request and response bodies
 
-### Story N2: Implement nearest-neighbor path
+### Story N2: Service mapping config
 
-- Outcome: simple request variation does not always force a miss.
+- Outcome: users can name company APIs and expose stable service/operation labels across inspect, diff, assertions, and error injection.
 - To do:
-  - [ ] define mutable field heuristics
+  - [ ] add service mapping entries to `stagehand.yml`
+  - [ ] match services by host and optional path prefix
+  - [ ] infer operation names such as `POST /v1/customers/search`
+  - [ ] support aliases such as `internal-crm`, `billing-api`, and `admin-api`
+  - [ ] show mapped service and operation names in `inspect`
+  - [ ] make mapped service and operation names available to diff and assertions
+
+Example config shape:
+
+```yaml
+services:
+  - name: internal-crm
+    type: api
+    match:
+      host: crm.internal.acme.com
+      path_prefix: /v1
+    replay:
+      mode: generic_http
+      allowed_tiers: [0, 1]
+```
+
+### Story N3: Dynamic field ignore config
+
+- Outcome: replay and diff can tolerate expected request variation such as trace IDs, timestamps, pagination cursors, and generated request IDs.
+- To do:
+  - [ ] support ignored request paths per mapped service
+  - [ ] support ignored response paths per mapped service
+  - [ ] apply ignored paths before exact-match fingerprinting where configured
+  - [ ] reuse the diff engine's ignored-field model where practical
+  - [ ] document common ignore patterns for request IDs, trace IDs, timestamps, cursors, and idempotency keys
+
+Example config shape:
+
+```yaml
+services:
+  - name: internal-billing
+    type: api
+    match:
+      host: billing.internal.acme.com
+      path_prefix: /api
+    replay:
+      mode: generic_http
+      allowed_tiers: [0]
+    ignore:
+      request_paths:
+        - headers.x-request-id
+        - headers.x-trace-id
+        - body.request_id
+        - body.created_at
+      response_paths:
+        - body.generated_at
+        - body.trace_id
+```
+
+### Story N4: Nearest-neighbor matching
+
+- Outcome: simple request variation does not always force a miss when tier 1 fallback is explicitly allowed.
+- To do:
+  - [ ] define mutable field heuristics for generic HTTP
   - [ ] support pagination and timestamp-like values
   - [ ] record why a tier-1 match was selected
   - [ ] expose tier selection in artifacts
+  - [ ] make fallback-regression assertions work for custom API calls
 
-### Story N3: Document limitations
+### Story N5: Generic HTTP error injection
 
-- Outcome: users know when generic HTTP is enough and when it is not.
+- Outcome: users can test agent recovery when internal APIs timeout, return 500s, return malformed payloads, or become slow.
+- To do:
+  - [ ] inject timeout responses
+  - [ ] inject latency
+  - [ ] inject HTTP status and response body
+  - [ ] match by service, operation, nth call, and probability
+  - [ ] persist provenance metadata for injected generic HTTP failures
+  - [ ] expose injected failures in inspect, diff, and assertion evidence
+
+Example config shape:
+
+```yaml
+error_injection:
+  - name: CRM timeout on third lookup
+    service: internal-crm
+    operation: POST /v1/customers/search
+    nth_call: 3
+    response:
+      error: timeout
+
+  - name: Billing API returns 500
+    service: internal-billing
+    operation: POST /api/refunds
+    probability: 1.0
+    response:
+      status: 500
+      body:
+        error: internal_server_error
+```
+
+### Story N6: Custom API docs and demo
+
+- Outcome: users understand that Stagehand works with their own internal services, not only prebuilt provider profiles.
 - To do:
   - [ ] document supported behavior
   - [ ] document unsupported stateful semantics
-  - [ ] show when to request a dedicated simulator
+  - [ ] show when exact generic HTTP is enough
+  - [ ] show when a prebuilt or user-defined simulator hook is needed later
+  - [ ] build an internal CRM replay demo
+  - [ ] build an internal billing replay demo
+  - [ ] build a custom API regression demo used by CI
 
 ### Epic N completion checklist
 
-- [ ] exact replay works
-- [ ] tier-1 matching works for simple variance
+- [ ] generic HTTP exact replay works for internal-style APIs
+- [ ] service mapping labels custom APIs clearly
+- [ ] dynamic field ignores work for common request variance
+- [ ] tier-1 matching works for simple variance when allowed
+- [ ] generic HTTP error injection works
+- [ ] custom API demos exist
 - [ ] limitations are documented
+
+## Epic Y: Custom Tool Capture and Replay
+
+- Epic code: `Y`
+- Milestone span: `M3-M5`
+- Estimate: `8d`
+- Goal: support non-HTTP agent tools such as local functions, internal SDK wrappers, database helper functions, MCP-style tools, shell wrappers, filesystem helpers, queue publishers, and business-specific tool calls.
+- Depends on: `B`, `D`, `G`, `E`, `J`, `K`, `N`
+
+### Story Y1: Python tool wrapper
+
+- Outcome: Python users can mark local functions as Stagehand tools and replay recorded outputs without calling the real implementation.
+- To do:
+  - [ ] add `@stagehand.tool(...)`
+  - [ ] record tool name, arguments, result, error, timing, side-effect type, and call order
+  - [ ] scrub arguments, results, and errors before persistence
+  - [ ] replay recorded results in `replay` mode
+  - [ ] raise recorded errors in `replay` mode
+  - [ ] fail closed on missing recorded tool call
+  - [ ] add tests for successful calls, errors, async functions, nested tool calls, and scrubbed values
+
+Example API:
+
+```python
+@stagehand.tool(name="lookup_customer", side_effect="read", replay="recorded")
+def lookup_customer(email: str):
+    return crm.lookup_customer(email)
+```
+
+### Story Y2: TypeScript tool wrapper
+
+- Outcome: TypeScript users can wrap local async or sync tools with the same record/replay behavior as Python.
+- To do:
+  - [ ] add `stagehand.tool(...)`
+  - [ ] record tool name, arguments, result, error, timing, side-effect type, and call order
+  - [ ] scrub arguments, results, and errors before persistence
+  - [ ] replay recorded results in `replay` mode
+  - [ ] throw recorded errors in `replay` mode
+  - [ ] fail closed on missing recorded tool call
+  - [ ] add tests for successful calls, errors, async functions, nested tool calls, and scrubbed values
+
+Example API:
+
+```ts
+const lookupCustomer = stagehand.tool(
+  { name: 'lookup_customer', sideEffect: 'read', replay: 'recorded' },
+  async ({ email }) => crm.lookupCustomer(email)
+);
+```
+
+### Story Y3: Tool artifact schema and inspect support
+
+- Outcome: tool calls appear in the same timeline as model and HTTP interactions.
+- To do:
+  - [ ] define canonical tool-call interaction fields
+  - [ ] preserve ordering relative to model and HTTP calls
+  - [ ] support parent/child interaction links for tools called from model tool-call handlers
+  - [ ] show tool name, side-effect type, timing, args, result, and error in `inspect`
+  - [ ] include tool interactions in diff alignment
+
+### Story Y4: Tool assertions
+
+- Outcome: teams can assert business rules over local tool usage.
+- To do:
+  - [ ] assert that a tool was called
+  - [ ] assert that a tool was not called
+  - [ ] assert tool arguments match expected shape or field values
+  - [ ] assert tool ordering relative to model calls and API calls
+  - [ ] assert tool result values are linked to later API calls
+
+Example assertion goals:
+
+```yaml
+assertions:
+  - name: Agent must lookup customer before refund
+    type: ordering
+    before:
+      tool: lookup_customer
+    after:
+      service: stripe
+      operation: POST /v1/refunds
+```
+
+### Story Y5: Tool error injection
+
+- Outcome: users can test agent recovery when custom tools fail.
+- To do:
+  - [ ] inject recorded-style tool errors
+  - [ ] inject typed tool errors by tool name
+  - [ ] match by tool, nth call, and probability
+  - [ ] persist provenance metadata for injected tool failures
+  - [ ] expose injected tool failures in inspect, diff, and assertion evidence
+
+Example config shape:
+
+```yaml
+error_injection:
+  - name: lookup failure on second call
+    tool: lookup_customer
+    nth_call: 2
+    error:
+      type: not_found
+```
+
+### Story Y6: Custom tool demo
+
+- Outcome: the main demo proves Stagehand handles real private business workflows, not only provider demos.
+- To do:
+  - [ ] build a flow that calls OpenAI, a custom `lookup_customer` tool, an internal billing API, Stripe, and a support-ticket API
+  - [ ] record the workflow once
+  - [ ] replay it offline
+  - [ ] diff a changed behavior
+  - [ ] fail an assertion on unsafe tool/API ordering
+  - [ ] inject a custom tool failure and verify recovery behavior
+
+### Epic Y completion checklist
+
+- [ ] Python tool wrapper records and replays local tools
+- [ ] TypeScript tool wrapper records and replays local tools
+- [ ] tool calls appear in inspect and diff timelines
+- [ ] assertions can target tool calls
+- [ ] error injection can target tool calls
+- [ ] a custom tool demo exists
+
+### Explicit non-goals for Epic Y
+
+- do not infer arbitrary business semantics from tool names or payloads
+- do not build automatic stateful simulation for arbitrary custom APIs in V1
+- do not require OpenAPI, MCP, or any schema system for the base wrapper API
 
 ## Epic O: Example Flows, Docs, Packaging
 
 - Epic code: `O`
 - Milestone span: `M5-M6`
-- Estimate: `8d`
+- Estimate: `10d`
 - Goal: make the product understandable, runnable, and launchable.
-- Depends on: `D`, `I`, `J`, `K`, `L`
+- Depends on: `D`, `I`, `J`, `K`, `L`, `N`, `Y`
 
 ### Story O1: Build the example flows
 
@@ -745,6 +991,7 @@ M3 adds `stagehand conformance run`, the smoke case file at `conformance/smoke.y
   - [ ] create onboarding example
   - [ ] create refund example
   - [ ] create support escalation example
+  - [ ] create custom API and custom tool example flow
   - [ ] wire examples into automated test paths where possible
   - [ ] ensure each example demonstrates one core product capability
 - Verification-agent slice:
@@ -761,6 +1008,8 @@ M3 adds `stagehand conformance run`, the smoke case file at `conformance/smoke.y
   - [ ] write getting-started guide
   - [ ] write scrubbing guide
   - [ ] write error injection guide
+  - [ ] write custom API replay guide
+  - [ ] write custom tool wrapper guide
   - [ ] write limitations page
   - [ ] write baseline and CI usage guide
 
@@ -776,6 +1025,7 @@ M3 adds `stagehand conformance run`, the smoke case file at `conformance/smoke.y
 ### Epic O completion checklist
 
 - [ ] three example flows exist
+- [ ] custom API and custom tool example exists
 - [ ] core docs exist
 - [ ] install steps are documented and tested
 - [ ] examples serve as regression fixtures
@@ -893,6 +1143,8 @@ M3 adds `stagehand conformance run`, the smoke case file at `conformance/smoke.y
   - [ ] draft blog post or launch article
   - [ ] draft short-form social posts
   - [ ] tailor messaging for AI platform engineers
+  - [ ] position Stagehand as CI for agents that call LLMs, third-party APIs, internal APIs, and custom tools
+  - [ ] avoid positioning OpenAI and Stripe as the product boundary; describe them as prebuilt profiles
 
 ### Story R3: Run outreach and launch follow-up
 
@@ -1182,3 +1434,16 @@ If execution starts now, open these first:
 5. `P1` Write threat model and security posture docs
 
 Do not persist `D2` captures as durable artifacts before `E1` exists in at least a minimal form. In-memory interception can land earlier, but stored recordings must not bypass scrubbing.
+
+## Current Launch-Critical Planning Additions
+
+After the already-completed foundational stories, the custom workflow additions should be opened as launch-critical product tickets:
+
+1. `N1` Generic HTTP exact replay
+2. `N2` Service mapping config
+3. `N3` Dynamic field ignore config
+4. `Y1` Python tool wrapper
+5. `Y2` TypeScript tool wrapper
+6. `Y3` Tool artifact schema and inspect support
+
+These are the scoped version of the custom API/custom tool strategy. User-defined stateful simulator hooks and OpenAPI-assisted generation remain later expansion work.

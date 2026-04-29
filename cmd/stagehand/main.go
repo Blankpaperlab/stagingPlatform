@@ -814,9 +814,15 @@ func resolveBaselineGitSHA(explicit string, runRecord store.RunRecord) (string, 
 }
 
 func currentGitSHA() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "git", "rev-parse", "HEAD").CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("git rev-parse HEAD timed out")
+	}
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	sha := strings.TrimSpace(string(out))
 	if sha == "" {

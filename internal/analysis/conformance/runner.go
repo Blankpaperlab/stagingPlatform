@@ -46,6 +46,9 @@ func WithSessionStore(sessionStore store.SessionStore) Option {
 
 func WithEnv(env map[string]string) Option {
 	return func(r *Runner) {
+		if env == nil {
+			return
+		}
 		r.env = map[string]string{}
 		for key, value := range env {
 			r.env[key] = value
@@ -86,16 +89,17 @@ func NewRunner(opts ...Option) *Runner {
 }
 
 func (r *Runner) RunCase(ctx context.Context, testCase Case) Result {
+	now := r.now()
 	result := Result{
 		CaseID:  testCase.ID,
 		Service: testCase.Service,
 		RealRun: RunReference{
-			RunID:       runReferenceID("real", testCase.ID, r.now()),
+			RunID:       runReferenceID("real", testCase.ID, now),
 			SessionName: sessionName(testCase.ID, "real"),
 			Mode:        "record",
 		},
 		SimulatorRun: RunReference{
-			RunID:       runReferenceID("sim", testCase.ID, r.now()),
+			RunID:       runReferenceID("sim", testCase.ID, now),
 			SessionName: sessionName(testCase.ID, "sim"),
 			Mode:        "record",
 		},
@@ -110,7 +114,7 @@ func (r *Runner) RunCase(ctx context.Context, testCase Case) Result {
 		return result
 	}
 
-	realObservations, err := r.runReal(ctx, testCase, result.RealRun.SessionName)
+	realObservations, err := r.runReal(ctx, testCase)
 	if err != nil {
 		result.Status = ResultStatusError
 		result.Failures = append(result.Failures, Failure{Code: "real_runner_error", Message: err.Error()})
@@ -156,7 +160,7 @@ func (r *Runner) envValue(key string) string {
 	return os.Getenv(key)
 }
 
-func (r *Runner) runReal(ctx context.Context, testCase Case, sessionName string) ([]observation, error) {
+func (r *Runner) runReal(ctx context.Context, testCase Case) ([]observation, error) {
 	switch strings.ToLower(testCase.Service) {
 	case "openai":
 		return r.runOpenAIReal(ctx, testCase)

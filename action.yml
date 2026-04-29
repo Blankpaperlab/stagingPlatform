@@ -53,6 +53,9 @@ inputs:
     description: Name for the uploaded GitHub Actions artifact.
     required: false
     default: stagehand-run
+  comment-id:
+    description: Stable identifier for the PR comment marker. Defaults to artifact-name.
+    required: false
   artifact-retention-days:
     description: Retention period for uploaded artifacts. Empty uses the repository default.
     required: false
@@ -111,6 +114,8 @@ runs:
         INPUT_IGNORE_FIELDS: ${{ inputs.ignore-fields }}
         INPUT_ASSERTIONS: ${{ inputs.assertions }}
         INPUT_ARTIFACT_PATHS: ${{ inputs.artifact-paths }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INPUT_COMMENT_ID: ${{ inputs.comment-id }}
         INPUT_OUTPUT_DIR: ${{ inputs.output-dir }}
         INPUT_POST_PR_COMMENT: ${{ inputs.post-pr-comment }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token || github.token }}
@@ -140,6 +145,8 @@ runs:
         INPUT_REPORT_PATH: ${{ steps.stagehand.outputs.report-path }}
         INPUT_SUMMARY_PATH: ${{ steps.stagehand.outputs.summary-path }}
         INPUT_ARTIFACT_URL: ${{ steps.upload-artifact-default.outputs.artifact-url || steps.upload-artifact-retained.outputs.artifact-url }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INPUT_COMMENT_ID: ${{ inputs.comment-id }}
       run: node "$GITHUB_ACTION_PATH/scripts/stagehand-github-action.mjs"
     - if: ${{ steps.stagehand.outputs.failed == 'true' }}
       shell: bash

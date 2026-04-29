@@ -47,7 +47,11 @@ func decodeHTTPObservation(response *http.Response) (observation, error) {
 		Response:   map[string]any{"body": decoded},
 	}
 	if response.StatusCode >= 400 {
-		observed.Error = decoded
+		observed.Error = map[string]any{
+			"status":      response.Status,
+			"status_code": response.StatusCode,
+			"body":        decoded,
+		}
 	}
 	return observed, nil
 }
@@ -107,17 +111,17 @@ func encodeStripeForm(prefix string, value any, values url.Values) {
 			if prefix != "" {
 				field = prefix + "[" + key + "]"
 			}
-			values.Set(field, typed[key])
+			values.Add(field, typed[key])
 		}
 	case []any:
-		for idx, item := range typed {
-			encodeStripeForm(fmt.Sprintf("%s[%d]", prefix, idx), item, values)
+		for _, item := range typed {
+			encodeStripeForm(prefix+"[]", item, values)
 		}
 	case nil:
 		return
 	default:
 		if prefix != "" {
-			values.Set(prefix, fmt.Sprint(typed))
+			values.Add(prefix, fmt.Sprint(typed))
 		}
 	}
 }

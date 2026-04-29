@@ -39,6 +39,8 @@ cases:
           reason: Token accounting is provider-owned metadata.
         - path: response.body.system_fingerprint
           reason: Backend fingerprint can change independently of simulator semantics.
+        - path: response.body.choices[0].message.content
+          reason: Model surface text varies; the smoke case checks response structure rather than exact text.
 
   - id: stripe-customer-smoke
     service: stripe

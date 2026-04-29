@@ -2,7 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-const commentMarker = '<!-- stagehand-pr-report -->';
+const defaultFailOn = ['behavior_diff', 'assertion_failure'];
+const commandTimeoutMS = 10 * 60 * 1000;
 
 function input(name, fallback = '') {
   const key = `INPUT_${name.replace(/ /g, '_').replace(/-/g, '_').toUpperCase()}`;
@@ -19,6 +20,11 @@ function splitList(value) {
 
 function isTruthy(value) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function commentMarker(commentID) {
+  const stableID = String(commentID || 'stagehand-run').replace(/[^a-zA-Z0-9_.-]/g, '-');
+  return `<!-- stagehand-pr-report:${stableID} -->`;
 }
 
 function shellSplit(command) {
@@ -74,7 +80,7 @@ function shellSplit(command) {
 function parseTestConfig(path) {
   const defaults = {
     session: '',
-    failOn: ['behavior_diff', 'assertion_failure'],
+    failOn: defaultFailOn,
     reportFormat: 'github-markdown',
   };
   if (!existsSync(path)) {
@@ -82,9 +88,21 @@ function parseTestConfig(path) {
   }
 
   const lines = readFileSync(path, 'utf8').split(/\r?\n/);
-  const cfg = { ...defaults };
+  const cfg = { ...defaults, failOn: [...defaults.failOn] };
   let section = '';
-  let listKey = '';
+  let collectingFailOn = false;
+  let collectedFailOn = [];
+
+  function finishFailOn() {
+    if (!collectingFailOn) {
+      return;
+    }
+    if (collectedFailOn.length > 0) {
+      cfg.failOn = collectedFailOn;
+    }
+    collectingFailOn = false;
+    collectedFailOn = [];
+  }
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -93,29 +111,60 @@ function parseTestConfig(path) {
     }
     const topLevel = !line.startsWith(' ') && !line.startsWith('\t');
     if (topLevel && trimmed.endsWith(':')) {
+      finishFailOn();
       section = trimmed.slice(0, -1);
-      listKey = '';
       continue;
     }
     if (topLevel && trimmed.startsWith('session:')) {
+      finishFailOn();
       cfg.session = unquote(trimmed.slice('session:'.length).trim());
       continue;
     }
-    if (section === 'ci' && trimmed.startsWith('report_format:')) {
-      cfg.reportFormat = unquote(trimmed.slice('report_format:'.length).trim());
+    if (topLevel) {
+      finishFailOn();
+      continue;
+    }
+    if (section !== 'ci') {
+      continue;
+    }
+    if (trimmed.startsWith('- ')) {
+      if (collectingFailOn) {
+        collectedFailOn.push(unquote(trimmed.slice(2).trim()));
+      }
       continue;
     }
     if (section === 'ci' && trimmed.startsWith('fail_on:')) {
-      listKey = 'fail_on';
-      cfg.failOn = [];
+      finishFailOn();
+      const value = trimmed.slice('fail_on:'.length).trim();
+      if (value === '') {
+        collectingFailOn = true;
+        collectedFailOn = [];
+      } else if (value.startsWith('[') && value.endsWith(']')) {
+        const parsed = parseFlowList(value);
+        if (parsed.length > 0) {
+          cfg.failOn = parsed;
+        }
+      } else {
+        cfg.failOn = splitList(value);
+      }
       continue;
     }
-    if (section === 'ci' && listKey === 'fail_on' && trimmed.startsWith('- ')) {
-      cfg.failOn.push(unquote(trimmed.slice(2).trim()));
+    finishFailOn();
+    if (trimmed.startsWith('report_format:')) {
+      cfg.reportFormat = unquote(trimmed.slice('report_format:'.length).trim());
     }
   }
 
+  finishFailOn();
   return cfg;
+}
+
+function parseFlowList(value) {
+  return value
+    .slice(1, -1)
+    .split(',')
+    .map((item) => unquote(item.trim()))
+    .filter(Boolean);
 }
 
 function unquote(value) {
@@ -128,9 +177,13 @@ function runCommand(binary, args, label) {
     encoding: 'utf8',
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: commandTimeoutMS,
   });
   if (result.stderr) {
     process.stderr.write(result.stderr);
+  }
+  if (result.error) {
+    throw new Error(`${label} failed: ${result.error.message}`);
   }
   if (result.status !== 0) {
     const detail = result.stdout ? `\nstdout:\n${result.stdout}` : '';
@@ -253,10 +306,14 @@ function markdownEscape(value) {
   return String(value).replaceAll('|', '\\|').replaceAll('\n', ' ');
 }
 
+function markdownInline(value) {
+  return String(value).replaceAll('`', "'");
+}
+
 function localInspectionGuidance(summary) {
   const lines = ['### Local inspection'];
   for (const session of summary.sessions ?? []) {
-    lines.push('', `For \`${session.session}\`:`);
+    lines.push('', `For \`${markdownInline(session.session)}\`:`);
     lines.push(
       `- Inspect replay: \`stagehand inspect --run-id ${session.replay_run_id} --show-bodies\``
     );
@@ -270,7 +327,7 @@ function localInspectionGuidance(summary) {
   return `${lines.join('\n')}\n`;
 }
 
-function buildPRComment(reportMarkdown, summary, artifactURL) {
+function buildPRComment(reportMarkdown, summary, artifactURL, marker) {
   const status = summary.failed ? 'failed' : 'passed';
   const sessionRows = (summary.sessions ?? [])
     .map((session) =>
@@ -297,7 +354,7 @@ function buildPRComment(reportMarkdown, summary, artifactURL) {
     ? `\nArtifact: [Stagehand reports and run data](${artifactURL})\n`
     : '\nArtifact: not uploaded by this action run.\n';
   const body = [
-    commentMarker,
+    marker,
     `## Stagehand CI ${status}`,
     artifactLine,
     table,
@@ -334,7 +391,7 @@ async function githubRequest(method, path, token, body) {
   return response.json();
 }
 
-async function postOrUpdatePRComment({ token, reportPath, summaryPath, artifactURL }) {
+async function postOrUpdatePRComment({ token, reportPath, summaryPath, artifactURL, marker }) {
   if (!token) {
     console.log('Skipping PR comment: github-token input is empty.');
     return;
@@ -356,13 +413,13 @@ async function postOrUpdatePRComment({ token, reportPath, summaryPath, artifactU
   const [owner, repo] = repository.split('/');
   const summary = JSON.parse(readFileSync(summaryPath, 'utf8'));
   const reportMarkdown = readFileSync(reportPath, 'utf8');
-  const body = buildPRComment(reportMarkdown, summary, artifactURL);
+  const body = buildPRComment(reportMarkdown, summary, artifactURL, marker);
   const comments = await githubRequest(
     'GET',
     `/repos/${owner}/${repo}/issues/${number}/comments?per_page=100`,
     token
   );
-  const existing = comments.find((comment) => comment.body?.includes(commentMarker));
+  const existing = comments.find((comment) => comment.body?.includes(marker));
   if (existing) {
     await githubRequest('PATCH', `/repos/${owner}/${repo}/issues/comments/${existing.id}`, token, {
       body,
@@ -411,6 +468,7 @@ function main() {
   const artifactPaths = [outputDir, ...splitList(input('artifact-paths', '.stagehand/runs'))].join(
     '\n'
   );
+  const marker = commentMarker(input('comment-id', input('artifact-name', 'stagehand-run')));
   const commandArgs = shellSplit(command);
   if (commandArgs.length === 0) {
     throw new Error('command input did not contain an executable');
@@ -514,7 +572,7 @@ function main() {
   writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
   writeFileSync(
     commentPreviewPath,
-    buildPRComment(readFileSync(combinedReportPath, 'utf8'), summary, '')
+    buildPRComment(readFileSync(combinedReportPath, 'utf8'), summary, '', marker)
   );
 
   writeOutput('report-path', combinedReportPath);
@@ -533,6 +591,7 @@ try {
       reportPath: input('report-path'),
       summaryPath: input('summary-path'),
       artifactURL: input('artifact-url'),
+      marker: commentMarker(input('comment-id', input('artifact-name', 'stagehand-run'))),
     });
   } else {
     main();
