@@ -1,0 +1,167 @@
+name: Stagehand Refund Verification
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+
+jobs:
+  refund-verification:
+    name: Replay, diff, assertions, comments, and artifacts
+    runs-on: ubuntu-latest
+
+    env:
+      STAGEHAND_CUSTOMER_EMAIL: refund-${{ github.run_id }}-${{ github.run_attempt }}@example.com
+      STAGEHAND_E2E_OUT: ${{ github.workspace }}/.stagehand/e2e
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: sdk/python/pyproject.toml
+
+      - name: Build local Stagehand CLI
+        run: go build -o bin/stagehand ./cmd/stagehand
+
+      - name: Install example dependencies
+        run: python -m pip install -e "sdk/python[dev]" openai stripe
+
+      - name: Run offline example checks
+        run: bash examples/end-to-end-verification/verify.sh
+
+      - name: Check live verification secrets
+        id: live-secrets
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: |
+          if [[ -n "$OPENAI_API_KEY" && -n "$STRIPE_SECRET_KEY" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Live Stagehand verification skipped because OPENAI_API_KEY or STRIPE_SECRET_KEY is missing."
+          fi
+
+      - name: Create live baseline and run full local verification
+        if: ${{ steps.live-secrets.outputs.available == 'true' }}
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STAGEHAND_EXPECT_STATUS: refunded
+        run: bash examples/end-to-end-verification/verify.sh --live
+
+      - name: Write intentional failing assertion file
+        if: ${{ steps.live-secrets.outputs.available == 'true' }}
+        run: |
+          cat > .stagehand/e2e/intentional-regression-assertions.yml <<'YAML'
+          schema_version: v1alpha1
+          assertions:
+            - id: intentional-openai-count-regression
+              type: count
+              description: This assertion is intentionally wrong to prove CI failure wiring.
+              match:
+                service: openai
+                operation: chat.completions.create
+              expect:
+                count:
+                  equals: 99
+          YAML
+
+      - name: Stagehand refund replay diff
+        if: ${{ steps.live-secrets.outputs.available == 'true' }}
+        id: refund-replay-primary
+        continue-on-error: true
+        uses: ./
+        env:
+          STAGEHAND_EXPECT_STATUS: refunded
+          STAGEHAND_CUSTOMER_EMAIL: ${{ env.STAGEHAND_CUSTOMER_EMAIL }}
+        with:
+          command: python examples/end-to-end-verification/agent.py
+          sessions: refund-flow-baseline
+          config: .stagehand/e2e/stagehand.e2e.yml
+          stagehand-binary: bin/stagehand
+          baseline-source: latest
+          assertions: examples/end-to-end-verification/assertions.yml
+          output-dir: .stagehand/action/refund-primary
+          report-format: github-markdown
+          ignore-fields: |
+            request.body.customer
+            request.body.payment_intent
+            request.body.metadata
+            response.body.id
+            response.body.created
+            response.body.client_secret
+            response.body.balance_transaction
+            response.body.customer
+            response.body.payment_intent
+            response.body.metadata
+            response.body.data[*].id
+            response.body.data[*].created
+            response.body.data[*].client_secret
+            response.body.data[*].customer
+            response.body.data[*].payment_intent
+            response.body.data[*].metadata
+          fail-on: |
+            behavior_diff
+            assertion_failure
+            fallback_regression
+          artifact-paths: |
+            .stagehand/e2e
+            .stagehand/conformance
+            .stagehand/action
+          artifact-name: stagehand-refund-primary
+          comment-id: refund-flow-primary
+
+      - name: Stagehand intentional assertion failure smoke
+        if: ${{ steps.live-secrets.outputs.available == 'true' }}
+        id: refund-replay-regression
+        continue-on-error: true
+        uses: ./
+        env:
+          STAGEHAND_EXPECT_STATUS: refunded
+          STAGEHAND_CUSTOMER_EMAIL: ${{ env.STAGEHAND_CUSTOMER_EMAIL }}
+        with:
+          command: python examples/end-to-end-verification/agent.py
+          sessions: refund-flow-baseline
+          config: .stagehand/e2e/stagehand.e2e.yml
+          stagehand-binary: bin/stagehand
+          baseline-source: latest
+          assertions: .stagehand/e2e/intentional-regression-assertions.yml
+          output-dir: .stagehand/action/refund-regression-smoke
+          report-format: github-markdown
+          fail-on: assertion_failure
+          artifact-paths: |
+            .stagehand/e2e
+            .stagehand/action
+          artifact-name: stagehand-refund-regression-smoke
+          comment-id: refund-flow-regression-smoke
+
+      - name: Verify intentional regression smoke failed
+        if: ${{ steps.live-secrets.outputs.available == 'true' && steps.refund-replay-regression.outcome != 'failure' }}
+        run: |
+          echo "The intentional Stagehand assertion-failure smoke did not fail as expected."
+          exit 1
+
+      - name: Fail on Stagehand regressions
+        if: ${{ steps.live-secrets.outputs.available == 'true' && steps.refund-replay-primary.outcome == 'failure' }}
+        run: |
+          echo "Stagehand verification found behavior diffs, assertion failures, or fallback regressions."
+          exit 1
