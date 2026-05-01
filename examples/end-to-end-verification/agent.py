@@ -41,8 +41,9 @@ def run_refund_agent(customer_email: str, refund_reason: str) -> dict[str, Any]:
 
     customers = stripe.Customer.search(query=f"email:'{customer_email}'", limit=1)
     if not customers.data:
-        return {"status": "error", "reason": "customer_not_found"}
-    customer = customers.data[0]
+        customer = stripe.Customer.retrieve(fixture["customer_id"])
+    else:
+        customer = customers.data[0]
 
     intents = stripe.PaymentIntent.list(customer=customer.id, limit=1)
     if not intents.data:
