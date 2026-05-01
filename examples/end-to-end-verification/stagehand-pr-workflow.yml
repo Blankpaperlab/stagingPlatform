@@ -1,0 +1,156 @@
+name: Stagehand Refund Verification
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+
+jobs:
+  refund-verification:
+    name: Replay, diff, assertions, and conformance
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: sdk/python/pyproject.toml
+
+      - name: Build local Stagehand CLI
+        run: go build -o bin/stagehand ./cmd/stagehand
+
+      - name: Install example dependencies
+        run: python -m pip install -e "sdk/python[dev]" openai stripe
+
+      - name: Run offline example checks
+        run: bash examples/end-to-end-verification/verify.sh
+
+      - name: Run Stripe refund conformance
+        id: refund-conformance
+        continue-on-error: true
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+        run: |
+          mkdir -p .stagehand/conformance/refund
+          bin/stagehand conformance run \
+            --cases conformance/stripe-refund-smoke.yml \
+            --config stagehand.yml \
+            --output-dir .stagehand/conformance/refund \
+            --format github-markdown | tee .stagehand/conformance/refund/conformance-summary.md
+
+      - name: Stagehand refund replay diff
+        id: refund-replay-primary
+        continue-on-error: true
+        uses: ./
+        env:
+          STAGEHAND_EXPECT_STATUS: refunded
+          STAGEHAND_CUSTOMER_EMAIL: refund-conformance@example.com
+        with:
+          command: python examples/end-to-end-verification/agent.py
+          sessions: refund-flow-baseline
+          config: stagehand.yml
+          stagehand-binary: bin/stagehand
+          baseline-source: latest
+          assertions: examples/end-to-end-verification/assertions.yml
+          output-dir: .stagehand/action/refund-primary
+          report-format: github-markdown
+          ignore-fields: |
+            request.body.customer
+            request.body.payment_intent
+            request.body.metadata
+            response.body.id
+            response.body.created
+            response.body.client_secret
+            response.body.balance_transaction
+            response.body.customer
+            response.body.payment_intent
+            response.body.metadata
+            response.body.data[*].id
+            response.body.data[*].created
+            response.body.data[*].client_secret
+            response.body.data[*].customer
+            response.body.data[*].payment_intent
+            response.body.data[*].metadata
+          fail-on: |
+            behavior_diff
+            assertion_failure
+            fallback_regression
+          artifact-paths: |
+            .stagehand/runs
+            .stagehand/e2e
+            .stagehand/conformance
+          artifact-name: stagehand-refund-primary
+          comment-id: refund-flow-primary
+
+      - name: Stagehand second comment marker smoke
+        id: refund-replay-secondary
+        continue-on-error: true
+        uses: ./
+        env:
+          STAGEHAND_EXPECT_STATUS: refunded
+          STAGEHAND_CUSTOMER_EMAIL: refund-conformance@example.com
+        with:
+          command: python examples/end-to-end-verification/agent.py
+          sessions: refund-flow-baseline
+          config: stagehand.yml
+          stagehand-binary: bin/stagehand
+          baseline-source: latest
+          assertions: examples/end-to-end-verification/assertions.yml
+          output-dir: .stagehand/action/refund-secondary
+          report-format: github-markdown
+          ignore-fields: |
+            request.body.customer
+            request.body.payment_intent
+            request.body.metadata
+            response.body.id
+            response.body.created
+            response.body.client_secret
+            response.body.balance_transaction
+            response.body.customer
+            response.body.payment_intent
+            response.body.metadata
+            response.body.data[*].id
+            response.body.data[*].created
+            response.body.data[*].client_secret
+            response.body.data[*].customer
+            response.body.data[*].payment_intent
+            response.body.data[*].metadata
+          fail-on: |
+            behavior_diff
+            assertion_failure
+            fallback_regression
+          artifact-paths: |
+            .stagehand/runs
+            .stagehand/e2e
+            .stagehand/conformance
+          artifact-name: stagehand-refund-secondary
+          comment-id: refund-flow-secondary
+
+      - name: Fail on Stagehand regressions
+        if: >-
+          ${{
+            steps.refund-conformance.outcome == 'failure' ||
+            steps.refund-replay-primary.outcome == 'failure' ||
+            steps.refund-replay-secondary.outcome == 'failure'
+          }}
+        run: |
+          echo "Stagehand verification found conformance drift, behavior diffs, assertion failures, or fallback regressions."
+          exit 1

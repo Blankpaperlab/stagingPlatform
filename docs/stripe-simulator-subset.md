@@ -16,6 +16,7 @@ The implemented object set is intentionally narrow:
 - `customer`
 - `payment_method`
 - `payment_intent`
+- `refund`
 
 `payment_intent` was chosen instead of `charge` because modern Stripe integrations normally create and update PaymentIntents directly.
 
@@ -27,14 +28,17 @@ The simulator declares route-level matching for these Stripe API paths:
 | ------ | --------------------------------- | -------------------------- |
 | `POST` | `/v1/customers`                   | `customers.create`         |
 | `GET`  | `/v1/customers/{id}`              | `customers.retrieve`       |
+| `GET`  | `/v1/customers/search`            | `customers.search`         |
 | `POST` | `/v1/customers/{id}`              | `customers.update`         |
 | `POST` | `/v1/payment_methods`             | `payment_methods.create`   |
 | `GET`  | `/v1/payment_methods/{id}`        | `payment_methods.retrieve` |
 | `POST` | `/v1/payment_methods/{id}`        | `payment_methods.update`   |
 | `POST` | `/v1/payment_methods/{id}/attach` | `payment_methods.attach`   |
 | `POST` | `/v1/payment_intents`             | `payment_intents.create`   |
+| `GET`  | `/v1/payment_intents`             | `payment_intents.list`     |
 | `GET`  | `/v1/payment_intents/{id}`        | `payment_intents.retrieve` |
 | `POST` | `/v1/payment_intents/{id}`        | `payment_intents.update`   |
+| `POST` | `/v1/refunds`                     | `refunds.create`           |
 
 ## State Model
 
@@ -45,6 +49,7 @@ The session state contains:
 - `customers`
 - `payment_methods`
 - `payment_intents`
+- `refunds`
 - per-object counters for deterministic local IDs
 
 Generated IDs are deterministic within a session snapshot lineage:
@@ -52,6 +57,7 @@ Generated IDs are deterministic within a session snapshot lineage:
 - customers: `cus_000001`
 - payment methods: `pm_000001`
 - payment intents: `pi_000001`
+- refunds: `re_000001`
 
 ## Business Rules
 
@@ -64,6 +70,12 @@ The simulator now enforces the first set of Stripe-like consistency rules:
 - payment intent currencies are required and normalized to lowercase
 - card payment methods are the only supported payment method type
 - card `last4` must contain exactly four digits when provided
+- customer search supports `email:'user@example.com'` style equality queries only
+- payment intent list supports `customer` and `limit` filters and returns newest-first results
+- refunds require a succeeded payment intent
+- refund amount defaults to the remaining refundable amount
+- over-refunds are rejected
+- partial and full refunds update the PaymentIntent `amount_refunded` and `refunded` fields
 
 Supported PaymentIntent statuses:
 
@@ -98,6 +110,7 @@ Supported webhook topics:
 - `webhook.payment_intent.amount_capturable_updated`
 - `webhook.payment_intent.succeeded`
 - `webhook.payment_intent.canceled`
+- `webhook.refund.created`
 
 Each scheduled event payload uses Stripe's event envelope shape:
 
@@ -134,12 +147,16 @@ Current tests cover:
 - customer create/read/update
 - payment method create/read/update and attach
 - payment intent create/read/update
+- customer search by email
+- payment intent list by customer and limit
+- refund create and persisted refund counters
+- invalid refund state and over-refund rejection
 - missing-reference failures
 - payment method reattach rejection
 - invalid PaymentIntent transition rejection
 - terminal PaymentIntent mutation rejection
 - Stripe-shaped error details
-- scheduled webhook events for supported flows
+- scheduled webhook events for supported flows including refunds
 - customer identity extraction
 - persistence through session snapshots
 - session isolation

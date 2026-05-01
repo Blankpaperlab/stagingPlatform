@@ -155,13 +155,24 @@ jobs:
           comment-id: refund-flow-regression-smoke
 
       - name: Verify intentional regression smoke failed
-        if: ${{ steps.live-secrets.outputs.available == 'true' && steps.refund-replay-regression.outcome != 'failure' }}
+        if: >-
+          ${{
+            steps.live-secrets.outputs.available == 'true' &&
+            steps.refund-replay-regression.outputs.failed != 'true'
+          }}
         run: |
-          echo "The intentional Stagehand assertion-failure smoke did not fail as expected."
+          echo "The intentional Stagehand assertion-failure smoke did not report a configured failure."
           exit 1
 
       - name: Fail on Stagehand regressions
-        if: ${{ steps.live-secrets.outputs.available == 'true' && steps.refund-replay-primary.outcome == 'failure' }}
+        if: >-
+          ${{
+            steps.live-secrets.outputs.available == 'true' &&
+            (
+              steps.refund-replay-primary.outcome == 'failure' ||
+              steps.refund-replay-primary.outputs.failed == 'true'
+            )
+          }}
         run: |
           echo "Stagehand verification found behavior diffs, assertion failures, or fallback regressions."
           exit 1

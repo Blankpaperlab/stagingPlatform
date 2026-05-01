@@ -11,6 +11,7 @@ import {
   type CapturedInteraction,
   DEFAULT_CONFIG_FILENAME,
   ENV_CONFIG_PATH,
+  ENV_ERROR_INJECTION_INPUT,
   ENV_MODE,
   ENV_REPLAY_INPUT,
   ENV_SESSION,
@@ -39,6 +40,7 @@ function withCleanRuntime(fn: () => void | Promise<void>): () => void | Promise<
       delete process.env.STAGEHAND_SESSION;
       delete process.env.STAGEHAND_MODE;
       delete process.env.STAGEHAND_CONFIG_PATH;
+      delete process.env[ENV_ERROR_INJECTION_INPUT];
       delete process.env[ENV_OPENAI_HOSTS];
       delete process.env[ENV_REPLAY_INPUT];
     }
@@ -378,6 +380,156 @@ test(
       assert.equal(terminalEvent(capturedReplay).type, 'response_received');
     } finally {
       await close();
+    }
+  })
+);
+
+test(
+  'record mode applies configured error injection before live dispatch',
+  withCleanRuntime(async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-inject-'));
+    const injectionPath = path.join(tempDir, 'injection.json');
+    try {
+      fs.writeFileSync(
+        injectionPath,
+        JSON.stringify({
+          schema_version: 'v1alpha1',
+          rules: [
+            {
+              name: 'stripe refund fails first',
+              match: {
+                service: 'stripe',
+                operation: 'POST /v1/refunds',
+                nth_call: 1,
+              },
+              inject: {
+                status: 402,
+                body: { error: { code: 'card_declined' } },
+              },
+            },
+          ],
+        }),
+        'utf8'
+      );
+      process.env[ENV_ERROR_INJECTION_INPUT] = injectionPath;
+
+      const runtime = init({ session: 'ts-inject-record', mode: 'record' });
+      const response = await fetch('https://api.stripe.com/v1/refunds', { method: 'POST' });
+
+      assert.equal(response.status, 402);
+      assert.deepEqual(await response.json(), { error: { code: 'card_declined' } });
+
+      const [interaction] = runtime.snapshotCapturedInteractions();
+      assert.equal(interaction.service, 'stripe');
+      assert.equal(interaction.operation, 'POST /v1/refunds');
+      assert.equal(terminalEvent(interaction).data?.status_code, 402);
+      assert.deepEqual(terminalEvent(interaction).data?.headers, {
+        'content-type': ['application/json'],
+        'x-stagehand-injected': ['true'],
+      });
+      assert.deepEqual(runtime.recorderMetadata().error_injection, {
+        applied: [
+          {
+            rule_index: 0,
+            name: 'stripe refund fails first',
+            service: 'stripe',
+            operation: 'POST /v1/refunds',
+            call_number: 1,
+            nth_call: 1,
+            status: 402,
+          },
+        ],
+      });
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  })
+);
+
+test(
+  'replay mode applies configured error injection on the requested nth call',
+  withCleanRuntime(async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-inject-replay-'));
+    const injectionPath = path.join(tempDir, 'injection.json');
+    try {
+      fs.writeFileSync(
+        injectionPath,
+        JSON.stringify({
+          schema_version: 'v1alpha1',
+          rules: [
+            {
+              name: 'third refund fails',
+              match: {
+                service: 'stripe',
+                operation: 'POST /v1/refunds',
+                nth_call: 3,
+              },
+              inject: {
+                status: 402,
+                body: { error: { code: 'card_declined' } },
+              },
+            },
+          ],
+        }),
+        'utf8'
+      );
+      process.env[ENV_ERROR_INJECTION_INPUT] = injectionPath;
+
+      const runtime = init({ session: 'ts-inject-replay', mode: 'replay' });
+      runtime.seedReplayInteractions([
+        makeSeededInteraction({
+          runId: 'run_seed_refund_1',
+          url: 'https://api.stripe.com/v1/refunds',
+          method: 'POST',
+          terminal: {
+            type: 'response_received',
+            data: {
+              status_code: 200,
+              headers: { 'content-type': ['application/json'] },
+              body: { id: 're_1' },
+            },
+          },
+        }),
+        makeSeededInteraction({
+          runId: 'run_seed_refund_2',
+          url: 'https://api.stripe.com/v1/refunds',
+          method: 'POST',
+          terminal: {
+            type: 'response_received',
+            data: {
+              status_code: 200,
+              headers: { 'content-type': ['application/json'] },
+              body: { id: 're_2' },
+            },
+          },
+        }),
+      ]);
+
+      const responses = [
+        await fetch('https://api.stripe.com/v1/refunds', { method: 'POST' }),
+        await fetch('https://api.stripe.com/v1/refunds', { method: 'POST' }),
+        await fetch('https://api.stripe.com/v1/refunds', { method: 'POST' }),
+      ];
+
+      assert.deepEqual(
+        responses.map((response) => response.status),
+        [200, 200, 402]
+      );
+      assert.deepEqual(await responses[0].json(), { id: 're_1' });
+      assert.deepEqual(await responses[1].json(), { id: 're_2' });
+      assert.deepEqual(await responses[2].json(), { error: { code: 'card_declined' } });
+
+      const interactions = runtime.snapshotCapturedInteractions();
+      assert.equal(interactions.length, 3);
+      assert.equal(interactions[0].fallback_tier, 'exact');
+      assert.equal(interactions[1].fallback_tier, 'exact');
+      assert.equal(interactions[2].fallback_tier, undefined);
+      const metadata = runtime.recorderMetadata().error_injection as {
+        applied: Array<{ call_number: number }>;
+      };
+      assert.equal(metadata.applied[0].call_number, 3);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   })
 );
@@ -1042,7 +1194,10 @@ test(
         seen.add(sequence);
       }
       assert.equal(seen.size, total);
-      assert.deepEqual(sorted, Array.from({ length: total }, (_, idx) => idx + 1));
+      assert.deepEqual(
+        sorted,
+        Array.from({ length: total }, (_, idx) => idx + 1)
+      );
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

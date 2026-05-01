@@ -707,6 +707,169 @@ M3 adds `stagehand conformance run`, the smoke case file at `conformance/smoke.y
 - [x] nightly runner exists
 - [x] drift results are stored and reviewable
 
+## Epic Z: End-to-End Refund Verification
+
+- Epic code: `Z`
+- Milestone span: `M5-M6`
+- Estimate: `10d`
+- Goal: make the proposed refund workflow a real runnable launch demo and regression test that proves record, scrub, replay, diff, assertions, error injection, GitHub Action reporting, and conformance together.
+- Depends on: `D`, `E`, `F`, `I`, `J`, `K`, `L`, `M`
+
+This epic exists because the current foundation can run the OpenAI-focused verification path and first-pass Stripe conformance, but the full refund workflow cannot pass as written yet. The missing pieces are Python Stripe SDK interception, refund/search/list simulator coverage, CLI-managed error injection for SDK workflows, schema-aligned example files, and a conformance case that exercises a realistic refund flow.
+
+### Story Z1: Capture and replay the Python Stripe SDK
+
+- Outcome: a Python agent using the official Stripe SDK can be recorded, scrubbed, and replayed through the normal CLI-managed run path.
+- To do:
+  - [x] identify the Stripe Python transport paths used by supported versions
+  - [x] intercept Stripe SDK HTTP calls in record, replay, and passthrough modes
+  - [x] normalize Stripe operations such as `GET /v1/customers/search`, `GET /v1/payment_intents`, and `POST /v1/refunds`
+  - [x] decode and canonicalize form-encoded request bodies before persistence and replay matching
+  - [x] replay exact Stripe responses without live network access
+  - [x] fail closed on Stripe replay misses before live dispatch
+  - [x] scrub Stripe API keys, idempotency keys, emails, customer identifiers, and request/response bodies before SQLite persistence
+  - [x] add Python regression tests for record, replay, replay miss, and scrubbed Stripe payloads
+
+Z1 adds an optional Python Stripe SDK adapter that patches Stripe's `HTTPClient.request_with_retries` when the `stripe` package is present. It captures SDK requests through the existing interaction model, canonicalizes Stripe form bodies into structured request bodies, reuses the scrub-before-persist CLI writer path, and exact-replays captured Stripe SDK responses without reaching the underlying Stripe transport.
+
+### Story Z2: Expand the Stripe simulator for refund flows
+
+- Outcome: the stateful Stripe simulator can model the destructive refund path used by the example and conformance case.
+- To do:
+  - [x] add `customers.search` support by email query
+  - [x] add `payment_intents.list` support with customer and limit filters
+  - [x] add `refunds.create` support for succeeded payment intents
+  - [x] persist refund objects in session state with deterministic local IDs
+  - [x] enforce refund business rules such as missing payment intent, non-succeeded payment intent, and over-refund rejection
+  - [x] update related payment intent refunded amount/status fields where applicable
+  - [x] schedule refund webhook events through the existing event queue
+  - [x] document the expanded Stripe subset and limits
+
+Z2 expands the Go Stripe simulator with `customers.search`, `payment_intents.list`, and `refunds.create`; persists refund state and deterministic `re_` counters; updates `PaymentIntent.amount_refunded` and `refunded`; rejects unsupported search queries, missing or non-succeeded payment intents, invalid amounts, and over-refunds; and schedules `refund.created` webhook events. The conformance runner now routes the same operations through both real Stripe HTTP and the simulator path.
+
+### Story Z3: Wire CLI-managed error injection into agent workflows
+
+- Outcome: `stagehand record` and `stagehand replay` can deterministically inject failures into SDK-captured provider calls, not only in direct Go simulator tests.
+- To do:
+  - [x] add `--error-injection <path>` to CLI-managed record and replay commands
+  - [x] define a file shape that maps to the existing injection engine
+  - [x] pass injection config to Python and TypeScript SDK child processes
+  - [x] apply injection before live dispatch in record mode when a rule matches
+  - [x] apply injection before replay dispatch when configured for replay verification
+  - [x] match by service, operation, nth call, any call, and probability
+  - [x] persist applied injection provenance under run metadata
+  - [x] expose injected failures in `inspect`, diff evidence, and assertion evidence where relevant
+  - [x] add deterministic tests for `nth_call: 1`, repeated runs, and `nth_call: 3` retry scenarios
+
+Example file shape:
+
+```yaml
+schema_version: v1alpha1
+error_injection:
+  rules:
+    - name: Stripe refund fails on first attempt
+      match:
+        service: stripe
+        operation: POST /v1/refunds
+        nth_call: 1
+      inject:
+        status: 402
+        body:
+          error:
+            type: card_error
+            code: card_declined
+            message: Your card was declined.
+```
+
+Z3 adds `--error-injection` to CLI-managed record and replay commands, normalizes the YAML rule file into a child-process JSON contract, and passes it through `STAGEHAND_ERROR_INJECTION_INPUT`. Python and TypeScript SDK interception evaluate rules before live dispatch and before replay dispatch, record injected responses as normal interactions with `x-stagehand-injected`, and emit applied provenance under run metadata. `inspect` renders that run-level provenance, while diff and assertion evidence see the injected interaction payloads through the normal event data path.
+
+### Story Z4: Add conformance support for a Stripe refund scenario
+
+- Outcome: real-vs-simulator conformance can verify a multi-step Stripe refund flow against Stripe test mode.
+- To do:
+  - [x] support step-output interpolation such as `{{ create-customer.response.body.id }}`
+  - [x] support the expanded refund operations in the real Stripe conformance runner
+  - [x] support the expanded refund operations in the simulator conformance runner
+  - [x] add `conformance/stripe-refund-smoke.yml`
+  - [x] tolerate generated IDs, timestamps, client secrets, balance transactions, and known provider metadata
+  - [x] mark the case `skipped`, not `failed`, when `STRIPE_SECRET_KEY` is missing
+  - [x] add a drift regression test that proves unexpected refund response shape changes fail with a concrete field path
+
+Z4 adds side-specific request interpolation for conformance steps, including array-index paths such as `{{ list-payment-intents.response.body.data[0].id }}`. The Stripe refund smoke case creates a customer, confirms a test-mode payment intent, lists that customer's payment intents, and refunds the listed intent; it tolerates generated/provider-owned Stripe fields while still failing on untolerated semantic drift such as refund status changes.
+
+### Epic Z shipped-surface corrections
+
+The original end-to-end verification proposal used a few shorthand shapes that do not match the implemented CLI and schemas. Z5 and Z6 must use the shipped surface below.
+
+| Proposal shorthand                                                                                                     | Shipped surface to use                                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Assertion file with `version: "1"`, top-level `session`, top-level `equals`, top-level `disallowed_tiers`, and `field` | `schema_version: v1alpha1`; every assertion has `id`; use `expect.count.equals`, `expect.disallowed_tiers`, and `expect.path` plus `expect.equals`                                                                                              |
+| `stagehand assert --session <name> --file assertions.yml`                                                              | `stagehand assert --run-id <id> --assertions assertions.yml`                                                                                                                                                                                    |
+| `error_injection:` as a top-level list                                                                                 | `schema_version: v1alpha1` plus `error_injection.rules[].match` and `error_injection.rules[].inject`                                                                                                                                            |
+| `stagehand diff --baseline-session <base> --candidate-session <candidate>`                                             | `stagehand diff --candidate-run-id <id>` plus exactly one of `--base-run-id`, `--baseline-id`, or `--session`                                                                                                                                   |
+| Conformance file with top-level `service`, `match.strategy: structural`, and `tolerated_paths`                         | `schema_version: v1alpha1`; top-level `cases`; `inputs.steps`; `real_service.credentials`; `comparison.match.strategy` as `operation_sequence`, `exact_sequence`, or `interaction_identity`; `comparison.tolerated_diff_fields[{path, reason}]` |
+| `stagehand conformance run --case <path>`                                                                              | `stagehand conformance run --cases <path>`                                                                                                                                                                                                      |
+| Published action reference `uses: stagehand/stagehand-action@v0`                                                       | Local unpublished action reference `uses: ./`                                                                                                                                                                                                   |
+| macOS `pfctl` for offline replay verification                                                                          | On Ubuntu use `iptables -A OUTPUT -p tcp --dport 443 -j REJECT` with cleanup, or unset `OPENAI_API_KEY` and `STRIPE_SECRET_KEY` and rely on SDK fail-closed replay behavior                                                                     |
+
+### Story Z5: Build the end-to-end verification example
+
+- Outcome: `examples/end-to-end-verification` is both a launch demo and a local regression suite for the whole product loop.
+- To do:
+  - [x] create `agent.py` for the refund processing flow
+  - [x] create `assertions.yml` using the current `v1alpha1` assertion schema and at least five assertion types
+  - [x] create `error-injection.yml` using the CLI-supported injection schema
+  - [x] create `verify.sh` that records a baseline, captures run IDs from JSON output, replays offline, promotes a baseline, records a modified candidate, renders terminal/JSON/GitHub markdown diffs, runs assertions, runs injection checks, and runs conformance smoke
+  - [x] include a deterministic modified-agent variant that changes the OpenAI classification prompt for diff verification
+  - [x] verify SQLite persistence has no plaintext API keys or unsafely stored customer emails
+  - [x] verify replay output matches the recorded output exactly when offline
+  - [x] verify Stripe replay misses fail closed before live dispatch
+  - [x] verify assertion failures include concrete evidence for count and payload-field violations
+  - [x] verify error injection is deterministic for `nth_call: 1` and `nth_call: 3`
+  - [x] verify applied error-injection provenance is persisted in run metadata and visible through `inspect`
+  - [x] verify schema version, scrub policy version, expanded scrub matrix, and session-salt isolation
+  - [x] verify Stripe refund simulator negative business rules through package-level tests
+  - [x] verify `conformance/stripe-refund-smoke.yml` returns `skipped` without `STRIPE_SECRET_KEY`
+  - [x] keep live-service steps gated behind `OPENAI_API_KEY` and `STRIPE_SECRET_KEY`
+  - [x] document local commands and expected outputs in the example README
+
+Z5 implementation must use the shipped CLI and schemas, not the original proposal shorthand:
+
+- Assertions use `schema_version: v1alpha1`, per-assertion `id`, and nested `expect` fields such as `expect.count.equals`, `expect.path` plus `expect.equals`, and `expect.disallowed_tiers`. Run them with `stagehand assert --run-id <id> --assertions assertions.yml`.
+- Error injection uses `schema_version: v1alpha1` plus `error_injection.rules[].match` and `error_injection.rules[].inject`; run it through `stagehand record --error-injection error-injection.yml ...` or `stagehand replay --error-injection error-injection.yml ...`.
+- Diff uses `stagehand diff --candidate-run-id <id>` plus exactly one base selector: `--base-run-id <id>`, `--baseline-id <id>`, or `--session <name>` for latest baseline selection. There is no `--candidate-session` or `--baseline-session` shorthand.
+- Conformance files use `schema_version: v1alpha1`, top-level `cases`, ordered `inputs.steps`, `real_service.credentials`, `comparison.match.strategy`, and `comparison.tolerated_diff_fields[{path, reason}]`. Run with `stagehand conformance run --cases <path>`.
+- Offline replay verification should not rely on macOS-only `pfctl`. On Linux CI use `iptables -A OUTPUT -p tcp --dport 443 -j REJECT` with cleanup, or unset `OPENAI_API_KEY` and `STRIPE_SECRET_KEY` and rely on SDK replay fail-closed behavior.
+
+Z5 adds `examples/end-to-end-verification` with the refund agent, modified prompt variant, assertion file, first-call and third-call error-injection configs, and a live-gated `verify.sh`. The script always performs dry checks for Python syntax, schema-backed packages when Go is available, and missing-credential conformance skip behavior; `--live` runs the full record/replay/diff/assertion/injection/conformance loop with `OPENAI_API_KEY` and `STRIPE_SECRET_KEY`.
+
+### Story Z6: Run the example through GitHub Actions
+
+- Outcome: the same refund verification workflow runs on PRs and leaves readable artifacts and comments.
+- To do:
+  - [x] add a sample workflow that builds the local CLI binary and uses the repository action with `uses: ./` and current input names
+  - [x] replay the promoted baseline against the PR candidate
+  - [x] upload run artifacts, diff reports, assertion reports, and conformance reports
+  - [x] post a readable PR comment with the GitHub markdown diff and local inspection commands
+  - [x] fail the check on configured behavior diffs, assertion failures, fallback regressions, and conformance drift
+  - [x] prove multiple Stagehand action invocations can coexist through distinct comment IDs
+  - [x] document required GitHub permissions and secrets
+
+Z6 sample workflows must use the local unpublished action (`uses: ./`) with inputs such as `command`, `sessions`, `baseline-source`, `baseline-id` or `baseline-run-id`, `assertions`, `fail-on`, `artifact-name`, and `comment-id`. Do not reference `stagehand/stagehand-action@v0` until a public action is published.
+
+Z6 adds `examples/end-to-end-verification/stagehand-pr-workflow.yml`, a copy-paste PR workflow that builds `bin/stagehand`, runs offline example checks, runs the Stripe refund conformance case, invokes the local action with the promoted `refund-flow-baseline`, uploads run/diff/assertion/conformance artifacts, and posts two separate PR comments using distinct `comment-id` values. A real GitHub PR run is still required before checking off launch verification, because local tests cannot prove artifact upload URLs or PR comment writes.
+
+### Epic Z completion checklist
+
+- [x] Python Stripe SDK calls are captured, scrubbed, and exactly replayed
+- [x] Stripe refund/search/list simulator operations exist
+- [x] CLI-managed error injection works for provider SDK workflows
+- [x] refund conformance runs against real Stripe test mode and the simulator
+- [x] missing live-service credentials produce skipped verification, not false failures
+- [x] `examples/end-to-end-verification` runs locally as a scripted demo
+- [ ] the example workflow runs in GitHub Actions, uploads artifacts, posts a PR comment, and fails on real regressions
+- [x] docs clearly distinguish live-service verification from offline replay verification
+
 ## Epic N: Custom API Replay Layer
 
 - Epic code: `N`
@@ -976,13 +1139,134 @@ error_injection:
 - do not build automatic stateful simulation for arbitrary custom APIs in V1
 - do not require OpenAPI, MCP, or any schema system for the base wrapper API
 
+## Epic AA: First-Run Onboarding and Simple Test UX
+
+- Epic code: `AA`
+- Milestone span: `M4-M6`
+- Estimate: `8d`
+- Goal: make Stagehand feel easy to adopt by giving new users a guided install-to-first-test path while preserving the lower-level record/replay/diff/assert primitives for advanced users.
+- Depends on: `F`, `G`, `J`, `K`, `L`, `N`, `Y`, `Z`
+
+This epic exists because the current product primitives are powerful but too exposed for first-time users. A serious launch path should not require a new user to understand sessions, run IDs, baselines, replay selectors, diff selectors, assertion schemas, and GitHub Action inputs before seeing value. The first-run target is:
+
+```bash
+stagehand init
+stagehand record-baseline -- python agent.py
+stagehand test -- python agent.py
+```
+
+The underlying model remains the same: `record`, `replay`, `inspect`, `baseline`, `diff`, `assert`, and `conformance` stay available. Epic AA adds a simpler workflow layer over those primitives.
+
+### Story AA1: `stagehand init`
+
+- Outcome: a new project gets a usable Stagehand scaffold and exact next command without reading the full schema docs.
+- To do:
+  - [ ] detect Python and TypeScript project files
+  - [ ] detect likely agent commands from package scripts, Python entrypoints, examples, and common test commands
+  - [ ] detect installed or referenced integrations such as OpenAI, Stripe, `httpx`, `fetch`, `undici`, and custom HTTP clients where possible
+  - [ ] write a minimal `stagehand.yml`
+  - [ ] create `.stagehand/` directories for runs, reports, and generated files
+  - [ ] optionally write starter `assertions.yml` and `error-injection.yml`
+  - [ ] print the recommended `stagehand record-baseline -- <command>` invocation
+  - [ ] avoid overwriting existing config unless `--force` is provided
+
+### Story AA2: `stagehand doctor`
+
+- Outcome: users can verify local readiness and find unsupported capture paths before trying a real agent run.
+- To do:
+  - [ ] verify the CLI binary is runnable
+  - [ ] verify `stagehand.yml` loads and validates
+  - [ ] verify Python SDK import when a Python project is detected
+  - [ ] verify TypeScript SDK import/build when a TypeScript project is detected
+  - [ ] detect missing optional packages such as `openai` and `stripe`
+  - [ ] warn when common unsupported network libraries are detected
+  - [ ] print pass/warn/fail checks with concrete repair commands
+  - [ ] support `--json` for CI diagnostics
+
+### Story AA3: `stagehand record-baseline`
+
+- Outcome: first-time users can record and promote a baseline with one command.
+- To do:
+  - [ ] run the managed command in record mode
+  - [ ] persist scrubbed interactions through the standard writer path
+  - [ ] print a short capture summary by service and operation
+  - [ ] warn when no interactions are captured
+  - [ ] promote the run to a baseline automatically when complete
+  - [ ] emit baseline ID, run ID, storage path, and next `stagehand test` command
+  - [ ] support `--session`, `--baseline-id`, `--config`, and `--json`
+  - [ ] fail with actionable messages for missing SDK init or unsupported call paths
+
+### Story AA4: `stagehand test`
+
+- Outcome: replay, diff, and assertion evaluation feel like one test command instead of several primitives.
+- To do:
+  - [ ] resolve the latest baseline for the selected session by default
+  - [ ] run exact replay against the managed command
+  - [ ] diff replay or candidate behavior against the selected baseline
+  - [ ] run assertions automatically when an assertions file exists
+  - [ ] apply error injection automatically when an injection file is passed
+  - [ ] produce one pass/fail terminal report
+  - [ ] write JSON and GitHub markdown reports under `.stagehand/reports`
+  - [ ] fail with distinct exit codes for replay failure, behavior diff, assertion failure, and configuration failure
+
+### Story AA5: Guided CI setup
+
+- Outcome: a user can add Stagehand to GitHub Actions without hand-writing the action wiring.
+- To do:
+  - [ ] add `stagehand ci setup`
+  - [ ] generate a GitHub Actions workflow using the shipped action inputs
+  - [ ] include artifact upload and PR comment settings
+  - [ ] include placeholders for required provider secrets
+  - [ ] support local action reference before publish and published action reference after release
+  - [ ] document how to promote a baseline before enabling PR enforcement
+  - [ ] support a dry-run mode that only prints the workflow
+
+### Story AA6: Guided templates and first-run report
+
+- Outcome: the generated starter files teach the product without forcing users through full reference docs.
+- To do:
+  - [ ] generate starter assertions for count, ordering, forbidden-operation, payload-field, and fallback-prohibition
+  - [ ] generate starter error-injection rules for timeout and HTTP status failures
+  - [ ] generate starter service mapping examples for custom/internal APIs
+  - [ ] generate comments explaining what to edit and what can be deleted
+  - [ ] produce a first-run report that links to `inspect`, stored artifacts, and next-step commands
+  - [ ] keep generated files small enough for users to understand in one screen
+
+### Story AA7: Existing-agent harness guidance
+
+- Outcome: teams with existing agent repos can expose a headless entrypoint without restructuring the app.
+- To do:
+  - [ ] document a minimal Python harness pattern
+  - [ ] document a minimal TypeScript harness pattern
+  - [ ] define a simple stdout contract for agent result JSON
+  - [ ] recommend keeping logs on stderr
+  - [ ] support a preflight mode or preflight command that validates the entrypoint before recording live calls
+  - [ ] show how to pass task text through environment variables for scenario-like runs
+
+### Epic AA completion checklist
+
+- [ ] `stagehand init` creates a usable scaffold
+- [ ] `stagehand doctor` catches missing setup and unsupported call paths
+- [ ] `stagehand record-baseline -- <command>` records and promotes a baseline
+- [ ] `stagehand test -- <command>` runs replay, diff, and assertions in one pass/fail command
+- [ ] `stagehand ci setup` generates a usable workflow
+- [ ] first-run templates exist for assertions, error injection, and custom API service mapping
+- [ ] a new user can reach first replay/diff in under 15 minutes on a supported Python or TypeScript agent
+
+### Explicit non-goals for Epic AA
+
+- do not remove or hide the lower-level CLI primitives
+- do not require hosted services for local-first onboarding
+- do not promise zero code changes for unsupported agent runtimes
+- do not auto-edit agent source files unless the user explicitly opts in
+
 ## Epic O: Example Flows, Docs, Packaging
 
 - Epic code: `O`
 - Milestone span: `M5-M6`
 - Estimate: `10d`
 - Goal: make the product understandable, runnable, and launchable.
-- Depends on: `D`, `I`, `J`, `K`, `L`, `N`, `Y`
+- Depends on: `D`, `I`, `J`, `K`, `L`, `N`, `Y`, `AA`
 
 ### Story O1: Build the example flows
 
@@ -1010,6 +1294,8 @@ error_injection:
   - [ ] write error injection guide
   - [ ] write custom API replay guide
   - [ ] write custom tool wrapper guide
+  - [ ] write first-run onboarding guide
+  - [ ] write existing-agent harness guide
   - [ ] write limitations page
   - [ ] write baseline and CI usage guide
 
@@ -1021,11 +1307,13 @@ error_injection:
   - [ ] verify installation paths for CLI, Python, and TypeScript
   - [ ] write version and release notes template
   - [ ] create sample install commands for docs
+  - [ ] verify the `stagehand init` / `record-baseline` / `test` path from a clean checkout
 
 ### Epic O completion checklist
 
 - [ ] three example flows exist
 - [ ] custom API and custom tool example exists
+- [ ] first-run onboarding docs exist
 - [ ] core docs exist
 - [ ] install steps are documented and tested
 - [ ] examples serve as regression fixtures
@@ -1145,6 +1433,8 @@ error_injection:
   - [ ] tailor messaging for AI platform engineers
   - [ ] position Stagehand as CI for agents that call LLMs, third-party APIs, internal APIs, and custom tools
   - [ ] avoid positioning OpenAI and Stripe as the product boundary; describe them as prebuilt profiles
+  - [ ] lead with the simple first-run path: initialize, record a baseline, run tests
+  - [ ] show advanced primitives only after the quick path is clear
 
 ### Story R3: Run outreach and launch follow-up
 
@@ -1445,5 +1735,9 @@ After the already-completed foundational stories, the custom workflow additions 
 4. `Y1` Python tool wrapper
 5. `Y2` TypeScript tool wrapper
 6. `Y3` Tool artifact schema and inspect support
+7. `AA1` `stagehand init`
+8. `AA2` `stagehand doctor`
+9. `AA3` `stagehand record-baseline`
+10. `AA4` `stagehand test`
 
-These are the scoped version of the custom API/custom tool strategy. User-defined stateful simulator hooks and OpenAPI-assisted generation remain later expansion work.
+These are the scoped version of the custom API/custom tool strategy plus the minimum onboarding layer needed to keep the product from feeling too hard to adopt. User-defined stateful simulator hooks and OpenAPI-assisted generation remain later expansion work.

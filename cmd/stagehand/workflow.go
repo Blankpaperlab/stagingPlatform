@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -19,8 +20,11 @@ import (
 	"stagehand/internal/config"
 	"stagehand/internal/recorder"
 	"stagehand/internal/recording"
+	"stagehand/internal/runtime/injection"
 	"stagehand/internal/scrub/session_salt"
 	"stagehand/internal/store"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -31,8 +35,50 @@ const (
 	envStagehandConfigPath   = "STAGEHAND_CONFIG_PATH"
 	envStagehandCaptureOut   = "STAGEHAND_CAPTURE_OUTPUT"
 	envStagehandReplayInput  = "STAGEHAND_REPLAY_INPUT"
+	envStagehandInjectInput  = "STAGEHAND_ERROR_INJECTION_INPUT"
 	envStagehandMasterKey    = "STAGEHAND_MASTER_KEY"
 )
+
+type errorInjectionFile struct {
+	SchemaVersion  string                `yaml:"schema_version"`
+	ErrorInjection errorInjectionSection `yaml:"error_injection"`
+}
+
+type errorInjectionSection struct {
+	Enabled *bool                     `yaml:"enabled"`
+	Rules   []namedErrorInjectionRule `yaml:"rules"`
+}
+
+type namedErrorInjectionRule struct {
+	Name   string             `yaml:"name"`
+	Match  config.ErrorMatch  `yaml:"match"`
+	Inject config.ErrorInject `yaml:"inject"`
+}
+
+type sdkErrorInjectionBundle struct {
+	SchemaVersion string                  `json:"schema_version"`
+	Rules         []sdkErrorInjectionRule `json:"rules"`
+}
+
+type sdkErrorInjectionRule struct {
+	Name   string         `json:"name,omitempty"`
+	Match  sdkErrorMatch  `json:"match"`
+	Inject sdkErrorInject `json:"inject"`
+}
+
+type sdkErrorMatch struct {
+	Service     string   `json:"service"`
+	Operation   string   `json:"operation"`
+	NthCall     int      `json:"nth_call,omitempty"`
+	AnyCall     bool     `json:"any_call,omitempty"`
+	Probability *float64 `json:"probability,omitempty"`
+}
+
+type sdkErrorInject struct {
+	Library string         `json:"library,omitempty"`
+	Status  int            `json:"status"`
+	Body    map[string]any `json:"body,omitempty"`
+}
 
 type interactionBundle struct {
 	BundleVersion string                 `json:"bundle_version,omitempty"`
@@ -328,6 +374,97 @@ func writeInteractionBundle(path string, bundle interactionBundle) error {
 	return nil
 }
 
+func loadSDKErrorInjectionBundle(path string) (sdkErrorInjectionBundle, error) {
+	resolvedPath := strings.TrimSpace(path)
+	if resolvedPath == "" {
+		return sdkErrorInjectionBundle{}, nil
+	}
+
+	data, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return sdkErrorInjectionBundle{}, fmt.Errorf("read error injection file %q: %w", resolvedPath, err)
+	}
+
+	var file errorInjectionFile
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&file); err != nil {
+		return sdkErrorInjectionBundle{}, fmt.Errorf("decode error injection file %q: %w", resolvedPath, err)
+	}
+
+	rules := make([]config.ErrorInjectionRule, 0, len(file.ErrorInjection.Rules))
+	for _, rule := range file.ErrorInjection.Rules {
+		rules = append(rules, config.ErrorInjectionRule{
+			Match:  rule.Match,
+			Inject: rule.Inject,
+		})
+	}
+
+	enabled := len(rules) > 0
+	if file.ErrorInjection.Enabled != nil {
+		enabled = *file.ErrorInjection.Enabled
+	}
+	cfg := config.ErrorInjectionConfig{
+		Enabled: enabled,
+		Rules:   rules,
+	}
+	if _, err := injection.NewEngineFromConfig(cfg); err != nil {
+		return sdkErrorInjectionBundle{}, fmt.Errorf("validate error injection file %q: %w", resolvedPath, err)
+	}
+	if !enabled || len(file.ErrorInjection.Rules) == 0 {
+		return sdkErrorInjectionBundle{SchemaVersion: interactionBundleVersion}, nil
+	}
+
+	sdkRules := make([]sdkErrorInjectionRule, 0, len(file.ErrorInjection.Rules))
+	for _, rule := range file.ErrorInjection.Rules {
+		inject := sdkErrorInject{
+			Library: strings.TrimSpace(rule.Inject.Library),
+			Status:  rule.Inject.Status,
+			Body:    cloneAnyMap(rule.Inject.Body),
+		}
+		if inject.Library != "" {
+			override, ok := injection.NamedLibrary(inject.Library)
+			if !ok {
+				return sdkErrorInjectionBundle{}, fmt.Errorf("validate error injection file %q: unknown named error library entry %q", resolvedPath, inject.Library)
+			}
+			inject.Status = override.Status
+			inject.Body = cloneAnyMap(override.Body)
+		}
+
+		sdkRules = append(sdkRules, sdkErrorInjectionRule{
+			Name: strings.TrimSpace(rule.Name),
+			Match: sdkErrorMatch{
+				Service:     strings.TrimSpace(rule.Match.Service),
+				Operation:   strings.TrimSpace(rule.Match.Operation),
+				NthCall:     rule.Match.NthCall,
+				AnyCall:     rule.Match.AnyCall,
+				Probability: cloneFloat64(rule.Match.Probability),
+			},
+			Inject: inject,
+		})
+	}
+
+	return sdkErrorInjectionBundle{
+		SchemaVersion: firstNonEmpty(file.SchemaVersion, interactionBundleVersion),
+		Rules:         sdkRules,
+	}, nil
+}
+
+func writeSDKErrorInjectionBundle(path string, bundle sdkErrorInjectionBundle) error {
+	if len(bundle.Rules) == 0 {
+		return nil
+	}
+	encoded, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode error injection bundle: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		return fmt.Errorf("write error injection bundle %q: %w", path, err)
+	}
+	return nil
+}
+
 func normalizeImportedInteractions(runID string, source []recorder.Interaction) []recorder.Interaction {
 	ordered := append([]recorder.Interaction(nil), source...)
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -414,6 +551,49 @@ func mergeRunMetadata(base map[string]any, overlay map[string]any) map[string]an
 		merged[key] = value
 	}
 	return merged
+}
+
+func cloneAnyMap(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = cloneAnyValue(value)
+	}
+	return cloned
+}
+
+func cloneAnyValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for idx, item := range typed {
+			cloned[idx] = cloneAnyValue(item)
+		}
+		return cloned
+	default:
+		return typed
+	}
+}
+
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func incompleteRunFailure(operation string, err error) error {

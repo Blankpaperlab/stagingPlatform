@@ -193,6 +193,37 @@ func TestSmokeCaseFileValidates(t *testing.T) {
 	}
 }
 
+func TestStripeRefundSmokeCaseFileValidates(t *testing.T) {
+	t.Parallel()
+
+	path, err := filepath.Abs(filepath.Join("..", "..", "..", "conformance", "stripe-refund-smoke.yml"))
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load(%q) error = %v", path, err)
+	}
+}
+
+func TestStripeRefundSmokeSkipsWithoutStripeCredential(t *testing.T) {
+	path, err := filepath.Abs(filepath.Join("..", "..", "..", "conformance", "stripe-refund-smoke.yml"))
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
+	file, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(%q) error = %v", path, err)
+	}
+	runner := NewRunner(WithEnv(map[string]string{}))
+	result := runner.RunCase(context.Background(), file.Cases[0])
+	if result.Status != ResultStatusSkipped {
+		t.Fatalf("Status = %q, want skipped", result.Status)
+	}
+	if len(result.Failures) != 1 || result.Failures[0].Code != "missing_credentials" {
+		t.Fatalf("Failures = %#v, want missing_credentials", result.Failures)
+	}
+}
+
 func TestRunnerOpenAISmokeToleratesSurfaceTextVariation(t *testing.T) {
 	t.Parallel()
 
@@ -231,6 +262,152 @@ func TestRunnerOpenAISmokeToleratesSurfaceTextVariation(t *testing.T) {
 	}
 	if result.Summary.ToleratedDiffs != 1 {
 		t.Fatalf("ToleratedDiffs = %d, want content mismatch to be tolerated", result.Summary.ToleratedDiffs)
+	}
+}
+
+func TestRunnerInterpolatesStripeRefundStepOutputs(t *testing.T) {
+	store, err := sqlitestore.OpenStore(context.Background(), filepath.Join(t.TempDir(), "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer store.Close()
+
+	calls := 0
+	runner := NewRunner(
+		WithEnv(map[string]string{"STRIPE_SECRET_KEY": "sk_test_refund"}),
+		WithSessionStore(store),
+		WithClock(fixedClock),
+		WithHTTPClient(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			body := readFormBody(t, req)
+			switch calls {
+			case 1:
+				if req.URL.Path != "/v1/customers" {
+					t.Fatalf("step 1 path = %q, want /v1/customers", req.URL.Path)
+				}
+				return jsonResponse(200, `{"id":"cus_real_123","object":"customer","email":"refund@example.com","created":111,"metadata":{"stagehand_case":"stripe_refund_smoke"}}`), nil
+			case 2:
+				if req.URL.Path != "/v1/payment_intents" {
+					t.Fatalf("step 2 path = %q, want /v1/payment_intents", req.URL.Path)
+				}
+				if body.Get("customer") != "cus_real_123" {
+					t.Fatalf("payment intent customer = %q, want interpolated real customer ID", body.Get("customer"))
+				}
+				if body.Get("confirm") != "true" {
+					t.Fatalf("confirm = %q, want true", body.Get("confirm"))
+				}
+				return jsonResponse(200, `{"id":"pi_real_123","object":"payment_intent","amount":1000,"currency":"usd","customer":"cus_real_123","status":"succeeded","created":112,"client_secret":"pi_real_123_secret","payment_method":"pm_real_123","latest_charge":"ch_real_123","metadata":{"stagehand_case":"stripe_refund_smoke"}}`), nil
+			case 3:
+				if req.URL.Path != "/v1/payment_intents" || req.Method != http.MethodGet {
+					t.Fatalf("step 3 = %s %s, want GET /v1/payment_intents", req.Method, req.URL.Path)
+				}
+				if req.URL.Query().Get("customer") != "cus_real_123" {
+					t.Fatalf("list customer = %q, want interpolated real customer ID", req.URL.Query().Get("customer"))
+				}
+				return jsonResponse(200, `{"object":"list","data":[{"id":"pi_real_123","object":"payment_intent","amount":1000,"currency":"usd","customer":"cus_real_123","status":"succeeded","created":112,"client_secret":"pi_real_123_secret","payment_method":"pm_real_123","latest_charge":"ch_real_123","metadata":{"stagehand_case":"stripe_refund_smoke"}}],"has_more":false,"url":"/v1/payment_intents"}`), nil
+			case 4:
+				if req.URL.Path != "/v1/refunds" {
+					t.Fatalf("step 4 path = %q, want /v1/refunds", req.URL.Path)
+				}
+				if body.Get("payment_intent") != "pi_real_123" {
+					t.Fatalf("refund payment_intent = %q, want interpolated listed payment intent", body.Get("payment_intent"))
+				}
+				return jsonResponse(200, `{"id":"re_real_123","object":"refund","amount":1000,"currency":"usd","payment_intent":"pi_real_123","reason":"requested_by_customer","status":"succeeded","created":113,"metadata":{"stagehand_case":"stripe_refund_smoke"}}`), nil
+			default:
+				t.Fatalf("unexpected Stripe call %d: %s %s", calls, req.Method, req.URL.String())
+			}
+			return nil, nil
+		})),
+	)
+
+	result := runner.RunCase(context.Background(), stripeRefundCaseForTest([]ToleratedDiffField{
+		{Path: "request.customer", Reason: "ids differ"},
+		{Path: "request.payment_intent", Reason: "ids differ"},
+		{Path: "response.body.id", Reason: "ids differ"},
+		{Path: "response.body.created", Reason: "timestamps differ"},
+		{Path: "response.body.customer", Reason: "ids differ"},
+		{Path: "response.body.client_secret", Reason: "secrets differ"},
+		{Path: "response.body.payment_method", Reason: "ids differ"},
+		{Path: "response.body.latest_charge", Reason: "ids differ"},
+		{Path: "response.body.data[0].id", Reason: "ids differ"},
+		{Path: "response.body.data[0].created", Reason: "timestamps differ"},
+		{Path: "response.body.data[0].customer", Reason: "ids differ"},
+		{Path: "response.body.data[0].client_secret", Reason: "secrets differ"},
+		{Path: "response.body.data[0].payment_method", Reason: "ids differ"},
+		{Path: "response.body.data[0].latest_charge", Reason: "ids differ"},
+		{Path: "response.body.payment_intent", Reason: "ids differ"},
+	}))
+
+	if calls != 4 {
+		t.Fatalf("Stripe calls = %d, want 4", calls)
+	}
+	if result.Status != ResultStatusPassed {
+		t.Fatalf("Status = %q, want passed; failures=%#v", result.Status, result.Failures)
+	}
+	if result.Summary.MatchedInteractions != 4 {
+		t.Fatalf("MatchedInteractions = %d, want 4", result.Summary.MatchedInteractions)
+	}
+}
+
+func TestRunnerStripeRefundSmokeDetectsUntoleratedRefundDrift(t *testing.T) {
+	store, err := sqlitestore.OpenStore(context.Background(), filepath.Join(t.TempDir(), "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer store.Close()
+
+	calls := 0
+	runner := NewRunner(
+		WithEnv(map[string]string{"STRIPE_SECRET_KEY": "sk_test_refund"}),
+		WithSessionStore(store),
+		WithClock(fixedClock),
+		WithHTTPClient(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			calls++
+			switch calls {
+			case 1:
+				return jsonResponse(200, `{"id":"cus_real_123","object":"customer","email":"refund@example.com","created":111,"metadata":{"stagehand_case":"stripe_refund_smoke"}}`), nil
+			case 2:
+				return jsonResponse(200, `{"id":"pi_real_123","object":"payment_intent","amount":1000,"currency":"usd","customer":"cus_real_123","status":"succeeded","created":112,"client_secret":"pi_real_123_secret","payment_method":"pm_real_123","latest_charge":"ch_real_123","metadata":{"stagehand_case":"stripe_refund_smoke"}}`), nil
+			case 3:
+				return jsonResponse(200, `{"object":"list","data":[{"id":"pi_real_123","object":"payment_intent","amount":1000,"currency":"usd","customer":"cus_real_123","status":"succeeded","created":112,"client_secret":"pi_real_123_secret","payment_method":"pm_real_123","latest_charge":"ch_real_123","metadata":{"stagehand_case":"stripe_refund_smoke"}}]}`), nil
+			case 4:
+				return jsonResponse(200, `{"id":"re_real_123","object":"refund","amount":1000,"currency":"usd","payment_intent":"pi_real_123","reason":"requested_by_customer","status":"pending","created":113,"metadata":{"stagehand_case":"stripe_refund_smoke"}}`), nil
+			default:
+				t.Fatalf("unexpected Stripe call %d", calls)
+			}
+			return nil, nil
+		})),
+	)
+
+	result := runner.RunCase(context.Background(), stripeRefundCaseForTest([]ToleratedDiffField{
+		{Path: "request.customer", Reason: "ids differ"},
+		{Path: "request.payment_intent", Reason: "ids differ"},
+		{Path: "response.body.id", Reason: "ids differ"},
+		{Path: "response.body.created", Reason: "timestamps differ"},
+		{Path: "response.body.customer", Reason: "ids differ"},
+		{Path: "response.body.client_secret", Reason: "secrets differ"},
+		{Path: "response.body.payment_method", Reason: "ids differ"},
+		{Path: "response.body.latest_charge", Reason: "ids differ"},
+		{Path: "response.body.data[0].id", Reason: "ids differ"},
+		{Path: "response.body.data[0].created", Reason: "timestamps differ"},
+		{Path: "response.body.data[0].customer", Reason: "ids differ"},
+		{Path: "response.body.data[0].client_secret", Reason: "secrets differ"},
+		{Path: "response.body.data[0].payment_method", Reason: "ids differ"},
+		{Path: "response.body.data[0].latest_charge", Reason: "ids differ"},
+		{Path: "response.body.payment_intent", Reason: "ids differ"},
+	}))
+
+	if result.Status != ResultStatusFailed {
+		t.Fatalf("Status = %q, want failed", result.Status)
+	}
+	found := false
+	for _, failure := range result.Failures {
+		if failure.StepID == "refund-payment" && failure.Path == "response.body.status" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Failures = %#v, want refund response.body.status drift", result.Failures)
 	}
 }
 
@@ -410,6 +587,89 @@ func jsonResponse(status int, body string) *http.Response {
 		StatusCode: status,
 		Header:     http.Header{"content-type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func readFormBody(t *testing.T, req *http.Request) url.Values {
+	t.Helper()
+	if req.Body == nil {
+		return url.Values{}
+	}
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	values, err := url.ParseQuery(string(body))
+	if err != nil {
+		t.Fatalf("ParseQuery(%q) error = %v", string(body), err)
+	}
+	return values
+}
+
+func stripeRefundCaseForTest(tolerated []ToleratedDiffField) Case {
+	return Case{
+		ID:      "stripe-refund-smoke",
+		Service: "stripe",
+		Inputs: CaseInputs{Steps: []CaseStep{
+			{
+				ID:        "create-customer",
+				Operation: "customers.create",
+				Request: map[string]any{
+					"email": "refund@example.com",
+					"metadata": map[string]any{
+						"stagehand_case": "stripe_refund_smoke",
+					},
+				},
+			},
+			{
+				ID:        "create-payment-intent",
+				Operation: "payment_intents.create",
+				Request: map[string]any{
+					"amount":   1000,
+					"currency": "usd",
+					"customer": "{{ create-customer.response.body.id }}",
+					"confirm":  true,
+					"payment_method_data": map[string]any{
+						"type": "card",
+						"card": map[string]any{
+							"token": "tok_visa",
+						},
+					},
+					"metadata": map[string]any{
+						"stagehand_case": "stripe_refund_smoke",
+					},
+				},
+			},
+			{
+				ID:        "list-payment-intents",
+				Operation: "payment_intents.list",
+				Request: map[string]any{
+					"customer": "{{ create-customer.response.body.id }}",
+					"limit":    1,
+				},
+			},
+			{
+				ID:        "refund-payment",
+				Operation: "refunds.create",
+				Request: map[string]any{
+					"payment_intent": "{{ list-payment-intents.response.body.data[0].id }}",
+					"reason":         "requested_by_customer",
+					"metadata": map[string]any{
+						"stagehand_case": "stripe_refund_smoke",
+					},
+				},
+			},
+		}},
+		RealService: RealServiceRequirements{
+			TestMode: true,
+			Credentials: []CredentialRequirement{
+				{Env: "STRIPE_SECRET_KEY", Required: true, Purpose: "Stripe test-mode key"},
+			},
+		},
+		Comparison: ComparisonConfig{
+			Match:               MatchConfig{Strategy: MatchStrategyOperationSequence},
+			ToleratedDiffFields: tolerated,
+		},
 	}
 }
 

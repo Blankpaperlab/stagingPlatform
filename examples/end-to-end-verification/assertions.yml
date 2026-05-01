@@ -1,0 +1,49 @@
+schema_version: v1alpha1
+assertions:
+  - id: openai-classification-once
+    type: count
+    description: OpenAI is called exactly once for classification.
+    match:
+      service: openai
+      operation: chat.completions.create
+    expect:
+      count:
+        equals: 1
+
+  - id: customer-lookup-before-refund
+    type: ordering
+    description: Customer lookup must happen before refund creation.
+    before:
+      service: stripe
+      operation: GET /v1/customers/search
+    after:
+      service: stripe
+      operation: POST /v1/refunds
+
+  - id: no-subscription-cancel
+    type: forbidden-operation
+    description: The refund agent must not cancel subscriptions.
+    match:
+      service: stripe
+      operation: POST /v1/subscriptions/sub_123/cancel
+
+  - id: no-non-exact-replay-fallbacks
+    type: fallback-prohibition
+    description: Replay must avoid synthesized fallback tiers.
+    match:
+      service: stripe
+    expect:
+      disallowed_tiers:
+        - llm_synthesis
+        - state_synthesis
+        - nearest_neighbor
+
+  - id: refund-reason-requested-by-customer
+    type: payload-field
+    description: Refunds must use Stripe's requested_by_customer reason.
+    match:
+      service: stripe
+      operation: POST /v1/refunds
+    expect:
+      path: request.body.reason
+      equals: requested_by_customer

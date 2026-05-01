@@ -5,11 +5,11 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
-from ._capture import CapturedInteraction
+from ._capture import CapturedInteraction, _decode_body
 from ._providers import is_openai_host
 
 
@@ -65,12 +65,17 @@ class OpenAIReplayStore:
 
     def pop_match(self, request: httpx.Request) -> ExactReplayMatch:
         key = request_key_from_httpx_request(request)
+        return self.pop_match_for_key(key, request_label=f"{request.method} {request.url}")
+
+    def pop_match_for_parts(self, *, method: str, url: str, body: Any | None) -> ExactReplayMatch:
+        key = request_key_from_parts(method=method, url=url, body=body)
+        return self.pop_match_for_key(key, request_label=f"{method} {url}")
+
+    def pop_match_for_key(self, key: str, *, request_label: str) -> ExactReplayMatch:
         with self._lock:
             matches = self._entries.get(key)
             if not matches:
-                raise ReplayMissError(
-                    f"no exact replay match for request {request.method} {request.url}"
-                )
+                raise ReplayMissError(f"no exact replay match for request {request_label}")
 
             return ExactReplayMatch(interaction=matches.popleft())
 
@@ -81,10 +86,14 @@ def is_openai_request(request: httpx.Request) -> bool:
 
 def request_key_from_httpx_request(request: httpx.Request) -> str:
     body = _decode_httpx_request_body(request)
+    return request_key_from_parts(method=str(request.method), url=str(request.url), body=body)
+
+
+def request_key_from_parts(*, method: str, url: str, body: Any | None) -> str:
     payload = {
-        "method": str(request.method).upper(),
-        "url": str(request.url),
-        "body": _replay_key_body(body),
+        "method": str(method).upper(),
+        "url": _replay_key_url(str(url)),
+        "body": _replay_key_body_for_url(str(url), body),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
@@ -92,13 +101,47 @@ def request_key_from_httpx_request(request: httpx.Request) -> str:
 def _request_key_from_interaction(interaction: CapturedInteraction) -> str:
     payload = {
         "method": interaction.request.method.upper(),
-        "url": interaction.request.url,
-        "body": _replay_key_body(interaction.request.body),
+        "url": _replay_key_url(interaction.request.url),
+        "body": _replay_key_body_for_url(interaction.request.url, interaction.request.body),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
-def _replay_key_body(body: Any) -> Any:
+def _replay_key_url(url: str) -> str:
+    parsed = urlsplit(url)
+    if parsed.hostname != "api.stripe.com" or not parsed.query:
+        return url
+
+    pairs = []
+    changed = False
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() in {"email", "query"}:
+            pairs.append((key, json.dumps(_content_signature(value), sort_keys=True)))
+            changed = True
+            continue
+        pairs.append((key, value))
+
+    if not changed:
+        return url
+
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(pairs),
+            parsed.fragment,
+        )
+    )
+
+
+def _replay_key_body_for_url(url: str, body: Any) -> Any:
+    if urlsplit(url).hostname == "api.stripe.com":
+        return _stripe_replay_key_body(body)
+    return _openai_replay_key_body(body)
+
+
+def _openai_replay_key_body(body: Any) -> Any:
     if not isinstance(body, dict):
         return body
 
@@ -128,6 +171,20 @@ def _replay_key_body(body: Any) -> Any:
             key_body["stream"] = body["stream"]
         return key_body
 
+    return body
+
+
+def _stripe_replay_key_body(body: Any) -> Any:
+    if isinstance(body, dict):
+        keyed: dict[str, Any] = {}
+        for key in sorted(body):
+            if str(key).lower() in {"email", "query"}:
+                keyed[str(key)] = _content_signature(body[key])
+                continue
+            keyed[str(key)] = _stripe_replay_key_body(body[key])
+        return keyed
+    if isinstance(body, list):
+        return [_stripe_replay_key_body(item) for item in body]
     return body
 
 
@@ -198,18 +255,10 @@ def _content_signature(value: Any) -> Any:
 
 
 def _decode_httpx_request_body(request: httpx.Request) -> Any | None:
-    content_type = str(request.headers.get("content-type", "")).split(";", 1)[0].strip().lower()
-    payload = request.content
-    if not payload:
-        return None
-
-    if content_type == "application/json":
-        return json.loads(payload.decode("utf-8"))
-
-    try:
-        return payload.decode("utf-8")
-    except UnicodeDecodeError:
-        return payload.hex()
+    return _decode_body(
+        content=request.content,
+        content_type=str(request.headers.get("content-type", "")).split(";", 1)[0].strip().lower(),
+    )
 
 
 def openai_operation_from_request(request: httpx.Request) -> str:

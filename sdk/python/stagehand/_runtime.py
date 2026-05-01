@@ -14,8 +14,10 @@ from uuid import uuid4
 
 from ._capture import CaptureBuffer, CapturedInteraction
 from ._httpx import install_httpx_interception, uninstall_httpx_interception
+from ._injection import InjectionEngine, load_engine
 from ._openai import OpenAIReplayStore
 from ._providers import ENV_OPENAI_HOSTS as _PROVIDER_ENV_OPENAI_HOSTS
+from ._stripe import install_stripe_interception, uninstall_stripe_interception
 from ._version import ARTIFACT_VERSION, __version__
 
 DEFAULT_CONFIG_FILENAME: Final[str] = "stagehand.yml"
@@ -25,6 +27,7 @@ ENV_MODE: Final[str] = "STAGEHAND_MODE"
 ENV_CONFIG_PATH: Final[str] = "STAGEHAND_CONFIG_PATH"
 ENV_CAPTURE_OUTPUT: Final[str] = "STAGEHAND_CAPTURE_OUTPUT"
 ENV_REPLAY_INPUT: Final[str] = "STAGEHAND_REPLAY_INPUT"
+ENV_ERROR_INJECTION_INPUT: Final[str] = "STAGEHAND_ERROR_INJECTION_INPUT"
 ENV_OPENAI_HOSTS: Final[str] = _PROVIDER_ENV_OPENAI_HOSTS
 
 StagehandMode: TypeAlias = Literal["record", "replay", "passthrough"]
@@ -75,6 +78,7 @@ class StagehandRuntime:
     metadata: RuntimeMetadata
     _capture_buffer: CaptureBuffer
     _openai_replay_store: OpenAIReplayStore
+    _injection_engine: InjectionEngine
 
     @property
     def session(self) -> str:
@@ -102,9 +106,11 @@ class StagehandRuntime:
         return [interaction.to_dict() for interaction in self.captured_interactions()]
 
     def capture_bundle_dict(self) -> dict[str, Any]:
+        metadata = self.recorder_metadata()
+        metadata.update(self._injection_engine.metadata())
         return {
             "bundle_version": BUNDLE_VERSION,
-            "metadata": self.recorder_metadata(),
+            "metadata": metadata,
             "interactions": self.captured_interaction_dicts(),
         }
 
@@ -154,11 +160,19 @@ def init(session: str, mode: str, config_path: str | Path | None = None) -> Stag
             metadata=metadata,
             _capture_buffer=CaptureBuffer(run_id=metadata.run_id),
             _openai_replay_store=OpenAIReplayStore(),
+            _injection_engine=load_engine(os.environ.get(ENV_ERROR_INJECTION_INPUT)),
         )
         install_httpx_interception(
             mode=metadata.mode,
             capture_buffer=runtime._capture_buffer,
             replay_store=runtime._openai_replay_store,
+            injection_engine=runtime._injection_engine,
+        )
+        install_stripe_interception(
+            mode=metadata.mode,
+            capture_buffer=runtime._capture_buffer,
+            replay_store=runtime._openai_replay_store,
+            injection_engine=runtime._injection_engine,
         )
         _configure_env_integrations(runtime)
         _current_runtime = runtime
@@ -196,6 +210,7 @@ def seed_replay_interactions(
 def _reset_for_tests() -> None:
     global _current_runtime
     with _runtime_lock:
+        uninstall_stripe_interception()
         uninstall_httpx_interception()
         _current_runtime = None
 

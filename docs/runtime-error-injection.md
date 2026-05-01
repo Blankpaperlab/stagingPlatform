@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the current Story `I3` runtime error-injection slice.
+This document describes the current runtime error-injection support from Story `I3` plus the CLI-managed SDK workflow wiring from Story `Z3`.
 
 The Go source of truth is:
 
@@ -10,6 +10,40 @@ The Go source of truth is:
 - `internal/runtime/injection/library.go`
 - `internal/runtime/injection/engine_test.go`
 - `internal/services/stripe/simulator.go`
+- `cmd/stagehand/workflow.go`
+- `sdk/python/stagehand/_injection.py`
+- `sdk/typescript/src/injection.ts`
+
+## CLI-Managed SDK Workflows
+
+`stagehand record` and `stagehand replay` accept `--error-injection <path>` for managed child processes:
+
+```powershell
+stagehand record --session refund-flow --error-injection error-injection.yml -- python agent.py
+stagehand replay --session refund-flow --error-injection error-injection.yml -- python agent.py
+```
+
+The CLI file shape is:
+
+```yaml
+schema_version: v1alpha1
+error_injection:
+  rules:
+    - name: Stripe refund fails on first attempt
+      match:
+        service: stripe
+        operation: POST /v1/refunds
+        nth_call: 1
+      inject:
+        status: 402
+        body:
+          error:
+            type: card_error
+            code: card_declined
+            message: Your card was declined.
+```
+
+The CLI validates this YAML against the Go injection engine, resolves named library entries, writes a normalized JSON bundle, and passes its path to Python and TypeScript SDKs through `STAGEHAND_ERROR_INJECTION_INPUT`.
 
 ## Matcher Model
 
@@ -78,11 +112,12 @@ Each applied injection returns `Provenance`:
 }
 ```
 
-The Stripe simulator records applied injection provenance in memory and exposes it as run metadata through `ErrorInjectionMetadata`. The CLI preserves capture-bundle metadata on the persisted run record, and SQLite persists top-level run metadata through `runs.metadata_json`.
+The Stripe simulator records applied injection provenance in memory and exposes it as run metadata through `ErrorInjectionMetadata`. Python and TypeScript SDK interception also attach applied provenance to the capture-bundle metadata. The CLI preserves capture-bundle metadata on the persisted run record, and SQLite persists top-level run metadata through `runs.metadata_json`. `stagehand inspect` renders run-level error-injection metadata when present.
 
 ## Current Limits
 
 - The Stripe simulator core calls the engine before supported operations and returns injected Stripe-shaped errors without mutating session state.
+- Python and TypeScript SDK adapters call the engine before live dispatch in record mode and before exact replay dispatch in replay mode.
 - Other future service adapters still need to call the engine before dispatching simulator operations.
 - Probability uses an injectable random source for deterministic tests.
 - Response overrides are JSON-like Go maps; the Stripe simulator maps them to typed Stripe errors, but no generic HTTP wire-format renderer is attached yet.
@@ -99,6 +134,8 @@ Current tests cover:
 - Stripe simulator response overrides that do not mutate state
 - unknown library rejection
 - persisted run metadata provenance round-trip through SQLite
+- CLI-managed record and replay propagation through `--error-injection`
+- Python and TypeScript SDK injection before live dispatch and before replay dispatch
 
 ## Demo
 

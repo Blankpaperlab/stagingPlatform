@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from functools import wraps
-from threading import Lock
+from threading import Lock, local
 from time import perf_counter
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 import httpx
 
 from ._capture import CaptureBuffer, CapturedInteraction
+from ._injection import InjectionEngine
 from ._openai import OpenAIReplayStore, ReplayFailureError, is_openai_request
 
 _patch_lock = Lock()
+_suppression = local()
 _original_client_send: Callable[..., Any] | None = None
 _original_async_client_send: Callable[..., Any] | None = None
 
@@ -21,6 +24,7 @@ def install_httpx_interception(
     mode: str,
     capture_buffer: CaptureBuffer,
     replay_store: OpenAIReplayStore,
+    injection_engine: InjectionEngine,
 ) -> None:
     global _original_async_client_send, _original_client_send
 
@@ -33,8 +37,19 @@ def install_httpx_interception(
 
         @wraps(original_client_send)
         def wrapped_client_send(self: Any, request: Any, *args: Any, **kwargs: Any) -> Any:
+            if _httpx_interception_suppressed():
+                return original_client_send(self, request, *args, **kwargs)
+
             started = perf_counter()
             streamed = bool(kwargs.get("stream", False))
+            injected = _injected_response(
+                request=request,
+                capture_buffer=capture_buffer,
+                injection_engine=injection_engine,
+                elapsed_ms=_elapsed_ms(started),
+            )
+            if injected is not None:
+                return injected
 
             if mode == "replay":
                 match = replay_store.pop_match(request)
@@ -90,8 +105,19 @@ def install_httpx_interception(
             *args: Any,
             **kwargs: Any,
         ) -> Any:
+            if _httpx_interception_suppressed():
+                return await original_async_client_send(self, request, *args, **kwargs)
+
             started = perf_counter()
             streamed = bool(kwargs.get("stream", False))
+            injected = _injected_response(
+                request=request,
+                capture_buffer=capture_buffer,
+                injection_engine=injection_engine,
+                elapsed_ms=_elapsed_ms(started),
+            )
+            if injected is not None:
+                return injected
 
             if mode == "replay":
                 match = replay_store.pop_match(request)
@@ -157,6 +183,20 @@ def uninstall_httpx_interception() -> None:
         if _original_async_client_send is not None:
             httpx.AsyncClient.send = _original_async_client_send
             _original_async_client_send = None
+
+
+@contextmanager
+def suppress_httpx_interception() -> Iterator[None]:
+    depth = int(getattr(_suppression, "depth", 0))
+    _suppression.depth = depth + 1
+    try:
+        yield
+    finally:
+        _suppression.depth = depth
+
+
+def _httpx_interception_suppressed() -> bool:
+    return int(getattr(_suppression, "depth", 0)) > 0
 
 
 class _RecordingSyncOpenAIStream(httpx.SyncByteStream):
@@ -365,6 +405,46 @@ def _build_replay_response(
         status_code=status_code,
         headers=headers,
         content=body,
+        request=request,
+    )
+
+
+def _injected_response(
+    *,
+    request: Any,
+    capture_buffer: CaptureBuffer,
+    injection_engine: InjectionEngine,
+    elapsed_ms: int,
+) -> httpx.Response | None:
+    normalized_request = capture_buffer.normalize_request(request)
+    service = capture_buffer.detect_service(normalized_request.url)
+    operation = capture_buffer.detect_operation(
+        normalized_request.method,
+        normalized_request.url,
+        normalized_request.body,
+    )
+    decision = injection_engine.evaluate(service=service, operation=operation)
+    if decision is None:
+        return None
+
+    headers = {"content-type": ["application/json"], "x-stagehand-injected": ["true"]}
+    capture_buffer.record_success_for_request(
+        normalized_request=normalized_request,
+        service=service,
+        operation=operation,
+        protocol=capture_buffer.detect_protocol(normalized_request.url),
+        elapsed_ms=elapsed_ms,
+        streaming=False,
+        response={
+            "status_code": decision.override.status,
+            "headers": headers,
+            "body": decision.override.body,
+        },
+    )
+    return httpx.Response(
+        status_code=decision.override.status,
+        headers={key: values[0] for key, values in headers.items() if values},
+        content=_encode_body_bytes(decision.override.body),
         request=request,
     )
 

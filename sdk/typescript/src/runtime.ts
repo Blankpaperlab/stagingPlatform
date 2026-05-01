@@ -10,6 +10,7 @@ import {
 } from './capture.js';
 import { ExactReplayStore } from './replay.js';
 import { installRequestInterception, resetRequestInterceptionForTests } from './interception.js';
+import { InjectionEngine, loadInjectionEngine } from './injection.js';
 import { ARTIFACT_VERSION, SDK_VERSION } from './version.js';
 
 export { ENV_OPENAI_HOSTS } from './providers.js';
@@ -19,6 +20,7 @@ export const ENV_SESSION = 'STAGEHAND_SESSION';
 export const ENV_MODE = 'STAGEHAND_MODE';
 export const ENV_CONFIG_PATH = 'STAGEHAND_CONFIG_PATH';
 export const ENV_REPLAY_INPUT = 'STAGEHAND_REPLAY_INPUT';
+export const ENV_ERROR_INJECTION_INPUT = 'STAGEHAND_ERROR_INJECTION_INPUT';
 
 export const VALID_MODES = ['record', 'replay', 'passthrough'] as const;
 
@@ -38,6 +40,7 @@ export type RecorderMetadata = {
   sdk_version: string;
   artifact_version: string;
   initialized_at: string;
+  error_injection?: unknown;
 };
 
 export type RuntimeMetadata = {
@@ -67,15 +70,18 @@ export class StagehandRuntime {
   readonly metadata: RuntimeMetadata;
   private readonly captureBuffer: CaptureBuffer;
   private readonly replayStore: ExactReplayStore;
+  private readonly injectionEngine: InjectionEngine;
 
   constructor(
     metadata: RuntimeMetadata,
     captureBuffer: CaptureBuffer,
-    replayStore: ExactReplayStore
+    replayStore: ExactReplayStore,
+    injectionEngine: InjectionEngine
   ) {
     this.metadata = metadata;
     this.captureBuffer = captureBuffer;
     this.replayStore = replayStore;
+    this.injectionEngine = injectionEngine;
   }
 
   get session(): string {
@@ -103,6 +109,7 @@ export class StagehandRuntime {
       sdk_version: this.metadata.sdkVersion,
       artifact_version: this.metadata.artifactVersion,
       initialized_at: this.metadata.initializedAt.toISOString(),
+      ...this.injectionEngine.metadata(),
     };
   }
 
@@ -144,6 +151,7 @@ export function init(options: InitOptions): StagehandRuntime {
     sessionSaltId: DEFAULT_SESSION_SALT_ID,
   });
   const replayStore = new ExactReplayStore();
+  const injectionEngine = loadInjectionEngine(process.env[ENV_ERROR_INJECTION_INPUT]);
 
   const runtime = new StagehandRuntime(
     {
@@ -156,7 +164,8 @@ export function init(options: InitOptions): StagehandRuntime {
       initializedAt: new Date(),
     },
     captureBuffer,
-    replayStore
+    replayStore,
+    injectionEngine
   );
 
   if (mode !== 'passthrough') {
@@ -164,6 +173,7 @@ export function init(options: InitOptions): StagehandRuntime {
       mode,
       captureBuffer,
       replayStore,
+      injectionEngine,
     });
   }
 

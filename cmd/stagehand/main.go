@@ -69,6 +69,7 @@ func runRecord(args []string, stdout io.Writer, stderr io.Writer) (runErr error)
 
 	session := flags.String("session", "", "Session name to record into")
 	configPath := flags.String("config", "", "Path to stagehand.yml")
+	errorInjectionPath := flags.String("error-injection", "", "Path to error injection rules")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse record flags: %w\n\n%s", err, recordHelpText())
 	}
@@ -83,6 +84,11 @@ func runRecord(args []string, stdout io.Writer, stderr io.Writer) (runErr error)
 	cfgPath := strings.TrimSpace(*configPath)
 	if cfgPath == "" {
 		cfgPath = defaultRuntimeConfigPath
+	}
+
+	errorInjectionBundle, err := loadSDKErrorInjectionBundle(*errorInjectionPath)
+	if err != nil {
+		return err
 	}
 
 	ctx := context.Background()
@@ -119,6 +125,13 @@ func runRecord(args []string, stdout io.Writer, stderr io.Writer) (runErr error)
 	defer os.RemoveAll(tempDir)
 
 	capturePath := filepath.Join(tempDir, "capture.json")
+	resolvedErrorInjectionPath := ""
+	if len(errorInjectionBundle.Rules) > 0 {
+		resolvedErrorInjectionPath = filepath.Join(tempDir, "error-injection.json")
+		if err := writeSDKErrorInjectionBundle(resolvedErrorInjectionPath, errorInjectionBundle); err != nil {
+			return err
+		}
+	}
 	finalized := false
 	defer func() {
 		if finalized {
@@ -134,15 +147,20 @@ func runRecord(args []string, stdout io.Writer, stderr io.Writer) (runErr error)
 		}
 	}()
 
+	extraEnv := map[string]string{
+		envStagehandSession:    runRecord.SessionName,
+		envStagehandMode:       string(recorder.RunModeRecord),
+		envStagehandConfigPath: cfgPath,
+		envStagehandCaptureOut: capturePath,
+	}
+	if resolvedErrorInjectionPath != "" {
+		extraEnv[envStagehandInjectInput] = resolvedErrorInjectionPath
+	}
+
 	if err := runManagedCommand(
 		ctx,
 		commandArgs,
-		map[string]string{
-			envStagehandSession:    runRecord.SessionName,
-			envStagehandMode:       string(recorder.RunModeRecord),
-			envStagehandConfigPath: cfgPath,
-			envStagehandCaptureOut: capturePath,
-		},
+		extraEnv,
 		stderr,
 	); err != nil {
 		runErr = incompleteRunFailure("managed record command failed", err)
@@ -188,6 +206,7 @@ func runReplay(args []string, stdout io.Writer, stderr io.Writer) error {
 	runID := flags.String("run-id", "", "Run identifier to replay")
 	session := flags.String("session", "", "Session name to replay latest run from")
 	configPath := flags.String("config", "", "Path to stagehand.yml")
+	errorInjectionPath := flags.String("error-injection", "", "Path to error injection rules")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse replay flags: %w\n\n%s", err, replayHelpText())
 	}
@@ -205,6 +224,11 @@ func runReplay(args []string, stdout io.Writer, stderr io.Writer) error {
 	cfgPath := strings.TrimSpace(*configPath)
 	if cfgPath == "" {
 		cfgPath = defaultRuntimeConfigPath
+	}
+
+	errorInjectionBundle, err := loadSDKErrorInjectionBundle(*errorInjectionPath)
+	if err != nil {
+		return err
 	}
 
 	ctx := context.Background()
@@ -251,6 +275,13 @@ func runReplay(args []string, stdout io.Writer, stderr io.Writer) error {
 
 	seedPath := filepath.Join(tempDir, "seed.json")
 	capturePath := filepath.Join(tempDir, "capture.json")
+	resolvedErrorInjectionPath := ""
+	if len(errorInjectionBundle.Rules) > 0 {
+		resolvedErrorInjectionPath = filepath.Join(tempDir, "error-injection.json")
+		if err := writeSDKErrorInjectionBundle(resolvedErrorInjectionPath, errorInjectionBundle); err != nil {
+			return err
+		}
+	}
 	if err := writeInteractionBundle(seedPath, interactionBundle{
 		BundleVersion: interactionBundleVersion,
 		Metadata: map[string]any{
@@ -264,16 +295,21 @@ func runReplay(args []string, stdout io.Writer, stderr io.Writer) error {
 	}
 
 	commandErr := error(nil)
+	extraEnv := map[string]string{
+		envStagehandSession:     sourceRun.SessionName,
+		envStagehandMode:        string(recorder.RunModeReplay),
+		envStagehandConfigPath:  cfgPath,
+		envStagehandCaptureOut:  capturePath,
+		envStagehandReplayInput: seedPath,
+	}
+	if resolvedErrorInjectionPath != "" {
+		extraEnv[envStagehandInjectInput] = resolvedErrorInjectionPath
+	}
+
 	if err := runManagedCommand(
 		ctx,
 		commandArgs,
-		map[string]string{
-			envStagehandSession:     sourceRun.SessionName,
-			envStagehandMode:        string(recorder.RunModeReplay),
-			envStagehandConfigPath:  cfgPath,
-			envStagehandCaptureOut:  capturePath,
-			envStagehandReplayInput: seedPath,
-		},
+		extraEnv,
 		stderr,
 	); err != nil {
 		commandErr = incompleteRunFailure("managed replay command failed", err)
@@ -916,6 +952,8 @@ func recordHelpText() string {
 Flags:
   --session string   Session name to record into
   --config string    Path to stagehand.yml (default: stagehand.yml)
+  --error-injection string
+                    Path to deterministic error injection rules
 `
 }
 
@@ -927,6 +965,8 @@ Flags:
   --run-id string    Run identifier to replay
   --session string   Session name to replay the latest replayable stored run from
   --config string    Path to stagehand.yml (default: stagehand.yml)
+  --error-injection string
+                    Path to deterministic error injection rules
 `
 }
 

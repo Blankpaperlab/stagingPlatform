@@ -185,15 +185,20 @@ func (r *Runner) runSimulator(ctx context.Context, testCase Case, sessionName st
 func (r *Runner) runOpenAIReal(ctx context.Context, testCase Case) ([]observation, error) {
 	apiKey := r.envValue("OPENAI_API_KEY")
 	observations := make([]observation, 0, len(testCase.Inputs.Steps))
+	resolved := map[string]observation{}
 	for idx, step := range testCase.Inputs.Steps {
 		if step.Operation != "chat.completions.create" && step.Operation != "responses.create" {
 			return nil, fmt.Errorf("unsupported OpenAI operation %q", step.Operation)
+		}
+		request, err := resolveRequestTemplates(step.Request, resolved)
+		if err != nil {
+			return nil, fmt.Errorf("resolve OpenAI request for step %q: %w", step.ID, err)
 		}
 		endpoint := "https://api.openai.com/v1/chat/completions"
 		if step.Operation == "responses.create" {
 			endpoint = "https://api.openai.com/v1/responses"
 		}
-		body, err := json.Marshal(step.Request)
+		body, err := json.Marshal(request)
 		if err != nil {
 			return nil, fmt.Errorf("encode OpenAI request for step %q: %w", step.ID, err)
 		}
@@ -213,9 +218,10 @@ func (r *Runner) runOpenAIReal(ctx context.Context, testCase Case) ([]observatio
 		}
 		observed.StepID = step.ID
 		observed.Operation = step.Operation
-		observed.Request = cloneMap(step.Request)
+		observed.Request = cloneMap(request)
 		observed.InteractionID = interactionID("real", idx)
 		observations = append(observations, observed)
+		resolved[step.ID] = observed
 	}
 	return observations, nil
 }
@@ -223,15 +229,22 @@ func (r *Runner) runOpenAIReal(ctx context.Context, testCase Case) ([]observatio
 func (r *Runner) runStripeReal(ctx context.Context, testCase Case) ([]observation, error) {
 	apiKey := r.envValue("STRIPE_SECRET_KEY")
 	observations := make([]observation, 0, len(testCase.Inputs.Steps))
+	resolved := map[string]observation{}
 	for idx, step := range testCase.Inputs.Steps {
-		method, endpoint, err := stripeEndpoint(step)
+		request, err := resolveRequestTemplates(step.Request, resolved)
+		if err != nil {
+			return nil, fmt.Errorf("resolve Stripe request for step %q: %w", step.ID, err)
+		}
+		resolvedStep := step
+		resolvedStep.Request = request
+		method, endpoint, err := stripeEndpoint(resolvedStep)
 		if err != nil {
 			return nil, err
 		}
 		var body io.Reader
 		if method == http.MethodPost {
 			encoded := url.Values{}
-			encodeStripeForm("", step.Request, encoded)
+			encodeStripeForm("", request, encoded)
 			body = strings.NewReader(encoded.Encode())
 		}
 		req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
@@ -252,19 +265,32 @@ func (r *Runner) runStripeReal(ctx context.Context, testCase Case) ([]observatio
 		}
 		observed.StepID = step.ID
 		observed.Operation = step.Operation
-		observed.Request = cloneMap(step.Request)
+		observed.Request = cloneMap(request)
 		observed.InteractionID = interactionID("real", idx)
 		observations = append(observations, observed)
+		resolved[step.ID] = observed
 	}
 	return observations, nil
 }
 
 func (r *Runner) runOpenAISimulator(testCase Case) []observation {
 	observations := make([]observation, 0, len(testCase.Inputs.Steps))
+	resolved := map[string]observation{}
 	for idx, step := range testCase.Inputs.Steps {
+		request, err := resolveRequestTemplates(step.Request, resolved)
+		if err != nil {
+			observations = append(observations, observation{
+				StepID:        step.ID,
+				Operation:     step.Operation,
+				Request:       cloneMap(step.Request),
+				Error:         map[string]any{"message": err.Error()},
+				InteractionID: interactionID("sim", idx),
+			})
+			continue
+		}
 		response := map[string]any{
 			"object": "chat.completion",
-			"model":  stringValue(step.Request["model"]),
+			"model":  stringValue(request["model"]),
 			"choices": []any{
 				map[string]any{
 					"index": 0,
@@ -279,7 +305,7 @@ func (r *Runner) runOpenAISimulator(testCase Case) []observation {
 		if step.Operation == "responses.create" {
 			response = map[string]any{
 				"object": "response",
-				"model":  stringValue(step.Request["model"]),
+				"model":  stringValue(request["model"]),
 				"output": []any{
 					map[string]any{
 						"type": "message",
@@ -294,11 +320,12 @@ func (r *Runner) runOpenAISimulator(testCase Case) []observation {
 		observations = append(observations, observation{
 			StepID:        step.ID,
 			Operation:     step.Operation,
-			Request:       cloneMap(step.Request),
+			Request:       cloneMap(request),
 			Response:      map[string]any{"body": response},
 			StatusCode:    200,
 			InteractionID: interactionID("sim", idx),
 		})
+		resolved[step.ID] = observations[len(observations)-1]
 	}
 	return observations
 }
@@ -316,12 +343,19 @@ func (r *Runner) runStripeSimulator(ctx context.Context, testCase Case, sessionN
 	}
 
 	observations := make([]observation, 0, len(testCase.Inputs.Steps))
+	resolved := map[string]observation{}
 	for idx, step := range testCase.Inputs.Steps {
-		response, statusCode, stepErr := runStripeSimulatorStep(ctx, sim, sessionName, step)
+		request, err := resolveRequestTemplates(step.Request, resolved)
+		if err != nil {
+			return nil, fmt.Errorf("resolve Stripe simulator request for step %q: %w", step.ID, err)
+		}
+		resolvedStep := step
+		resolvedStep.Request = request
+		response, statusCode, stepErr := runStripeSimulatorStep(ctx, sim, sessionName, resolvedStep)
 		observed := observation{
 			StepID:        step.ID,
 			Operation:     step.Operation,
-			Request:       cloneMap(step.Request),
+			Request:       cloneMap(request),
 			Response:      map[string]any{"body": response},
 			StatusCode:    statusCode,
 			InteractionID: interactionID("sim", idx),
@@ -330,6 +364,7 @@ func (r *Runner) runStripeSimulator(ctx context.Context, testCase Case, sessionN
 			observed.Error = errorMap(stepErr)
 		}
 		observations = append(observations, observed)
+		resolved[step.ID] = observed
 	}
 	return observations, nil
 }
@@ -343,6 +378,9 @@ func runStripeSimulatorStep(ctx context.Context, sim *stripe.Simulator, sessionN
 			Description: stringValue(step.Request["description"]),
 			Metadata:    stringMap(step.Request["metadata"]),
 		})
+		return objectMap(value), statusCode(err), err
+	case stripe.OperationCustomersSearch:
+		value, err := sim.SearchCustomers(ctx, sessionName, stringValue(step.Request["query"]))
 		return objectMap(value), statusCode(err), err
 	case stripe.OperationCustomersRetrieve:
 		value, err := sim.GetCustomer(ctx, sessionName, stringValue(step.Request["id"]))
@@ -379,13 +417,30 @@ func runStripeSimulatorStep(ctx context.Context, sim *stripe.Simulator, sessionN
 		})
 		return objectMap(value), statusCode(err), err
 	case stripe.OperationPaymentIntentsCreate:
+		paymentMethodID, err := simulatorPaymentMethodID(ctx, sim, sessionName, step.Request)
+		if err != nil {
+			return nil, statusCode(err), err
+		}
+		if paymentMethodID == "" {
+			paymentMethodID = stringValue(step.Request["payment_method"])
+		}
+		status := stringValue(step.Request["status"])
+		if status == "" && boolValue(step.Request["confirm"]) {
+			status = stripe.PaymentIntentStatusSucceeded
+		}
 		value, err := sim.CreatePaymentIntent(ctx, sessionName, stripe.CreatePaymentIntentParams{
 			Amount:          int64Value(step.Request["amount"]),
 			Currency:        stringValue(step.Request["currency"]),
 			CustomerID:      stringValue(step.Request["customer"]),
-			PaymentMethodID: stringValue(step.Request["payment_method"]),
-			Status:          stringValue(step.Request["status"]),
+			PaymentMethodID: paymentMethodID,
+			Status:          status,
 			Metadata:        stringMap(step.Request["metadata"]),
+		})
+		return objectMap(value), statusCode(err), err
+	case stripe.OperationPaymentIntentsList:
+		value, err := sim.ListPaymentIntents(ctx, sessionName, stripe.ListPaymentIntentsParams{
+			CustomerID: stringValue(step.Request["customer"]),
+			Limit:      int(int64Value(step.Request["limit"])),
 		})
 		return objectMap(value), statusCode(err), err
 	case stripe.OperationPaymentIntentsRetrieve:
@@ -398,6 +453,14 @@ func runStripeSimulatorStep(ctx context.Context, sim *stripe.Simulator, sessionN
 			CustomerID:      optionalString(step.Request, "customer"),
 			PaymentMethodID: optionalString(step.Request, "payment_method"),
 			Status:          optionalString(step.Request, "status"),
+			Metadata:        stringMap(step.Request["metadata"]),
+		})
+		return objectMap(value), statusCode(err), err
+	case stripe.OperationRefundsCreate:
+		value, err := sim.CreateRefund(ctx, sessionName, stripe.CreateRefundParams{
+			PaymentIntentID: stringValue(step.Request["payment_intent"]),
+			Amount:          int64Value(step.Request["amount"]),
+			Reason:          stringValue(step.Request["reason"]),
 			Metadata:        stringMap(step.Request["metadata"]),
 		})
 		return objectMap(value), statusCode(err), err

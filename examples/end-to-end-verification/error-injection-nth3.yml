@@ -1,0 +1,15 @@
+schema_version: v1alpha1
+error_injection:
+  rules:
+    - name: Stripe refund fails on third attempt
+      match:
+        service: stripe
+        operation: POST /v1/refunds
+        nth_call: 3
+      inject:
+        status: 402
+        body:
+          error:
+            type: card_error
+            code: card_declined
+            message: Your card was declined.

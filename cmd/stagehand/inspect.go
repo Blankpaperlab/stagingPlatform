@@ -140,6 +140,15 @@ func renderInspect(
 		}
 	}
 
+	if injectionMetadata, ok := runRecord.Metadata["error_injection"]; ok {
+		if _, err := io.WriteString(w, "\nError Injection:\n"); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "%s\n", indentBlock(prettyJSON(injectionMetadata), "  ")); err != nil {
+			return err
+		}
+	}
+
 	if _, err := io.WriteString(w, "\nInteractions:\n"); err != nil {
 		return err
 	}

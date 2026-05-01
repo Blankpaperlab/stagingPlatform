@@ -394,6 +394,128 @@ def test_replay_miss_for_non_openai_request_fails_before_network() -> None:
             client.get("https://api.stripe.com/v1/customers/cus_missing")
 
 
+def test_error_injection_record_mode_fires_before_live_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    injection_path = tmp_path / "injection.json"
+    injection_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1alpha1",
+                "rules": [
+                    {
+                        "name": "stripe refund fails first",
+                        "match": {
+                            "service": "stripe",
+                            "operation": "POST /v1/refunds",
+                            "nth_call": 1,
+                        },
+                        "inject": {
+                            "status": 402,
+                            "body": {"error": {"code": "card_declined"}},
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STAGEHAND_ERROR_INJECTION_INPUT", str(injection_path))
+    runtime = stagehand.init(session="stripe-inject-record", mode="record")
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("injected record request should not call the underlying transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        response = client.post(
+            "https://api.stripe.com/v1/refunds",
+            data={"payment_intent": "pi_123", "reason": "requested_by_customer"},
+        )
+
+    assert response.status_code == 402
+    assert response.json() == {"error": {"code": "card_declined"}}
+
+    [interaction] = runtime.captured_interactions()
+    assert interaction.service == "stripe"
+    assert interaction.operation == "POST /v1/refunds"
+    assert interaction.events[1].data is not None
+    assert interaction.events[1].data["status_code"] == 402
+    assert interaction.events[1].data["headers"]["x-stagehand-injected"] == ["true"]
+
+    metadata = runtime.capture_bundle_dict()["metadata"]
+    assert metadata["error_injection"]["applied"] == [
+        {
+            "rule_index": 0,
+            "service": "stripe",
+            "operation": "POST /v1/refunds",
+            "call_number": 1,
+            "status": 402,
+            "name": "stripe refund fails first",
+            "nth_call": 1,
+        }
+    ]
+
+
+def test_error_injection_replay_mode_can_target_third_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    injection_path = tmp_path / "injection.json"
+    injection_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1alpha1",
+                "rules": [
+                    {
+                        "name": "third refund fails",
+                        "match": {
+                            "service": "stripe",
+                            "operation": "POST /v1/refunds",
+                            "nth_call": 3,
+                        },
+                        "inject": {
+                            "status": 402,
+                            "body": {"error": {"code": "card_declined"}},
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STAGEHAND_ERROR_INJECTION_INPUT", str(injection_path))
+    runtime = stagehand.init(session="stripe-inject-replay", mode="replay")
+    stagehand.seed_replay_interactions(
+        [
+            _stripe_refund_seed(sequence=1, refund_id="re_1"),
+            _stripe_refund_seed(sequence=2, refund_id="re_2"),
+        ]
+    )
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("replay with injection should not call the underlying transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        responses = [
+            client.post("https://api.stripe.com/v1/refunds", data={"payment_intent": "pi_123"})
+            for _ in range(3)
+        ]
+
+    assert [response.status_code for response in responses] == [200, 200, 402]
+    assert [responses[0].json()["id"], responses[1].json()["id"]] == ["re_1", "re_2"]
+    assert responses[2].json() == {"error": {"code": "card_declined"}}
+
+    interactions = runtime.captured_interactions()
+    assert len(interactions) == 3
+    assert interactions[0].fallback_tier == "exact"
+    assert interactions[1].fallback_tier == "exact"
+    assert interactions[2].fallback_tier is None
+
+    applied = runtime.capture_bundle_dict()["metadata"]["error_injection"]["applied"]
+    assert applied[0]["call_number"] == 3
+
+
 def test_openai_replay_strips_transport_encoding_headers() -> None:
     stagehand.init(session="demo-encoded-replay", mode="replay")
     assert (
@@ -891,3 +1013,40 @@ def _load_onboarding_agent_example() -> object:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _stripe_refund_seed(*, sequence: int, refund_id: str) -> dict[str, object]:
+    return {
+        "run_id": "run_seed_refunds",
+        "interaction_id": f"int_seed_refund_{sequence}",
+        "sequence": sequence,
+        "service": "stripe",
+        "operation": "POST /v1/refunds",
+        "protocol": "https",
+        "streaming": False,
+        "request": {
+            "url": "https://api.stripe.com/v1/refunds",
+            "method": "POST",
+            "headers": {"content-type": ["application/x-www-form-urlencoded"]},
+            "body": {"payment_intent": "pi_123"},
+        },
+        "events": [
+            {"sequence": 1, "t_ms": 0, "sim_t_ms": 0, "type": "request_sent"},
+            {
+                "sequence": 2,
+                "t_ms": 1,
+                "sim_t_ms": 1,
+                "type": "response_received",
+                "data": {
+                    "status_code": 200,
+                    "headers": {"content-type": ["application/json"]},
+                    "body": {"id": refund_id, "object": "refund"},
+                },
+            },
+        ],
+        "scrub_report": {
+            "scrub_policy_version": "v0-unredacted",
+            "session_salt_id": "salt_pending",
+        },
+        "latency_ms": 1,
+    }

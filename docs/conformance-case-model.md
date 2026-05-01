@@ -153,6 +153,7 @@ The first-pass runner also lives in `internal/analysis/conformance`.
 - Stripe simulator cases execute against the in-process stateful simulator.
 - OpenAI simulator cases use a deterministic local response path until a dedicated OpenAI simulator lands.
 - Missing required real-service credentials produce `skipped` results.
+- Step request values can reference earlier observations with `{{ step-id.response.body.path }}`. References are resolved separately for the real run and simulator run, so generated IDs stay side-local. Array indexes use bracket notation, for example `{{ list-payment-intents.response.body.data[0].id }}`.
 - Structural comparison aligns by the configured match strategy and reports non-tolerated field mismatches as `field_mismatch` failures.
 
 ## CLI and Nightly Execution
@@ -178,9 +179,10 @@ The nightly workflow lives at `.github/workflows/conformance-nightly.yml`. It ru
 
 ## Cost and Frequency
 
-The default smoke file is `conformance/smoke.yml`.
+The default smoke file is `conformance/smoke.yml`. The refund-flow smoke case lives in `conformance/stripe-refund-smoke.yml` and can be run separately while Epic Z is under development.
 
 - OpenAI: one minimal chat-completion request per nightly run when `OPENAI_API_KEY` is configured.
 - Stripe: one customer-create request in Stripe test mode when `STRIPE_SECRET_KEY` is configured; this should not create real charges.
+- Stripe refund smoke: one test-mode customer, payment intent, list request, and refund when `STRIPE_SECRET_KEY` is configured; this should not create real charges.
 - Missing secrets are expected in forks and local dry runs; those cases are reported as `skipped`.
 - Keep new smoke cases small and deterministic. Broader conformance should run less frequently or behind manual dispatch until cost and flake rates are understood.

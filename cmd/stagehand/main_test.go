@@ -160,6 +160,72 @@ func TestRunRecordRunsManagedCommandPersistsInteractionsAndEmitsJSON(t *testing.
 	}
 }
 
+func TestRunRecordPassesErrorInjectionToManagedCommandAndPersistsProvenance(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	injectionPath := filepath.Join(workdir, "error-injection.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+	writeFile(t, injectionPath, `schema_version: v1alpha1
+error_injection:
+  rules:
+    - name: refund fails first
+      match:
+        service: stripe
+        operation: POST /v1/refunds
+        nth_call: 1
+      inject:
+        library: stripe.card_declined
+`)
+
+	args := []string{
+		"record",
+		"--session", "inject-flow",
+		"--config", configPath,
+		"--error-injection", injectionPath,
+		"--",
+	}
+	args = append(args, helperCommand("record-write-injection-capture")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("run(record --error-injection) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	result := decodeJSONOutput[recordResult](t, stdout.Bytes())
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	gotRun, err := sqliteStore.GetRun(context.Background(), result.RunID)
+	if err != nil {
+		t.Fatalf("GetRun() error = %v", err)
+	}
+	applied := injectedMetadataEntries(t, gotRun.Metadata)
+	if len(applied) != 1 {
+		t.Fatalf("applied injection metadata len = %d, want 1: %#v", len(applied), applied)
+	}
+	entry, ok := applied[0].(map[string]any)
+	if !ok {
+		t.Fatalf("applied injection metadata entry = %#v, want object", applied[0])
+	}
+	if entry["name"] != "refund fails first" || entry["status"].(float64) != 402 {
+		t.Fatalf("applied injection metadata = %#v, want named 402 override", entry)
+	}
+	if len(gotRun.Interactions) != 1 {
+		t.Fatalf("len(interactions) = %d, want 1", len(gotRun.Interactions))
+	}
+	if gotRun.Interactions[0].Service != "stripe" || gotRun.Interactions[0].Operation != "POST /v1/refunds" {
+		t.Fatalf("interaction route = %s %s, want stripe POST /v1/refunds", gotRun.Interactions[0].Service, gotRun.Interactions[0].Operation)
+	}
+}
+
 func TestRunRecordTreatsEmptyCaptureBundleAsCompleteEmptyRun(t *testing.T) {
 	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
 	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
@@ -439,6 +505,83 @@ func TestRunReplayRunsManagedCommandStoresReplayRunAndEmitsJSON(t *testing.T) {
 	}
 	if len(replayRun.Interactions) != 1 {
 		t.Fatalf("len(replayRun.Interactions) = %d, want 1", len(replayRun.Interactions))
+	}
+}
+
+func TestRunReplayPassesErrorInjectionToManagedCommandAndPersistsProvenance(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	injectionPath := filepath.Join(workdir, "error-injection.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+	writeFile(t, injectionPath, `schema_version: v1alpha1
+error_injection:
+  rules:
+    - name: third refund fails
+      match:
+        service: stripe
+        operation: POST /v1/refunds
+        nth_call: 3
+      inject:
+        status: 402
+        body:
+          error:
+            type: card_error
+            code: card_declined
+            message: Your card was declined.
+`)
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedReplayRun(t, sqliteStore, "inject-replay-flow")
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	args := []string{
+		"replay",
+		"--run-id", sourceRunID,
+		"--config", configPath,
+		"--error-injection", injectionPath,
+		"--",
+	}
+	args = append(args, helperCommand("replay-write-injection-capture")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("run(replay --error-injection) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	result := decodeJSONOutput[replayCommandResult](t, stdout.Bytes())
+	sqliteStore, err = sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	gotRun, err := sqliteStore.GetRun(context.Background(), result.ReplayRunID)
+	if err != nil {
+		t.Fatalf("GetRun() error = %v", err)
+	}
+	applied := injectedMetadataEntries(t, gotRun.Metadata)
+	if len(applied) != 1 {
+		t.Fatalf("applied injection metadata len = %d, want 1: %#v", len(applied), applied)
+	}
+	entry, ok := applied[0].(map[string]any)
+	if !ok {
+		t.Fatalf("applied injection metadata entry = %#v, want object", applied[0])
+	}
+	if entry["call_number"].(float64) != 3 {
+		t.Fatalf("applied call_number = %#v, want 3", entry["call_number"])
+	}
+	if result.ReplayInteractionCount != 1 {
+		t.Fatalf("ReplayInteractionCount = %d, want 1", result.ReplayInteractionCount)
 	}
 }
 
@@ -871,6 +1014,15 @@ func TestHelperProcess(t *testing.T) {
 			os.Exit(8)
 		}
 		os.Exit(0)
+	case "record-write-injection-capture":
+		capturePath := mustEnv(t, envStagehandCaptureOut)
+		injectionPath := mustEnv(t, envStagehandInjectInput)
+		bundle := helperAppliedInjectionBundle(t, injectionPath, 1)
+		if err := writeInteractionBundle(capturePath, bundle); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(9)
+		}
+		os.Exit(0)
 	case "replay-consume-seed-and-write-capture":
 		seedPath := mustEnv(t, envStagehandReplayInput)
 		capturePath := mustEnv(t, envStagehandCaptureOut)
@@ -889,6 +1041,16 @@ func TestHelperProcess(t *testing.T) {
 		}); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(4)
+		}
+		os.Exit(0)
+	case "replay-write-injection-capture":
+		_ = mustEnv(t, envStagehandReplayInput)
+		capturePath := mustEnv(t, envStagehandCaptureOut)
+		injectionPath := mustEnv(t, envStagehandInjectInput)
+		bundle := helperAppliedInjectionBundle(t, injectionPath, 3)
+		if err := writeInteractionBundle(capturePath, bundle); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(10)
 		}
 		os.Exit(0)
 	case "replay-fail-on-terminal-error":
@@ -1180,6 +1342,103 @@ func helperCapturedInteractions() []recorder.Interaction {
 			LatencyMS: 12,
 		},
 	}
+}
+
+func helperAppliedInjectionBundle(t *testing.T, injectionPath string, callNumber int) interactionBundle {
+	t.Helper()
+
+	var normalized sdkErrorInjectionBundle
+	data, err := os.ReadFile(injectionPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", injectionPath, err)
+	}
+	if err := json.Unmarshal(data, &normalized); err != nil {
+		t.Fatalf("json.Unmarshal(normalized injection) error = %v\npayload=%s", err, string(data))
+	}
+	if len(normalized.Rules) != 1 {
+		t.Fatalf("len(normalized.Rules) = %d, want 1", len(normalized.Rules))
+	}
+	rule := normalized.Rules[0]
+	if rule.Inject.Status != 402 {
+		t.Fatalf("normalized injected status = %d, want 402", rule.Inject.Status)
+	}
+
+	return interactionBundle{
+		BundleVersion: interactionBundleVersion,
+		Metadata: map[string]any{
+			"mode":    os.Getenv(envStagehandMode),
+			"session": os.Getenv(envStagehandSession),
+			"error_injection": map[string]any{
+				"applied": []any{
+					map[string]any{
+						"rule_index":  0,
+						"name":        rule.Name,
+						"service":     rule.Match.Service,
+						"operation":   rule.Match.Operation,
+						"call_number": callNumber,
+						"nth_call":    rule.Match.NthCall,
+						"library":     rule.Inject.Library,
+						"status":      rule.Inject.Status,
+					},
+				},
+			},
+		},
+		Interactions: []recorder.Interaction{
+			{
+				RunID:         "run_helper_injected",
+				InteractionID: "int_helper_injected_001",
+				Sequence:      1,
+				Service:       "stripe",
+				Operation:     "POST /v1/refunds",
+				Protocol:      recorder.ProtocolHTTPS,
+				Request: recorder.Request{
+					URL:    "https://api.stripe.com/v1/refunds",
+					Method: "POST",
+					Headers: map[string][]string{
+						"content-type": {"application/x-www-form-urlencoded"},
+					},
+					Body: map[string]any{
+						"payment_intent": "pi_123",
+					},
+				},
+				Events: []recorder.Event{
+					{Sequence: 1, TMS: 0, SimTMS: 0, Type: recorder.EventTypeRequestSent},
+					{
+						Sequence: 2,
+						TMS:      1,
+						SimTMS:   1,
+						Type:     recorder.EventTypeResponseReceived,
+						Data: map[string]any{
+							"status_code": 402,
+							"headers": map[string][]string{
+								"content-type":         {"application/json"},
+								"x-stagehand-injected": {"true"},
+							},
+							"body": rule.Inject.Body,
+						},
+					},
+				},
+				ScrubReport: recorder.ScrubReport{
+					ScrubPolicyVersion: "v1",
+					SessionSaltID:      "salt_fixture",
+				},
+				LatencyMS: 1,
+			},
+		},
+	}
+}
+
+func injectedMetadataEntries(t *testing.T, metadata map[string]any) []any {
+	t.Helper()
+	section, ok := metadata["error_injection"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata missing error_injection section: %#v", metadata)
+	}
+	applied, ok := section["applied"].([]any)
+	if !ok {
+		t.Fatalf("error_injection.applied missing: %#v", section)
+	}
+	return applied
 }
 
 func mustEnv(t *testing.T, key string) string {

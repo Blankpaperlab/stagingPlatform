@@ -10,6 +10,7 @@ import type {
 } from './capture.js';
 import { isOpenAIHost, openAIOperationFromURL } from './providers.js';
 import { ExactReplayStore, ReplayFailureError } from './replay.js';
+import type { InjectionEngine } from './injection.js';
 
 let originalDispatcher: Dispatcher | undefined;
 let installed = false;
@@ -26,10 +27,12 @@ export function installRequestInterception({
   mode,
   captureBuffer,
   replayStore,
+  injectionEngine,
 }: {
   mode: 'record' | 'replay' | 'passthrough';
   captureBuffer: CaptureBuffer;
   replayStore: ExactReplayStore;
+  injectionEngine: InjectionEngine;
 }): void {
   if (installed) {
     return;
@@ -55,6 +58,24 @@ export function installRequestInterception({
       let recorded = false;
       const abortSignal = (options as { signal?: AbortSignal }).signal;
       let removeAbortListener = (): void => {};
+
+      const injected = injectedInteraction({
+        injectionEngine,
+        captureBuffer,
+        request,
+        service,
+        operation,
+        protocol,
+        elapsedMs: elapsedSince(startedAt),
+      });
+      if (injected !== undefined) {
+        return dispatchReplayInteraction({
+          request,
+          interaction: injected,
+          handler,
+          abortSignal,
+        });
+      }
 
       if (mode === 'replay') {
         try {
@@ -238,6 +259,46 @@ export function installRequestInterception({
 
   setGlobalDispatcher(wrappedDispatcher);
   installed = true;
+}
+
+function injectedInteraction({
+  injectionEngine,
+  captureBuffer,
+  request,
+  service,
+  operation,
+  protocol,
+  elapsedMs,
+}: {
+  injectionEngine: InjectionEngine;
+  captureBuffer: CaptureBuffer;
+  request: CapturedRequest;
+  service: string;
+  operation: string;
+  protocol: string;
+  elapsedMs: number;
+}): CapturedInteraction | undefined {
+  const decision = injectionEngine.evaluate({ service, operation });
+  if (decision === null) {
+    return undefined;
+  }
+
+  return captureBuffer.recordSuccess({
+    service,
+    operation,
+    protocol,
+    request,
+    elapsedMs,
+    streaming: false,
+    response: {
+      statusCode: decision.override.status,
+      headers: {
+        'content-type': ['application/json'],
+        'x-stagehand-injected': ['true'],
+      },
+      body: decision.override.body ?? null,
+    },
+  });
 }
 
 function dispatchReplayInteraction({

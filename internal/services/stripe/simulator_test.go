@@ -40,6 +40,12 @@ func TestMatchRequestRoutesSupportedStripeSubset(t *testing.T) {
 			paramWant: "cus_123",
 		},
 		{
+			name:      "search customers",
+			method:    "GET",
+			url:       "https://api.stripe.com/v1/customers/search?query=email%3A%27customer%40example.com%27",
+			operation: OperationCustomersSearch,
+		},
+		{
 			name:      "update customer",
 			method:    "POST",
 			url:       "/v1/customers/cus_123",
@@ -84,6 +90,12 @@ func TestMatchRequestRoutesSupportedStripeSubset(t *testing.T) {
 			operation: OperationPaymentIntentsCreate,
 		},
 		{
+			name:      "list payment intents",
+			method:    "GET",
+			url:       "/v1/payment_intents?customer=cus_123&limit=1",
+			operation: OperationPaymentIntentsList,
+		},
+		{
 			name:      "retrieve payment intent",
 			method:    "GET",
 			url:       "/v1/payment_intents/pi_123",
@@ -98,6 +110,12 @@ func TestMatchRequestRoutesSupportedStripeSubset(t *testing.T) {
 			operation: OperationPaymentIntentsUpdate,
 			paramKey:  "payment_intent_id",
 			paramWant: "pi_123",
+		},
+		{
+			name:      "create refund",
+			method:    "POST",
+			url:       "/v1/refunds",
+			operation: OperationRefundsCreate,
 		},
 	}
 
@@ -188,7 +206,11 @@ func TestSimulatorCustomerCreateReadUpdatePersistsBySession(t *testing.T) {
 		t.Fatalf("updated.Metadata[tier] = %q, want enterprise", updated.Metadata["tier"])
 	}
 
-	reloadedSim := newStripeTestSimulator(t, sqliteStore)
+	nextReloadedSnapshotID := 100
+	reloadedSim := newStripeTestSimulator(t, sqliteStore, WithSnapshotIDGenerator(func(prefix string) (string, error) {
+		nextReloadedSnapshotID++
+		return fmt.Sprintf("%s_reloaded_test_%06d", prefix, nextReloadedSnapshotID), nil
+	}))
 	reloaded, err := reloadedSim.GetCustomer(ctx, "stripe-onboarding", customer.ID)
 	if err != nil {
 		t.Fatalf("GetCustomer(reloaded) error = %v", err)
@@ -313,6 +335,289 @@ func TestSimulatorPaymentIntentCreateReadUpdate(t *testing.T) {
 	}
 	if readBack.Amount != updatedAmount || readBack.Status != updatedStatus {
 		t.Fatalf("readBack intent = %#v, want updated state", readBack)
+	}
+}
+
+func TestSimulatorCustomerSearchByEmail(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	sqliteStore := openStripeTestStore(t)
+	defer sqliteStore.Close()
+
+	sim := newStripeTestSimulator(t, sqliteStore)
+	if _, err := sim.CreateSession(ctx, "customer-search"); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	first, err := sim.CreateCustomer(ctx, "customer-search", CreateCustomerParams{
+		Email: "customer@example.com",
+		Name:  "First",
+	})
+	if err != nil {
+		t.Fatalf("CreateCustomer(first) error = %v", err)
+	}
+	if _, err := sim.CreateCustomer(ctx, "customer-search", CreateCustomerParams{
+		Email: "other@example.com",
+		Name:  "Other",
+	}); err != nil {
+		t.Fatalf("CreateCustomer(other) error = %v", err)
+	}
+
+	result, err := sim.SearchCustomers(ctx, "customer-search", "email:'customer@example.com'")
+	if err != nil {
+		t.Fatalf("SearchCustomers() error = %v", err)
+	}
+	if result.Object != "search_result" || result.URL != "/v1/customers/search" || result.HasMore {
+		t.Fatalf("SearchCustomers metadata = %#v, want Stripe search result metadata", result)
+	}
+	if len(result.Data) != 1 || result.Data[0].ID != first.ID {
+		t.Fatalf("SearchCustomers data = %#v, want customer %q", result.Data, first.ID)
+	}
+
+	if _, err := sim.SearchCustomers(ctx, "customer-search", "name:'First'"); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("SearchCustomers(unsupported query) error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestSimulatorPaymentIntentListByCustomerAndLimit(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	sqliteStore := openStripeTestStore(t)
+	defer sqliteStore.Close()
+
+	sim := newStripeTestSimulator(t, sqliteStore)
+	if _, err := sim.CreateSession(ctx, "payment-intent-list"); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+
+	customer, err := sim.CreateCustomer(ctx, "payment-intent-list", CreateCustomerParams{Email: "payer@example.com"})
+	if err != nil {
+		t.Fatalf("CreateCustomer() error = %v", err)
+	}
+	otherCustomer, err := sim.CreateCustomer(ctx, "payment-intent-list", CreateCustomerParams{Email: "other@example.com"})
+	if err != nil {
+		t.Fatalf("CreateCustomer(other) error = %v", err)
+	}
+	paymentMethod, err := sim.CreatePaymentMethod(ctx, "payment-intent-list", CreatePaymentMethodParams{
+		Card: Card{Brand: "visa", Last4: "4242"},
+	})
+	if err != nil {
+		t.Fatalf("CreatePaymentMethod() error = %v", err)
+	}
+	if _, err := sim.AttachPaymentMethod(ctx, "payment-intent-list", paymentMethod.ID, AttachPaymentMethodParams{
+		CustomerID: customer.ID,
+	}); err != nil {
+		t.Fatalf("AttachPaymentMethod() error = %v", err)
+	}
+	first, err := sim.CreatePaymentIntent(ctx, "payment-intent-list", CreatePaymentIntentParams{
+		Amount:          1000,
+		Currency:        "usd",
+		CustomerID:      customer.ID,
+		PaymentMethodID: paymentMethod.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreatePaymentIntent(first) error = %v", err)
+	}
+	second, err := sim.CreatePaymentIntent(ctx, "payment-intent-list", CreatePaymentIntentParams{
+		Amount:          2000,
+		Currency:        "usd",
+		CustomerID:      customer.ID,
+		PaymentMethodID: paymentMethod.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreatePaymentIntent(second) error = %v", err)
+	}
+	if _, err := sim.CreatePaymentIntent(ctx, "payment-intent-list", CreatePaymentIntentParams{
+		Amount:     3000,
+		Currency:   "usd",
+		CustomerID: otherCustomer.ID,
+		Status:     PaymentIntentStatusRequiresPaymentMethod,
+	}); err != nil {
+		t.Fatalf("CreatePaymentIntent(other) error = %v", err)
+	}
+
+	result, err := sim.ListPaymentIntents(ctx, "payment-intent-list", ListPaymentIntentsParams{
+		CustomerID: customer.ID,
+		Limit:      1,
+	})
+	if err != nil {
+		t.Fatalf("ListPaymentIntents() error = %v", err)
+	}
+	if result.Object != "list" || result.URL != "/v1/payment_intents" || !result.HasMore {
+		t.Fatalf("ListPaymentIntents metadata = %#v, want truncated Stripe list", result)
+	}
+	if len(result.Data) != 1 || result.Data[0].ID != second.ID {
+		t.Fatalf("ListPaymentIntents data = %#v, want newest customer intent %q", result.Data, second.ID)
+	}
+
+	result, err = sim.ListPaymentIntents(ctx, "payment-intent-list", ListPaymentIntentsParams{
+		CustomerID: customer.ID,
+		Limit:      10,
+	})
+	if err != nil {
+		t.Fatalf("ListPaymentIntents(limit 10) error = %v", err)
+	}
+	if len(result.Data) != 2 || result.Data[0].ID != second.ID || result.Data[1].ID != first.ID {
+		t.Fatalf("ListPaymentIntents order = %#v, want newest-first [%q, %q]", result.Data, second.ID, first.ID)
+	}
+}
+
+func TestSimulatorRefundCreatePersistsAndUpdatesPaymentIntent(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	sqliteStore := openStripeTestStore(t)
+	defer sqliteStore.Close()
+
+	sim := newStripeTestSimulator(t, sqliteStore)
+	if _, err := sim.CreateSession(ctx, "refunds"); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	customer, err := sim.CreateCustomer(ctx, "refunds", CreateCustomerParams{Email: "refund@example.com"})
+	if err != nil {
+		t.Fatalf("CreateCustomer() error = %v", err)
+	}
+	paymentMethod, err := sim.CreatePaymentMethod(ctx, "refunds", CreatePaymentMethodParams{
+		Card: Card{Brand: "visa", Last4: "4242"},
+	})
+	if err != nil {
+		t.Fatalf("CreatePaymentMethod() error = %v", err)
+	}
+	if _, err := sim.AttachPaymentMethod(ctx, "refunds", paymentMethod.ID, AttachPaymentMethodParams{
+		CustomerID: customer.ID,
+	}); err != nil {
+		t.Fatalf("AttachPaymentMethod() error = %v", err)
+	}
+	intent, err := sim.CreatePaymentIntent(ctx, "refunds", CreatePaymentIntentParams{
+		Amount:          2500,
+		Currency:        "USD",
+		CustomerID:      customer.ID,
+		PaymentMethodID: paymentMethod.ID,
+		Status:          PaymentIntentStatusSucceeded,
+	})
+	if err != nil {
+		t.Fatalf("CreatePaymentIntent() error = %v", err)
+	}
+
+	refund, err := sim.CreateRefund(ctx, "refunds", CreateRefundParams{
+		PaymentIntentID: intent.ID,
+		Amount:          1000,
+		Reason:          "requested_by_customer",
+		Metadata:        map[string]string{"case": "partial"},
+	})
+	if err != nil {
+		t.Fatalf("CreateRefund() error = %v", err)
+	}
+	if refund.ID != "re_000001" || refund.Object != "refund" || refund.Currency != "usd" || refund.Status != "succeeded" {
+		t.Fatalf("refund = %#v, want deterministic succeeded refund", refund)
+	}
+	if refund.Amount != 1000 || refund.PaymentIntentID != intent.ID || refund.Metadata["case"] != "partial" {
+		t.Fatalf("refund fields = %#v, want linked partial refund", refund)
+	}
+
+	updatedIntent, err := sim.GetPaymentIntent(ctx, "refunds", intent.ID)
+	if err != nil {
+		t.Fatalf("GetPaymentIntent() error = %v", err)
+	}
+	if updatedIntent.AmountRefunded != 1000 || updatedIntent.Refunded {
+		t.Fatalf("updatedIntent refund state = %#v, want partial refund amount 1000", updatedIntent)
+	}
+
+	nextReloadedSnapshotID := 100
+	reloadedSim := newStripeTestSimulator(t, sqliteStore, WithSnapshotIDGenerator(func(prefix string) (string, error) {
+		nextReloadedSnapshotID++
+		return fmt.Sprintf("%s_reloaded_test_%06d", prefix, nextReloadedSnapshotID), nil
+	}))
+	fullRefund, err := reloadedSim.CreateRefund(ctx, "refunds", CreateRefundParams{
+		PaymentIntentID: intent.ID,
+		Reason:          "requested_by_customer",
+	})
+	if err != nil {
+		t.Fatalf("CreateRefund(remaining) error = %v", err)
+	}
+	if fullRefund.ID != "re_000002" || fullRefund.Amount != 1500 {
+		t.Fatalf("fullRefund = %#v, want remaining amount with persisted refund counter", fullRefund)
+	}
+	fullyRefunded, err := reloadedSim.GetPaymentIntent(ctx, "refunds", intent.ID)
+	if err != nil {
+		t.Fatalf("GetPaymentIntent(fully refunded) error = %v", err)
+	}
+	if fullyRefunded.AmountRefunded != 2500 || !fullyRefunded.Refunded {
+		t.Fatalf("fullyRefunded = %#v, want amount_refunded 2500 and refunded true", fullyRefunded)
+	}
+}
+
+func TestSimulatorRefundRejectsInvalidStatesAndOverRefund(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	sqliteStore := openStripeTestStore(t)
+	defer sqliteStore.Close()
+
+	sim := newStripeTestSimulator(t, sqliteStore)
+	if _, err := sim.CreateSession(ctx, "refund-invalid"); err != nil {
+		t.Fatalf("CreateSession() error = %v", err)
+	}
+	customer, err := sim.CreateCustomer(ctx, "refund-invalid", CreateCustomerParams{Email: "refund@example.com"})
+	if err != nil {
+		t.Fatalf("CreateCustomer() error = %v", err)
+	}
+	paymentMethod, err := sim.CreatePaymentMethod(ctx, "refund-invalid", CreatePaymentMethodParams{
+		Card: Card{Brand: "visa", Last4: "4242"},
+	})
+	if err != nil {
+		t.Fatalf("CreatePaymentMethod() error = %v", err)
+	}
+	if _, err := sim.AttachPaymentMethod(ctx, "refund-invalid", paymentMethod.ID, AttachPaymentMethodParams{
+		CustomerID: customer.ID,
+	}); err != nil {
+		t.Fatalf("AttachPaymentMethod() error = %v", err)
+	}
+	pending, err := sim.CreatePaymentIntent(ctx, "refund-invalid", CreatePaymentIntentParams{
+		Amount:          1000,
+		Currency:        "usd",
+		CustomerID:      customer.ID,
+		PaymentMethodID: paymentMethod.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreatePaymentIntent(pending) error = %v", err)
+	}
+	if _, err := sim.CreateRefund(ctx, "refund-invalid", CreateRefundParams{
+		PaymentIntentID: pending.ID,
+	}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("CreateRefund(pending) error = %v, want ErrInvalidRequest", err)
+	}
+	if _, err := sim.CreateRefund(ctx, "refund-invalid", CreateRefundParams{
+		PaymentIntentID: "pi_missing",
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CreateRefund(missing) error = %v, want ErrNotFound", err)
+	}
+
+	succeeded, err := sim.CreatePaymentIntent(ctx, "refund-invalid", CreatePaymentIntentParams{
+		Amount:          1000,
+		Currency:        "usd",
+		CustomerID:      customer.ID,
+		PaymentMethodID: paymentMethod.ID,
+		Status:          PaymentIntentStatusSucceeded,
+	})
+	if err != nil {
+		t.Fatalf("CreatePaymentIntent(succeeded) error = %v", err)
+	}
+	if _, err := sim.CreateRefund(ctx, "refund-invalid", CreateRefundParams{
+		PaymentIntentID: succeeded.ID,
+		Amount:          1500,
+	}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("CreateRefund(over-refund) error = %v, want ErrInvalidRequest", err)
+	} else {
+		var stripeErr *Error
+		if !errors.As(err, &stripeErr) {
+			t.Fatalf("CreateRefund(over-refund) error = %T, want *Error", err)
+		}
+		if stripeErr.Code != "amount_too_large" {
+			t.Fatalf("over-refund code = %q, want amount_too_large", stripeErr.Code)
+		}
 	}
 }
 
@@ -652,6 +957,12 @@ func TestSimulatorSchedulesStripeWebhooksForSupportedFlows(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("UpdatePaymentIntent(succeeded) error = %v", err)
 	}
+	if _, err := sim.CreateRefund(ctx, "webhooks", CreateRefundParams{
+		PaymentIntentID: intent.ID,
+		Reason:          "requested_by_customer",
+	}); err != nil {
+		t.Fatalf("CreateRefund() error = %v", err)
+	}
 
 	events, err := sqliteStore.ListDueScheduledEvents(
 		ctx,
@@ -680,6 +991,7 @@ func TestSimulatorSchedulesStripeWebhooksForSupportedFlows(t *testing.T) {
 		"webhook.payment_method.attached",
 		"webhook.payment_intent.created",
 		"webhook.payment_intent.succeeded",
+		"webhook.refund.created",
 	} {
 		if !topics[topic] {
 			t.Fatalf("scheduled topics = %#v, missing %q", topics, topic)

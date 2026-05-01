@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Callable, Final
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
 from ._providers import is_openai_host
@@ -262,6 +262,55 @@ class CaptureBuffer:
             streaming=streamed,
         )
 
+    def normalize_request(self, request: Any) -> CapturedRequest:
+        return _normalize_httpx_request(request)
+
+    def detect_service(self, url: str) -> str:
+        return _detect_service(url)
+
+    def detect_protocol(self, url: str) -> str:
+        return _detect_protocol(url)
+
+    def detect_operation(self, method: str, url: str, body: Any | None = None) -> str:
+        return detect_operation(method, url, body)
+
+    def record_success_for_request(
+        self,
+        *,
+        normalized_request: CapturedRequest,
+        service: str,
+        operation: str,
+        protocol: str,
+        elapsed_ms: int,
+        streaming: bool,
+        response: dict[str, Any],
+    ) -> CapturedInteraction:
+        response_event = CapturedEvent(
+            sequence=2,
+            t_ms=elapsed_ms,
+            sim_t_ms=elapsed_ms,
+            type="response_received",
+            data=response,
+        )
+        return self._append_interaction(
+            lambda sequence, interaction_id: CapturedInteraction(
+                run_id=self._run_id,
+                interaction_id=interaction_id,
+                sequence=sequence,
+                service=service,
+                operation=operation,
+                protocol=protocol,
+                request=normalized_request,
+                events=(
+                    CapturedEvent(sequence=1, t_ms=0, sim_t_ms=0, type="request_sent"),
+                    response_event,
+                ),
+                scrub_report=self._scrub_report,
+                streaming=streaming,
+                latency_ms=elapsed_ms,
+            )
+        )
+
     def record_openai_stream_response(
         self,
         request: Any,
@@ -444,6 +493,12 @@ def _decode_body(*, content: Any, content_type: str) -> Any | None:
         except (UnicodeDecodeError, json.JSONDecodeError):
             pass
 
+    if content_type == "application/x-www-form-urlencoded":
+        try:
+            return _decode_form_urlencoded(payload.decode("utf-8"))
+        except UnicodeDecodeError:
+            pass
+
     if content_type.startswith("text/") or content_type in {
         "application/x-www-form-urlencoded",
         "application/xml",
@@ -479,6 +534,57 @@ def _detect_service(url: str) -> str:
 def _detect_operation(method: str, url: str) -> str:
     path = urlsplit(url).path or "/"
     return f"{method.upper()} {path}"
+
+
+def _decode_form_urlencoded(payload: str) -> dict[str, Any] | None:
+    pairs = parse_qsl(payload, keep_blank_values=True)
+    if not pairs:
+        return None
+
+    decoded: dict[str, Any] = {}
+    for raw_key, value in pairs:
+        key = raw_key.strip()
+        if key == "":
+            continue
+        base, nested = _split_form_key(key)
+        if nested is None:
+            _assign_repeated(decoded, base, value)
+            continue
+        child = decoded.get(base)
+        if not isinstance(child, dict):
+            child = {}
+            decoded[base] = child
+        if nested == "":
+            existing = decoded.get(base)
+            if not isinstance(existing, list):
+                existing = []
+                decoded[base] = existing
+            existing.append(value)
+            continue
+        _assign_repeated(child, nested, value)
+
+    return decoded
+
+
+def _split_form_key(key: str) -> tuple[str, str | None]:
+    if "[" not in key or not key.endswith("]"):
+        return key, None
+    base, rest = key.split("[", 1)
+    nested = rest[:-1]
+    if "[" in nested or "]" in nested:
+        return key, None
+    return base, nested
+
+
+def _assign_repeated(target: dict[str, Any], key: str, value: str) -> None:
+    existing = target.get(key)
+    if existing is None:
+        target[key] = value
+        return
+    if isinstance(existing, list):
+        existing.append(value)
+        return
+    target[key] = [existing, value]
 
 
 def detect_operation(method: str, url: str, body: Any | None = None) -> str:

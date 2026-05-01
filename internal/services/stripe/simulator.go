@@ -26,6 +26,7 @@ const (
 
 	OperationCustomersCreate        = "customers.create"
 	OperationCustomersRetrieve      = "customers.retrieve"
+	OperationCustomersSearch        = "customers.search"
 	OperationCustomersUpdate        = "customers.update"
 	OperationPaymentMethodsCreate   = "payment_methods.create"
 	OperationPaymentMethodsRetrieve = "payment_methods.retrieve"
@@ -33,7 +34,9 @@ const (
 	OperationPaymentMethodsAttach   = "payment_methods.attach"
 	OperationPaymentIntentsCreate   = "payment_intents.create"
 	OperationPaymentIntentsRetrieve = "payment_intents.retrieve"
+	OperationPaymentIntentsList     = "payment_intents.list"
 	OperationPaymentIntentsUpdate   = "payment_intents.update"
+	OperationRefundsCreate          = "refunds.create"
 
 	PaymentIntentStatusRequiresPaymentMethod = "requires_payment_method"
 	PaymentIntentStatusRequiresConfirmation  = "requires_confirmation"
@@ -49,6 +52,7 @@ const (
 	WebhookPaymentIntentSucceeded        = "payment_intent.succeeded"
 	WebhookPaymentIntentCanceled         = "payment_intent.canceled"
 	WebhookPaymentIntentAmountCapturable = "payment_intent.amount_capturable_updated"
+	WebhookRefundCreated                 = "refund.created"
 )
 
 var (
@@ -236,6 +240,7 @@ type State struct {
 	Customers      map[string]Customer      `json:"customers"`
 	PaymentMethods map[string]PaymentMethod `json:"payment_methods"`
 	PaymentIntents map[string]PaymentIntent `json:"payment_intents"`
+	Refunds        map[string]Refund        `json:"refunds"`
 	Counters       Counters                 `json:"counters"`
 }
 
@@ -243,6 +248,7 @@ type Counters struct {
 	Customer      int `json:"customer"`
 	PaymentMethod int `json:"payment_method"`
 	PaymentIntent int `json:"payment_intent"`
+	Refund        int `json:"refund"`
 }
 
 type Customer struct {
@@ -293,13 +299,41 @@ type PaymentIntent struct {
 	ID              string            `json:"id"`
 	Object          string            `json:"object"`
 	Amount          int64             `json:"amount"`
+	AmountRefunded  int64             `json:"amount_refunded,omitempty"`
 	Currency        string            `json:"currency"`
 	CustomerID      string            `json:"customer,omitempty"`
 	PaymentMethodID string            `json:"payment_method,omitempty"`
 	Status          string            `json:"status"`
+	Refunded        bool              `json:"refunded,omitempty"`
 	ClientSecret    string            `json:"client_secret"`
 	Metadata        map[string]string `json:"metadata,omitempty"`
 	Created         int64             `json:"created"`
+}
+
+type Refund struct {
+	ID              string            `json:"id"`
+	Object          string            `json:"object"`
+	Amount          int64             `json:"amount"`
+	Currency        string            `json:"currency"`
+	PaymentIntentID string            `json:"payment_intent"`
+	Reason          string            `json:"reason,omitempty"`
+	Status          string            `json:"status"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	Created         int64             `json:"created"`
+}
+
+type CustomerSearchResult struct {
+	Object  string     `json:"object"`
+	Data    []Customer `json:"data"`
+	HasMore bool       `json:"has_more"`
+	URL     string     `json:"url"`
+}
+
+type PaymentIntentListResult struct {
+	Object  string          `json:"object"`
+	Data    []PaymentIntent `json:"data"`
+	HasMore bool            `json:"has_more"`
+	URL     string          `json:"url"`
 }
 
 type CreateCustomerParams struct {
@@ -351,6 +385,18 @@ type UpdatePaymentIntentParams struct {
 	Metadata        map[string]string
 }
 
+type ListPaymentIntentsParams struct {
+	CustomerID string
+	Limit      int
+}
+
+type CreateRefundParams struct {
+	PaymentIntentID string
+	Amount          int64
+	Reason          string
+	Metadata        map[string]string
+}
+
 type Match struct {
 	Service   string
 	Operation string
@@ -387,6 +433,9 @@ func MatchRequest(method string, rawURL string) (Match, bool) {
 	case normalizedMethod == "POST" && len(parts) == 2 && parts[1] == "customers":
 		match.Operation = OperationCustomersCreate
 		return match, true
+	case normalizedMethod == "GET" && len(parts) == 3 && parts[1] == "customers" && parts[2] == "search":
+		match.Operation = OperationCustomersSearch
+		return match, true
 	case normalizedMethod == "GET" && len(parts) == 3 && parts[1] == "customers":
 		match.Operation = OperationCustomersRetrieve
 		match.Params["customer_id"] = unescapePathPart(parts[2])
@@ -413,6 +462,9 @@ func MatchRequest(method string, rawURL string) (Match, bool) {
 	case normalizedMethod == "POST" && len(parts) == 2 && parts[1] == "payment_intents":
 		match.Operation = OperationPaymentIntentsCreate
 		return match, true
+	case normalizedMethod == "GET" && len(parts) == 2 && parts[1] == "payment_intents":
+		match.Operation = OperationPaymentIntentsList
+		return match, true
 	case normalizedMethod == "GET" && len(parts) == 3 && parts[1] == "payment_intents":
 		match.Operation = OperationPaymentIntentsRetrieve
 		match.Params["payment_intent_id"] = unescapePathPart(parts[2])
@@ -420,6 +472,9 @@ func MatchRequest(method string, rawURL string) (Match, bool) {
 	case normalizedMethod == "POST" && len(parts) == 3 && parts[1] == "payment_intents":
 		match.Operation = OperationPaymentIntentsUpdate
 		match.Params["payment_intent_id"] = unescapePathPart(parts[2])
+		return match, true
+	case normalizedMethod == "POST" && len(parts) == 2 && parts[1] == "refunds":
+		match.Operation = OperationRefundsCreate
 		return match, true
 	default:
 		return Match{}, false
@@ -480,6 +535,39 @@ func (s *Simulator) GetCustomer(ctx context.Context, sessionName string, custome
 		return Customer{}, objectNotFound("customer", customerID)
 	}
 	return customer, nil
+}
+
+func (s *Simulator) SearchCustomers(ctx context.Context, sessionName string, query string) (CustomerSearchResult, error) {
+	if err := s.maybeInject(OperationCustomersSearch); err != nil {
+		return CustomerSearchResult{}, err
+	}
+
+	state, _, err := s.loadState(ctx, sessionName)
+	if err != nil {
+		return CustomerSearchResult{}, err
+	}
+
+	email, err := customerSearchEmail(query)
+	if err != nil {
+		return CustomerSearchResult{}, err
+	}
+
+	customers := make([]Customer, 0)
+	for _, customer := range state.Customers {
+		if strings.EqualFold(customer.Email, email) {
+			customers = append(customers, customer)
+		}
+	}
+	sort.Slice(customers, func(i, j int) bool {
+		return customers[i].ID < customers[j].ID
+	})
+
+	return CustomerSearchResult{
+		Object:  "search_result",
+		Data:    customers,
+		HasMore: false,
+		URL:     "/v1/customers/search",
+	}, nil
 }
 
 func (s *Simulator) ExtractCustomerIdentity(ctx context.Context, sessionName string, customerID string) (CustomerIdentity, error) {
@@ -750,6 +838,55 @@ func (s *Simulator) GetPaymentIntent(ctx context.Context, sessionName string, pa
 	return paymentIntent, nil
 }
 
+func (s *Simulator) ListPaymentIntents(ctx context.Context, sessionName string, params ListPaymentIntentsParams) (PaymentIntentListResult, error) {
+	if err := s.maybeInject(OperationPaymentIntentsList); err != nil {
+		return PaymentIntentListResult{}, err
+	}
+
+	state, _, err := s.loadState(ctx, sessionName)
+	if err != nil {
+		return PaymentIntentListResult{}, err
+	}
+
+	customerID := strings.TrimSpace(params.CustomerID)
+	if customerID != "" {
+		if _, ok := state.Customers[customerID]; !ok {
+			return PaymentIntentListResult{}, objectNotFound("customer", customerID)
+		}
+	}
+
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+
+	intents := make([]PaymentIntent, 0)
+	for _, paymentIntent := range state.PaymentIntents {
+		if customerID != "" && paymentIntent.CustomerID != customerID {
+			continue
+		}
+		intents = append(intents, paymentIntent)
+	}
+	sort.Slice(intents, func(i, j int) bool {
+		if intents[i].Created == intents[j].Created {
+			return intents[i].ID > intents[j].ID
+		}
+		return intents[i].Created > intents[j].Created
+	})
+
+	hasMore := len(intents) > limit
+	if hasMore {
+		intents = intents[:limit]
+	}
+
+	return PaymentIntentListResult{
+		Object:  "list",
+		Data:    intents,
+		HasMore: hasMore,
+		URL:     "/v1/payment_intents",
+	}, nil
+}
+
 func (s *Simulator) UpdatePaymentIntent(ctx context.Context, sessionName string, paymentIntentID string, params UpdatePaymentIntentParams) (PaymentIntent, error) {
 	if err := s.maybeInject(OperationPaymentIntentsUpdate); err != nil {
 		return PaymentIntent{}, err
@@ -838,6 +975,86 @@ func (s *Simulator) UpdatePaymentIntent(ctx context.Context, sessionName string,
 		return PaymentIntent{}, err
 	}
 	return paymentIntent, nil
+}
+
+func (s *Simulator) CreateRefund(ctx context.Context, sessionName string, params CreateRefundParams) (Refund, error) {
+	if err := s.maybeInject(OperationRefundsCreate); err != nil {
+		return Refund{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, sessionState, err := s.loadState(ctx, sessionName)
+	if err != nil {
+		return Refund{}, err
+	}
+
+	paymentIntentID := strings.TrimSpace(params.PaymentIntentID)
+	if paymentIntentID == "" {
+		return Refund{}, stripeInvalid("parameter_missing", "payment_intent", "Refund payment_intent is required.")
+	}
+	paymentIntent, ok := state.PaymentIntents[paymentIntentID]
+	if !ok {
+		return Refund{}, objectNotFound("payment_intent", paymentIntentID)
+	}
+	if paymentIntent.Status != PaymentIntentStatusSucceeded {
+		return Refund{}, stripeInvalid(
+			"payment_intent_unexpected_state",
+			"payment_intent",
+			fmt.Sprintf("Cannot refund PaymentIntent %s because it is %s.", paymentIntent.ID, paymentIntent.Status),
+		)
+	}
+
+	remaining := paymentIntent.Amount - paymentIntent.AmountRefunded
+	amount := params.Amount
+	if amount == 0 {
+		amount = remaining
+	}
+	if amount <= 0 {
+		return Refund{}, stripeInvalid("parameter_invalid_integer", "amount", "Refund amount must be greater than 0.")
+	}
+	if amount > remaining {
+		return Refund{}, stripeInvalid(
+			"amount_too_large",
+			"amount",
+			fmt.Sprintf("Refund amount %d exceeds remaining refundable amount %d.", amount, remaining),
+		)
+	}
+
+	state.Counters.Refund++
+	refund := Refund{
+		ID:              fmt.Sprintf("re_%06d", state.Counters.Refund),
+		Object:          "refund",
+		Amount:          amount,
+		Currency:        paymentIntent.Currency,
+		PaymentIntentID: paymentIntent.ID,
+		Reason:          strings.TrimSpace(params.Reason),
+		Status:          "succeeded",
+		Metadata:        cloneStringMap(params.Metadata),
+		Created:         s.now().Unix(),
+	}
+	state.Refunds[refund.ID] = refund
+
+	paymentIntent.AmountRefunded += amount
+	paymentIntent.Refunded = paymentIntent.AmountRefunded >= paymentIntent.Amount
+	state.PaymentIntents[paymentIntent.ID] = paymentIntent
+
+	if err := s.saveState(ctx, sessionName, sessionState, state); err != nil {
+		return Refund{}, err
+	}
+
+	identity := CustomerIdentity{}
+	if paymentIntent.CustomerID != "" {
+		identity, err = state.extractCustomerIdentity(paymentIntent.CustomerID)
+		if err != nil {
+			return Refund{}, err
+		}
+	}
+	if err := s.scheduleWebhook(ctx, sessionName, WebhookRefundCreated, operationTime(refund.Created), refund, identity); err != nil {
+		return Refund{}, err
+	}
+	return refund, nil
 }
 
 func (s *Simulator) loadState(ctx context.Context, sessionName string) (State, map[string]any, error) {
@@ -1034,6 +1251,9 @@ func (s *State) normalize() {
 	if s.PaymentIntents == nil {
 		s.PaymentIntents = map[string]PaymentIntent{}
 	}
+	if s.Refunds == nil {
+		s.Refunds = map[string]Refund{}
+	}
 }
 
 func validatePaymentIntentReferences(state State, customerID string, paymentMethodID string) error {
@@ -1141,6 +1361,25 @@ func normalizePaymentIntentReferences(state State, customerID string, paymentMet
 	}
 
 	return customerID, paymentMethodID, nil
+}
+
+func customerSearchEmail(query string) (string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", stripeInvalid("parameter_missing", "query", "Customer search query is required.")
+	}
+
+	const prefix = "email:"
+	if !strings.HasPrefix(strings.ToLower(query), prefix) {
+		return "", stripeInvalid("parameter_invalid_string", "query", "Only email customer search queries are supported.")
+	}
+
+	value := strings.TrimSpace(query[len(prefix):])
+	value = strings.Trim(value, `"'`)
+	if value == "" {
+		return "", stripeInvalid("parameter_invalid_string", "query", "Customer search email cannot be empty.")
+	}
+	return value, nil
 }
 
 func normalizeCurrency(currency string) string {

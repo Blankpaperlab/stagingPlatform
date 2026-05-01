@@ -5,6 +5,7 @@ from ._version import ARTIFACT_VERSION, __version__
 from ._runtime import (
     AlreadyInitializedError,
     ENV_OPENAI_HOSTS,
+    ENV_ERROR_INJECTION_INPUT,
     InvalidModeError,
     NotInitializedError,
     RuntimeMetadata,
@@ -20,6 +21,7 @@ __all__ = [
     "ARTIFACT_VERSION",
     "AlreadyInitializedError",
     "ENV_OPENAI_HOSTS",
+    "ENV_ERROR_INJECTION_INPUT",
     "InvalidModeError",
     "NotInitializedError",
     "ReplayFailureError",
