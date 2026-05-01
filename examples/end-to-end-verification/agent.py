@@ -123,7 +123,7 @@ def ensure_refundable_payment(customer_email: str) -> dict[str, str]:
     request_options: dict[str, Any] = {}
     idempotency_key = os.environ.get("STAGEHAND_IDEMPOTENCY_KEY")
     if idempotency_key:
-        request_options["_request_options"] = {"idempotency_key": idempotency_key}
+        request_options["idempotency_key"] = idempotency_key
 
     metadata = {
         "stagehand_example": "end_to_end_verification",
@@ -144,12 +144,11 @@ def ensure_refundable_payment(customer_email: str) -> dict[str, str]:
         "email": customer_email,
         "name": "Stagehand E2E Verification",
         "metadata": metadata,
-        **request_options,
     }
     if os.environ.get("STAGEHAND_SCRUB_MATRIX") == "1":
         customer_params["phone"] = os.environ.get("STAGEHAND_SAMPLE_PHONE", "+15555550100")
 
-    customer = stripe.Customer.create(**customer_params)
+    customer = stripe.Customer.create(**customer_params, **request_options)
     intent = stripe.PaymentIntent.create(
         amount=int(os.environ.get("STAGEHAND_PAYMENT_AMOUNT", "1000")),
         currency="usd",

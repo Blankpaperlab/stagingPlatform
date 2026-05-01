@@ -186,8 +186,8 @@ Purpose:
 
 ### Exported functions and methods
 
-| Function or Method | Signature                                      | Purpose                                                                   |
-| ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------- |
+| Function or Method     | Signature                                                     | Purpose                                                                   |
+| ---------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | `SummarizeExactSource` | `func SummarizeExactSource(run recorder.Run) (Result, error)` | Validates replay eligibility and builds a source summary for exact replay |
 
 ### Tests
