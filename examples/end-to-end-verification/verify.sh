@@ -248,7 +248,7 @@ run_stagehand_json() {
 echo "Validating example syntax and schemas"
 "$PYTHON_BIN" -m py_compile "$SCRIPT_DIR/agent.py" "$SCRIPT_DIR/agent_modified.py"
 if command -v "$GO_BIN" >/dev/null 2>&1; then
-  (cd "$REPO_ROOT" && "$GO_BIN" test ./internal/analysis/assertions ./internal/analysis/conformance ./internal/services/stripe >/dev/null)
+  (cd "$REPO_ROOT" && "$GO_BIN" test ./internal/analysis/assertions ./internal/analysis/conformance ./internal/services/stripe)
 else
   echo "Go is not available on PATH; skipping package-level schema tests."
 fi

@@ -77,7 +77,6 @@ type observation struct {
 func NewRunner(opts ...Option) *Runner {
 	r := &Runner{
 		httpClient: http.DefaultClient,
-		env:        map[string]string{},
 		now: func() time.Time {
 			return time.Now().UTC()
 		},
@@ -153,9 +152,7 @@ func (r *Runner) missingRequiredCredentials(testCase Case) []string {
 
 func (r *Runner) envValue(key string) string {
 	if r.env != nil {
-		if value, ok := r.env[key]; ok {
-			return value
-		}
+		return r.env[key]
 	}
 	return os.Getenv(key)
 }
