@@ -86,15 +86,53 @@ fi
 export PYTHONPATH="$REPO_ROOT/sdk/python${PYTHONPATH:+:$PYTHONPATH}"
 
 json_field() {
-  local path="$1"
-  "$PYTHON_BIN" - "$path" <<'PY'
+  local field_path="$1"
+  local json_path="${2:-}"
+  if [[ -n "$json_path" ]]; then
+    "$PYTHON_BIN" - "$field_path" "$json_path" <<'PY'
 import json
 import sys
+from pathlib import Path
 
-value = json.load(sys.stdin)
+value = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
 for part in sys.argv[1].split("."):
     value = value[part]
 print(value)
+PY
+    return
+  fi
+
+  "$PYTHON_BIN" - "$field_path" <<'PY'
+import json
+import sys
+
+payload = sys.stdin.read()
+if payload.strip() == "":
+    raise SystemExit("expected JSON on stdin, got empty input")
+value = json.loads(payload)
+for part in sys.argv[1].split("."):
+    value = value[part]
+print(value)
+PY
+}
+
+assert_json_file() {
+  local path="$1"
+  local label="$2"
+  "$PYTHON_BIN" - "$path" "$label" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+label = sys.argv[2]
+payload = path.read_text(encoding="utf-8") if path.exists() else ""
+if payload.strip() == "":
+    raise SystemExit(f"{label} did not emit JSON: {path} is empty")
+try:
+    json.loads(payload)
+except json.JSONDecodeError as exc:
+    raise SystemExit(f"{label} did not emit valid JSON in {path}: {exc}") from exc
 PY
 }
 
@@ -234,9 +272,22 @@ PY
 run_stagehand_json() {
   local stdout_file="$1"
   local stderr_file="$2"
-  shift 2
+  local label="${3:-stagehand command}"
+  if [[ "$#" -lt 4 ]]; then
+    echo "run_stagehand_json requires stdout, stderr, label, and command" >&2
+    return 2
+  fi
+  shift 3
   if ! "$@" >"$stdout_file" 2>"$stderr_file"; then
     echo "Command failed: $*" >&2
+    echo "--- stderr ---" >&2
+    cat "$stderr_file" >&2 || true
+    echo "--- stdout ---" >&2
+    cat "$stdout_file" >&2 || true
+    return 1
+  fi
+  if ! assert_json_file "$stdout_file" "$label"; then
+    echo "Command did not produce expected JSON: $*" >&2
     echo "--- stderr ---" >&2
     cat "$stderr_file" >&2 || true
     echo "--- stdout ---" >&2
@@ -299,13 +350,13 @@ PY
 
 echo "Recording live baseline"
 BASELINE_STDOUT="$OUT_DIR/baseline-record.json"
-run_stagehand_json "$BASELINE_STDOUT" "$OUT_DIR/baseline-record.log" \
+run_stagehand_json "$BASELINE_STDOUT" "$OUT_DIR/baseline-record.log" "baseline record" \
   env STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/baseline-output.json" STAGEHAND_EXPECT_STATUS=refunded \
   "$STAGEHAND_BIN" record \
   --session refund-flow-baseline \
   --config "$CONFIG_PATH" \
   -- "$PYTHON_BIN" "$SCRIPT_DIR/agent.py"
-BASELINE_RUN_ID="$(json_field run_id <"$BASELINE_STDOUT")"
+BASELINE_RUN_ID="$(json_field run_id "$BASELINE_STDOUT")"
 
 echo "Checking persisted SQLite data is scrubbed"
 if grep -R -a -F "${STRIPE_SECRET_KEY}" "$OUT_DIR/runs" >/dev/null; then
@@ -344,18 +395,18 @@ done
 
 echo "Recording isolation run to verify session-scoped scrub salts"
 ISOLATION_STDOUT="$OUT_DIR/isolation-record.json"
-run_stagehand_json "$ISOLATION_STDOUT" "$OUT_DIR/isolation-record.log" \
+run_stagehand_json "$ISOLATION_STDOUT" "$OUT_DIR/isolation-record.log" "isolation record" \
   env STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/isolation-output.json" STAGEHAND_EXPECT_STATUS=refunded \
   "$STAGEHAND_BIN" record \
   --session refund-flow-isolation \
   --config "$CONFIG_PATH" \
   -- "$PYTHON_BIN" "$SCRIPT_DIR/agent.py"
-ISOLATION_RUN_ID="$(json_field run_id <"$ISOLATION_STDOUT")"
+ISOLATION_RUN_ID="$(json_field run_id "$ISOLATION_STDOUT")"
 assert_sql salt-isolation "$DB_PATH" "$BASELINE_RUN_ID" "$ISOLATION_RUN_ID" "$STAGEHAND_CUSTOMER_EMAIL"
 
 echo "Replaying baseline without live credentials"
 REPLAY_STDOUT="$OUT_DIR/replay.json"
-run_stagehand_json "$REPLAY_STDOUT" "$OUT_DIR/replay.log" \
+run_stagehand_json "$REPLAY_STDOUT" "$OUT_DIR/replay.log" "baseline replay" \
   env -u OPENAI_API_KEY -u STRIPE_SECRET_KEY STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/replay-output.json" STAGEHAND_EXPECT_STATUS=refunded \
   "$STAGEHAND_BIN" replay \
   --run-id "$BASELINE_RUN_ID" \
@@ -381,7 +432,7 @@ fi
 
 echo "Promoting baseline and recording modified candidate"
 BASELINE_ID="base_e2e_refund_$(date +%s)"
-run_stagehand_json "$OUT_DIR/baseline-promote.json" "$OUT_DIR/baseline-promote.log" \
+run_stagehand_json "$OUT_DIR/baseline-promote.json" "$OUT_DIR/baseline-promote.log" "baseline promote" \
   "$STAGEHAND_BIN" baseline promote \
   --run-id "$BASELINE_RUN_ID" \
   --baseline-id "$BASELINE_ID" \
@@ -389,13 +440,13 @@ run_stagehand_json "$OUT_DIR/baseline-promote.json" "$OUT_DIR/baseline-promote.l
   --config "$CONFIG_PATH"
 
 CANDIDATE_STDOUT="$OUT_DIR/candidate-record.json"
-run_stagehand_json "$CANDIDATE_STDOUT" "$OUT_DIR/candidate-record.log" \
+run_stagehand_json "$CANDIDATE_STDOUT" "$OUT_DIR/candidate-record.log" "candidate record" \
   env STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/candidate-output.json" STAGEHAND_EXPECT_STATUS=refunded \
   "$STAGEHAND_BIN" record \
   --session refund-flow-baseline \
   --config "$CONFIG_PATH" \
   -- "$PYTHON_BIN" "$SCRIPT_DIR/agent_modified.py"
-CANDIDATE_RUN_ID="$(json_field run_id <"$CANDIDATE_STDOUT")"
+CANDIDATE_RUN_ID="$(json_field run_id "$CANDIDATE_STDOUT")"
 
 echo "Rendering diffs"
 DIFF_IGNORE_ARGS=(
@@ -451,7 +502,7 @@ YAML
 assert_json assertions-fail-evidence "$OUT_DIR/assertions-failing.json"
 
 echo "Running deterministic error injection checks"
-run_stagehand_json "$OUT_DIR/injection-nth1-record.json" "$OUT_DIR/injection-nth1-record.log" \
+run_stagehand_json "$OUT_DIR/injection-nth1-record.json" "$OUT_DIR/injection-nth1-record.log" "injection nth1 record" \
   env STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/injection-nth1-output.json" STAGEHAND_EXPECT_STATUS=refund_failed \
   "$STAGEHAND_BIN" record \
   --session refund-flow-injection-nth1 \
@@ -459,7 +510,7 @@ run_stagehand_json "$OUT_DIR/injection-nth1-record.json" "$OUT_DIR/injection-nth
   --error-injection "$SCRIPT_DIR/error-injection.yml" \
   -- "$PYTHON_BIN" "$SCRIPT_DIR/agent.py"
 assert_json injection-output "$OUT_DIR/injection-nth1-output.json" 1
-INJECTION_NTH1_RUN_ID="$(json_field run_id <"$OUT_DIR/injection-nth1-record.json")"
+INJECTION_NTH1_RUN_ID="$(json_field run_id "$OUT_DIR/injection-nth1-record.json")"
 assert_sql injection-provenance "$DB_PATH" "$INJECTION_NTH1_RUN_ID" 1
 "$STAGEHAND_BIN" inspect --run-id "$INJECTION_NTH1_RUN_ID" --show-bodies --config "$CONFIG_PATH" >"$OUT_DIR/inspect-injection-nth1.txt"
 if ! grep -F "Error Injection:" "$OUT_DIR/inspect-injection-nth1.txt" >/dev/null; then
@@ -467,7 +518,7 @@ if ! grep -F "Error Injection:" "$OUT_DIR/inspect-injection-nth1.txt" >/dev/null
   exit 1
 fi
 
-run_stagehand_json "$OUT_DIR/injection-nth3-record.json" "$OUT_DIR/injection-nth3-record.log" \
+run_stagehand_json "$OUT_DIR/injection-nth3-record.json" "$OUT_DIR/injection-nth3-record.log" "injection nth3 record" \
   env STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/injection-nth3-output.json" STAGEHAND_EXPECT_STATUS=refund_failed STAGEHAND_REFUND_ATTEMPTS=3 STAGEHAND_FORCE_REFUND_ATTEMPTS=1 STAGEHAND_REFUND_AMOUNT=100 \
   "$STAGEHAND_BIN" record \
   --session refund-flow-injection-nth3 \
@@ -475,7 +526,7 @@ run_stagehand_json "$OUT_DIR/injection-nth3-record.json" "$OUT_DIR/injection-nth
   --error-injection "$SCRIPT_DIR/error-injection-nth3.yml" \
   -- "$PYTHON_BIN" "$SCRIPT_DIR/agent.py"
 assert_json injection-output "$OUT_DIR/injection-nth3-output.json" 3
-INJECTION_NTH3_RUN_ID="$(json_field run_id <"$OUT_DIR/injection-nth3-record.json")"
+INJECTION_NTH3_RUN_ID="$(json_field run_id "$OUT_DIR/injection-nth3-record.json")"
 assert_sql injection-provenance "$DB_PATH" "$INJECTION_NTH3_RUN_ID" 3
 
 echo "Running live Stripe refund conformance smoke"
