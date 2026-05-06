@@ -43,7 +43,7 @@ bash examples/end-to-end-verification/verify.sh --live
 
 The script writes artifacts under `.stagehand/e2e`, including run JSON, agent outputs, diffs, assertion reports, and conformance reports.
 
-Live mode uses a unique fixture email per script run to keep Stripe test-mode search results from accumulating into future baselines. It also verifies replay-miss fail-closed behavior, session-salt isolation, schema/scrub-policy pins, scrubbed API key/email/phone/JWT/card/idempotency-key persistence, `inspect --show-bodies`, and persisted error-injection provenance.
+Live mode uses a unique fixture email and deterministic per-operation Stripe idempotency keys per script run to keep Stripe test-mode search results and POST retries stable across baseline, candidate, and injection checks. It also verifies replay-miss fail-closed behavior, session-salt isolation, schema/scrub-policy pins, scrubbed API key/email/phone/JWT/card/idempotency-key persistence, `inspect --show-bodies`, and persisted error-injection provenance.
 
 ## Shipped CLI Shapes
 

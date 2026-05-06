@@ -55,6 +55,7 @@ def run_refund_agent(customer_email: str, refund_reason: str) -> dict[str, Any]:
     attempts = int(os.environ.get("STAGEHAND_REFUND_ATTEMPTS", "1"))
     force_attempts = os.environ.get("STAGEHAND_FORCE_REFUND_ATTEMPTS") == "1"
     refund_amount = int(os.environ.get("STAGEHAND_REFUND_AMOUNT", str(intent.amount)))
+    idempotency_key = os.environ.get("STAGEHAND_IDEMPOTENCY_KEY")
     refunds: list[dict[str, Any]] = []
     last_error: dict[str, Any] | None = None
 
@@ -65,6 +66,7 @@ def run_refund_agent(customer_email: str, refund_reason: str) -> dict[str, Any]:
                 amount=refund_amount,
                 reason="requested_by_customer",
                 metadata={"stagehand_example": "end_to_end_verification"},
+                **idempotency_options(idempotency_key, f"refund-{attempt}"),
             )
         except stripe.StripeError as exc:
             error = getattr(exc, "error", None)
@@ -123,10 +125,9 @@ def ensure_refundable_payment(customer_email: str) -> dict[str, str]:
     if os.environ.get("STAGEHAND_SKIP_REFUND_FIXTURE") == "1":
         return {"customer_id": "", "payment_intent_id": ""}
 
-    request_options: dict[str, Any] = {}
     idempotency_key = os.environ.get("STAGEHAND_IDEMPOTENCY_KEY")
-    if idempotency_key:
-        request_options["idempotency_key"] = idempotency_key
+    customer_request_options = idempotency_options(idempotency_key, "customer")
+    intent_request_options = idempotency_options(idempotency_key, "payment-intent")
 
     metadata = {
         "stagehand_example": "end_to_end_verification",
@@ -151,7 +152,7 @@ def ensure_refundable_payment(customer_email: str) -> dict[str, str]:
     if os.environ.get("STAGEHAND_SCRUB_MATRIX") == "1":
         customer_params["phone"] = os.environ.get("STAGEHAND_SAMPLE_PHONE", "+15555550100")
 
-    customer = stripe.Customer.create(**customer_params, **request_options)
+    customer = stripe.Customer.create(**customer_params, **customer_request_options)
     intent = stripe.PaymentIntent.create(
         amount=int(os.environ.get("STAGEHAND_PAYMENT_AMOUNT", "1000")),
         currency="usd",
@@ -160,8 +161,15 @@ def ensure_refundable_payment(customer_email: str) -> dict[str, str]:
         confirm=True,
         automatic_payment_methods={"enabled": True, "allow_redirects": "never"},
         metadata={"stagehand_example": "end_to_end_verification"},
+        **intent_request_options,
     )
     return {"customer_id": customer.id, "payment_intent_id": intent.id}
+
+
+def idempotency_options(idempotency_key: str | None, operation: str) -> dict[str, Any]:
+    if not idempotency_key:
+        return {}
+    return {"idempotency_key": f"{idempotency_key}-{operation}"}
 
 
 def classification_prompt() -> str:

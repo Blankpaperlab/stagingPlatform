@@ -112,6 +112,34 @@ func TestCompareIgnoresConfiguredFields(t *testing.T) {
 	}
 }
 
+func TestCompareIgnoresConfiguredRequestHeaderFields(t *testing.T) {
+	t.Parallel()
+
+	baseInteraction := interactionFixture("run_base", "base_int", 1, "stripe", "payment_intents.create", "/v1/payment_intents", map[string]any{}, "")
+	baseInteraction.Request.Headers = map[string][]string{
+		"idempotency-key": {"ik_base"},
+		"stripe-version":  {"2025-11-05"},
+	}
+	candidateInteraction := interactionFixture("run_candidate", "candidate_int", 1, "stripe", "payment_intents.create", "/v1/payment_intents", map[string]any{}, "")
+	candidateInteraction.Request.Headers = map[string][]string{
+		"idempotency-key": {"ik_candidate"},
+		"stripe-version":  {"2025-11-05"},
+	}
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{baseInteraction}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidateInteraction}),
+		Options{IgnoredFields: []string{"request.headers.idempotency-key"}},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	if len(result.Changes) != 0 {
+		t.Fatalf("request header ignore produced changes: %#v", result.Changes)
+	}
+}
+
 func TestCompareDoesNotFlagTimingOnlyDifferencesAsModified(t *testing.T) {
 	t.Parallel()
 
@@ -133,6 +161,37 @@ func TestCompareDoesNotFlagTimingOnlyDifferencesAsModified(t *testing.T) {
 			len(result.Changes),
 			result.Changes,
 		)
+	}
+}
+
+func TestCompareDoesNotFlagScrubEvidenceOnlyDifferencesAsModified(t *testing.T) {
+	t.Parallel()
+
+	base := interactionFixture("run_base", "base_int", 1, "stripe", "customers.search", "/v1/customers/search", map[string]any{}, "")
+	base.ScrubReport.DetectorKinds = []string{"email"}
+	base.ScrubReport.RedactedPaths = []string{"request.query.query"}
+	base.ScrubReport.SessionSaltID = "salt_base"
+
+	candidate := interactionFixture("run_candidate", "candidate_int", 1, "stripe", "customers.search", "/v1/customers/search", map[string]any{}, "")
+	candidate.ScrubReport.DetectorKinds = []string{"email", "phone", "jwt"}
+	candidate.ScrubReport.RedactedPaths = []string{
+		"request.query.query",
+		"events[1].data.body.data[0].email",
+		"events[1].data.body.data[0].phone",
+	}
+	candidate.ScrubReport.SessionSaltID = "salt_candidate"
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{base}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidate}),
+		Options{},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	if len(result.Changes) != 0 {
+		t.Fatalf("scrub evidence-only differences produced changes: %#v", result.Changes)
 	}
 }
 

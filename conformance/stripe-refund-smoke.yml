@@ -28,6 +28,9 @@ cases:
             currency: usd
             customer: '{{ create-customer.response.body.id }}'
             confirm: true
+            automatic_payment_methods:
+              enabled: true
+              allow_redirects: never
             payment_method_data:
               type: card
               card:
@@ -48,7 +51,7 @@ cases:
         - id: refund-payment
           operation: refunds.create
           request:
-            payment_intent: '{{ list-payment-intents.response.body.data[0].id }}'
+            payment_intent: '{{ create-payment-intent.response.body.id }}'
             reason: requested_by_customer
             metadata:
               stagehand_case: stripe_refund_smoke
@@ -76,6 +79,20 @@ cases:
           reason: Real Stripe timestamps are wall-clock values.
         - path: response.body.livemode
           reason: Real Stripe includes environment metadata not modeled by the simulator.
+        - path: response.body.balance
+          reason: Real Stripe customer objects include account balance metadata outside the simulator subset.
+        - path: response.body.delinquent
+          reason: Real Stripe customer objects include billing status metadata outside the simulator subset.
+        - path: response.body.invoice_prefix
+          reason: Real Stripe customer objects include billing metadata outside the simulator subset.
+        - path: response.body.invoice_settings
+          reason: Real Stripe customer objects include billing metadata outside the simulator subset.
+        - path: response.body.next_invoice_sequence
+          reason: Real Stripe customer objects include billing metadata outside the simulator subset.
+        - path: response.body.preferred_locales
+          reason: Real Stripe customer objects include locale metadata outside the simulator subset.
+        - path: response.body.tax_exempt
+          reason: Real Stripe customer objects include tax metadata outside the simulator subset.
         - path: response.body.url
           reason: Real Stripe list endpoints include API URL metadata.
         - path: response.body.has_more
@@ -92,6 +109,28 @@ cases:
           reason: Real Stripe materializes charge IDs outside the simulator subset.
         - path: response.body.data[0].payment_method
           reason: Real Stripe materializes payment-method IDs outside the simulator subset.
+        - path: response.body.data[0].amount_capturable
+          reason: Real Stripe payment intents include fields outside the simulator subset.
+        - path: response.body.data[0].amount_details
+          reason: Real Stripe payment intents include fields outside the simulator subset.
+        - path: response.body.data[0].amount_received
+          reason: Real Stripe payment intents include fields outside the simulator subset.
+        - path: response.body.data[0].automatic_payment_methods
+          reason: Real Stripe payment intents include payment-method metadata outside the simulator subset.
+        - path: response.body.data[0].capture_method
+          reason: Real Stripe payment intents include capture metadata outside the simulator subset.
+        - path: response.body.data[0].confirmation_method
+          reason: Real Stripe payment intents include confirmation metadata outside the simulator subset.
+        - path: response.body.data[0].livemode
+          reason: Real Stripe includes environment metadata not modeled by the simulator.
+        - path: response.body.data[0].managed_payments
+          reason: Real Stripe payment intents include provider metadata outside the simulator subset.
+        - path: response.body.data[0].payment_method_configuration_details
+          reason: Real Stripe payment intents include provider metadata outside the simulator subset.
+        - path: response.body.data[0].payment_method_options
+          reason: Real Stripe payment intents include provider metadata outside the simulator subset.
+        - path: response.body.data[0].payment_method_types
+          reason: Real Stripe payment intents include provider metadata outside the simulator subset.
         - path: response.body.client_secret
           reason: Client secrets are generated provider credentials.
         - path: response.body.customer
@@ -100,6 +139,8 @@ cases:
           reason: Real Stripe materializes charge IDs outside the simulator subset.
         - path: response.body.payment_method
           reason: Real Stripe materializes payment-method IDs outside the simulator subset.
+        - path: response.body.payment_intent
+          reason: Real Stripe and simulator generate different payment-intent IDs.
         - path: response.body.balance_transaction
           reason: Real Stripe may create balance transaction references asynchronously.
         - path: response.body.charge
@@ -122,6 +163,8 @@ cases:
           reason: Nullable Stripe provider metadata is outside the simulator subset.
         - path: response.body.transfer_reversal
           reason: Nullable Stripe provider metadata is outside the simulator subset.
+        - path: response.body.managed_payments
+          reason: Real Stripe payment intents include provider metadata outside the simulator subset.
         - path: response.body.amount_capturable
           reason: Real Stripe payment intents include fields outside the simulator subset.
         - path: response.body.amount_details

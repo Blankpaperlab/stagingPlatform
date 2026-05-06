@@ -381,6 +381,9 @@ func normalizeIgnoredFields(fields []string) map[string]bool {
 		"latency_ms":         true,
 		"events[*].t_ms":     true,
 		"events[*].sim_t_ms": true,
+		"scrub_report.detector_kinds":  true,
+		"scrub_report.redacted_paths":  true,
+		"scrub_report.session_salt_id": true,
 	}
 	for _, field := range fields {
 		field = strings.TrimSpace(field)

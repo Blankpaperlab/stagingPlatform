@@ -334,6 +334,8 @@ BASELINE_CUSTOMER_EMAIL="${STAGEHAND_CUSTOMER_EMAIL:-refund+$RUN_STAMP@example.c
 ISOLATION_CUSTOMER_EMAIL="refund-isolation+$RUN_STAMP@example.com"
 BASELINE_IDEMPOTENCY_KEY="${STAGEHAND_IDEMPOTENCY_KEY:-stagehand-e2e-$RUN_STAMP-baseline}"
 ISOLATION_IDEMPOTENCY_KEY="$BASELINE_IDEMPOTENCY_KEY-isolation"
+INJECTION_NTH1_IDEMPOTENCY_KEY="$BASELINE_IDEMPOTENCY_KEY-injection-nth1"
+INJECTION_NTH3_IDEMPOTENCY_KEY="$BASELINE_IDEMPOTENCY_KEY-injection-nth3"
 export STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL"
 export STAGEHAND_REFUND_REASON="${STAGEHAND_REFUND_REASON:-Item arrived damaged, requesting full refund. Contact +15555550100. Card 4242 4242 4242 4242. Token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdGFnZWhhbmQifQ.signature.}"
 export STAGEHAND_SAMPLE_PHONE="${STAGEHAND_SAMPLE_PHONE:-+15555550100}"
@@ -523,7 +525,7 @@ assert_json assertions-fail-evidence "$OUT_DIR/assertions-failing.json"
 
 echo "Running deterministic error injection checks"
 run_stagehand_json "$OUT_DIR/injection-nth1-record.json" "$OUT_DIR/injection-nth1-record.log" "injection nth1 record" \
-  env STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL" STAGEHAND_IDEMPOTENCY_KEY="$BASELINE_IDEMPOTENCY_KEY" STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/injection-nth1-output.json" STAGEHAND_EXPECT_STATUS=refund_failed \
+  env STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL" STAGEHAND_IDEMPOTENCY_KEY="$INJECTION_NTH1_IDEMPOTENCY_KEY" STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/injection-nth1-output.json" STAGEHAND_EXPECT_STATUS=refund_failed \
   "$STAGEHAND_BIN" record \
   --session refund-flow-injection-nth1 \
   --config "$CONFIG_PATH" \
@@ -539,7 +541,7 @@ if ! grep -F "Error Injection:" "$OUT_DIR/inspect-injection-nth1.txt" >/dev/null
 fi
 
 run_stagehand_json "$OUT_DIR/injection-nth3-record.json" "$OUT_DIR/injection-nth3-record.log" "injection nth3 record" \
-  env STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL" STAGEHAND_IDEMPOTENCY_KEY="$BASELINE_IDEMPOTENCY_KEY" STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/injection-nth3-output.json" STAGEHAND_EXPECT_STATUS=refund_failed STAGEHAND_REFUND_ATTEMPTS=3 STAGEHAND_FORCE_REFUND_ATTEMPTS=1 STAGEHAND_REFUND_AMOUNT=100 \
+  env STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL" STAGEHAND_IDEMPOTENCY_KEY="$INJECTION_NTH3_IDEMPOTENCY_KEY" STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/injection-nth3-output.json" STAGEHAND_EXPECT_STATUS=refund_failed STAGEHAND_REFUND_ATTEMPTS=3 STAGEHAND_FORCE_REFUND_ATTEMPTS=1 STAGEHAND_REFUND_AMOUNT=100 \
   "$STAGEHAND_BIN" record \
   --session refund-flow-injection-nth3 \
   --config "$CONFIG_PATH" \
@@ -548,6 +550,10 @@ run_stagehand_json "$OUT_DIR/injection-nth3-record.json" "$OUT_DIR/injection-nth
 assert_json injection-output "$OUT_DIR/injection-nth3-output.json" 3
 INJECTION_NTH3_RUN_ID="$(json_field run_id "$OUT_DIR/injection-nth3-record.json")"
 assert_sql injection-provenance "$DB_PATH" "$INJECTION_NTH3_RUN_ID" 3
+if grep -R -a -F "$STAGEHAND_IDEMPOTENCY_KEY" "$OUT_DIR/runs" >/dev/null; then
+  echo "Idempotency key appeared in plaintext persisted run data after injection checks" >&2
+  exit 1
+fi
 
 echo "Running live Stripe refund conformance smoke"
 "$STAGEHAND_BIN" conformance run \
