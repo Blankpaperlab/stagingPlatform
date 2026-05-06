@@ -330,7 +330,9 @@ if [[ -z "${OPENAI_API_KEY:-}" || -z "${STRIPE_SECRET_KEY:-}" ]]; then
 fi
 
 RUN_STAMP="$(date +%Y%m%d%H%M%S)"
-export STAGEHAND_CUSTOMER_EMAIL="${STAGEHAND_CUSTOMER_EMAIL:-refund+$RUN_STAMP@example.com}"
+BASELINE_CUSTOMER_EMAIL="${STAGEHAND_CUSTOMER_EMAIL:-refund+$RUN_STAMP@example.com}"
+ISOLATION_CUSTOMER_EMAIL="refund-isolation+$RUN_STAMP@example.com"
+export STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL"
 export STAGEHAND_REFUND_REASON="${STAGEHAND_REFUND_REASON:-Item arrived damaged, requesting full refund. Contact +15555550100. Card 4242 4242 4242 4242. Token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdGFnZWhhbmQifQ.signature.}"
 export STAGEHAND_SAMPLE_PHONE="${STAGEHAND_SAMPLE_PHONE:-+15555550100}"
 export STAGEHAND_SAMPLE_JWT="${STAGEHAND_SAMPLE_JWT:-eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdGFnZWhhbmQifQ.signature}"
@@ -351,7 +353,7 @@ PY
 echo "Recording live baseline"
 BASELINE_STDOUT="$OUT_DIR/baseline-record.json"
 run_stagehand_json "$BASELINE_STDOUT" "$OUT_DIR/baseline-record.log" "baseline record" \
-  env STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/baseline-output.json" STAGEHAND_EXPECT_STATUS=refunded \
+  env STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL" STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/baseline-output.json" STAGEHAND_EXPECT_STATUS=refunded \
   "$STAGEHAND_BIN" record \
   --session refund-flow-baseline \
   --config "$CONFIG_PATH" \
@@ -363,7 +365,7 @@ if grep -R -a -F "${STRIPE_SECRET_KEY}" "$OUT_DIR/runs" >/dev/null; then
   echo "Stripe secret key appeared in persisted run data" >&2
   exit 1
 fi
-if grep -R -a -F "$STAGEHAND_CUSTOMER_EMAIL" "$OUT_DIR/runs" >/dev/null; then
+if grep -R -a -F "$BASELINE_CUSTOMER_EMAIL" "$OUT_DIR/runs" >/dev/null; then
   echo "Customer email appeared in plaintext persisted run data" >&2
   exit 1
 fi
@@ -396,18 +398,18 @@ done
 echo "Recording isolation run to verify session-scoped scrub salts"
 ISOLATION_STDOUT="$OUT_DIR/isolation-record.json"
 run_stagehand_json "$ISOLATION_STDOUT" "$OUT_DIR/isolation-record.log" "isolation record" \
-  env STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/isolation-output.json" STAGEHAND_EXPECT_STATUS=refunded \
+  env STAGEHAND_CUSTOMER_EMAIL="$ISOLATION_CUSTOMER_EMAIL" STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/isolation-output.json" STAGEHAND_EXPECT_STATUS=refunded \
   "$STAGEHAND_BIN" record \
   --session refund-flow-isolation \
   --config "$CONFIG_PATH" \
   -- "$PYTHON_BIN" "$SCRIPT_DIR/agent.py"
 ISOLATION_RUN_ID="$(json_field run_id "$ISOLATION_STDOUT")"
-assert_sql salt-isolation "$DB_PATH" "$BASELINE_RUN_ID" "$ISOLATION_RUN_ID" "$STAGEHAND_CUSTOMER_EMAIL"
+assert_sql salt-isolation "$DB_PATH" "$BASELINE_RUN_ID" "$ISOLATION_RUN_ID" "$BASELINE_CUSTOMER_EMAIL"
 
 echo "Replaying baseline without live credentials"
 REPLAY_STDOUT="$OUT_DIR/replay.json"
 run_stagehand_json "$REPLAY_STDOUT" "$OUT_DIR/replay.log" "baseline replay" \
-  env -u OPENAI_API_KEY -u STRIPE_SECRET_KEY STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/replay-output.json" STAGEHAND_EXPECT_STATUS=refunded \
+  env -u OPENAI_API_KEY -u STRIPE_SECRET_KEY STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL" STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/replay-output.json" STAGEHAND_EXPECT_STATUS=refunded \
   "$STAGEHAND_BIN" replay \
   --run-id "$BASELINE_RUN_ID" \
   --config "$CONFIG_PATH" \
@@ -415,7 +417,7 @@ run_stagehand_json "$REPLAY_STDOUT" "$OUT_DIR/replay.log" "baseline replay" \
 cmp "$OUT_DIR/baseline-output.json" "$OUT_DIR/replay-output.json"
 
 echo "Verifying Stripe replay misses fail closed"
-if env -u OPENAI_API_KEY -u STRIPE_SECRET_KEY STAGEHAND_EXTRA_STRIPE_RETRIEVE=1 STAGEHAND_EXPECT_STATUS=refunded \
+if env -u OPENAI_API_KEY -u STRIPE_SECRET_KEY STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL" STAGEHAND_EXTRA_STRIPE_RETRIEVE=1 STAGEHAND_EXPECT_STATUS=refunded \
   "$STAGEHAND_BIN" replay \
   --run-id "$BASELINE_RUN_ID" \
   --config "$CONFIG_PATH" \
@@ -441,7 +443,7 @@ run_stagehand_json "$OUT_DIR/baseline-promote.json" "$OUT_DIR/baseline-promote.l
 
 CANDIDATE_STDOUT="$OUT_DIR/candidate-record.json"
 run_stagehand_json "$CANDIDATE_STDOUT" "$OUT_DIR/candidate-record.log" "candidate record" \
-  env STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/candidate-output.json" STAGEHAND_EXPECT_STATUS=refunded \
+  env STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL" STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/candidate-output.json" STAGEHAND_EXPECT_STATUS=refunded \
   "$STAGEHAND_BIN" record \
   --session refund-flow-baseline \
   --config "$CONFIG_PATH" \
@@ -503,7 +505,7 @@ assert_json assertions-fail-evidence "$OUT_DIR/assertions-failing.json"
 
 echo "Running deterministic error injection checks"
 run_stagehand_json "$OUT_DIR/injection-nth1-record.json" "$OUT_DIR/injection-nth1-record.log" "injection nth1 record" \
-  env STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/injection-nth1-output.json" STAGEHAND_EXPECT_STATUS=refund_failed \
+  env STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL" STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/injection-nth1-output.json" STAGEHAND_EXPECT_STATUS=refund_failed \
   "$STAGEHAND_BIN" record \
   --session refund-flow-injection-nth1 \
   --config "$CONFIG_PATH" \
@@ -519,7 +521,7 @@ if ! grep -F "Error Injection:" "$OUT_DIR/inspect-injection-nth1.txt" >/dev/null
 fi
 
 run_stagehand_json "$OUT_DIR/injection-nth3-record.json" "$OUT_DIR/injection-nth3-record.log" "injection nth3 record" \
-  env STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/injection-nth3-output.json" STAGEHAND_EXPECT_STATUS=refund_failed STAGEHAND_REFUND_ATTEMPTS=3 STAGEHAND_FORCE_REFUND_ATTEMPTS=1 STAGEHAND_REFUND_AMOUNT=100 \
+  env STAGEHAND_CUSTOMER_EMAIL="$BASELINE_CUSTOMER_EMAIL" STAGEHAND_SAMPLE_OUTPUT="$OUT_DIR/injection-nth3-output.json" STAGEHAND_EXPECT_STATUS=refund_failed STAGEHAND_REFUND_ATTEMPTS=3 STAGEHAND_FORCE_REFUND_ATTEMPTS=1 STAGEHAND_REFUND_AMOUNT=100 \
   "$STAGEHAND_BIN" record \
   --session refund-flow-injection-nth3 \
   --config "$CONFIG_PATH" \
