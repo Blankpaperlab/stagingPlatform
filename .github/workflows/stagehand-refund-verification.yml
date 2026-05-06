@@ -20,6 +20,10 @@ jobs:
     env:
       STAGEHAND_CUSTOMER_EMAIL: refund-${{ github.run_id }}-${{ github.run_attempt }}@example.com
       STAGEHAND_IDEMPOTENCY_KEY: stagehand-e2e-${{ github.run_id }}-${{ github.run_attempt }}-baseline
+      STAGEHAND_REFUND_REASON: Item arrived damaged, requesting full refund. Contact +15555550100. Card 4242 4242 4242 4242. Token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdGFnZWhhbmQifQ.signature.
+      STAGEHAND_SAMPLE_PHONE: '+15555550100'
+      STAGEHAND_SAMPLE_JWT: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdGFnZWhhbmQifQ.signature
+      STAGEHAND_SCRUB_MATRIX: '1'
       STAGEHAND_E2E_OUT: ${{ github.workspace }}/.stagehand/e2e
 
     steps:
