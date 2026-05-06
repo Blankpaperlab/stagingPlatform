@@ -159,6 +159,38 @@ func TestCompareCanIgnoreEventArrayFieldsViaPathTraversal(t *testing.T) {
 	}
 }
 
+func TestCompareResponseBodyIgnoreFieldMatchesResponseEventBody(t *testing.T) {
+	t.Parallel()
+
+	base := interactionFixture("run_base", "base_int", 1, "stripe", "customers.create", "/v1/customers", map[string]any{}, "")
+	base.Events[1].Data = map[string]any{
+		"body": map[string]any{
+			"id":    "cus_base",
+			"email": "customer@example.com",
+		},
+	}
+	candidate := interactionFixture("run_candidate", "candidate_int", 1, "stripe", "customers.create", "/v1/customers", map[string]any{}, "")
+	candidate.Events[1].Data = map[string]any{
+		"body": map[string]any{
+			"id":    "cus_candidate",
+			"email": "customer@example.com",
+		},
+	}
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{base}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidate}),
+		Options{IgnoredFields: []string{"response.body.id"}},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	if len(result.Changes) != 0 {
+		t.Fatalf("response.body ignore alias produced changes: %#v", result.Changes)
+	}
+}
+
 func TestCompareReportsModifiedRatherThanReorderForSameEndpointBodyChange(t *testing.T) {
 	t.Parallel()
 

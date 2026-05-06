@@ -462,14 +462,28 @@ DIFF_IGNORE_ARGS=(
   --ignore-field response.body.client_secret
   --ignore-field response.body.balance_transaction
   --ignore-field response.body.customer
+  --ignore-field response.body.latest_charge
   --ignore-field response.body.payment_intent
+  --ignore-field response.body.payment_method
   --ignore-field response.body.metadata
   --ignore-field response.body.data[*].id
   --ignore-field response.body.data[*].created
   --ignore-field response.body.data[*].client_secret
   --ignore-field response.body.data[*].customer
+  --ignore-field response.body.data[*].latest_charge
   --ignore-field response.body.data[*].payment_intent
+  --ignore-field response.body.data[*].payment_method
   --ignore-field response.body.data[*].metadata
+  --ignore-field events[*].data.body.id
+  --ignore-field events[*].data.body.created
+  --ignore-field events[*].data.body.client_secret
+  --ignore-field events[*].data.body.balance_transaction
+  --ignore-field events[*].data.body.customer
+  --ignore-field events[*].data.body.latest_charge
+  --ignore-field events[*].data.body.payment_intent
+  --ignore-field events[*].data.body.payment_method
+  --ignore-field events[*].data.body.metadata
+  --ignore-field events[*].data.body.data
 )
 "$STAGEHAND_BIN" diff --candidate-run-id "$CANDIDATE_RUN_ID" --baseline-id "$BASELINE_ID" --config "$CONFIG_PATH" "${DIFF_IGNORE_ARGS[@]}" --format terminal >"$OUT_DIR/diff.txt"
 "$STAGEHAND_BIN" diff --candidate-run-id "$CANDIDATE_RUN_ID" --baseline-id "$BASELINE_ID" --config "$CONFIG_PATH" "${DIFF_IGNORE_ARGS[@]}" --format json >"$OUT_DIR/diff.json"

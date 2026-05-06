@@ -390,6 +390,9 @@ func normalizeIgnoredFields(fields []string) map[string]bool {
 			continue
 		}
 		ignored[field] = true
+		if strings.HasPrefix(field, "response.") {
+			ignored["events[*].data."+strings.TrimPrefix(field, "response.")] = true
+		}
 	}
 	return ignored
 }
