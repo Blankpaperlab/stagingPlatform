@@ -108,6 +108,8 @@ jobs:
           output-dir: .stagehand/action/refund-primary
           report-format: github-markdown
           ignore-fields: |
+            response.headers
+            response.body
             request.body.customer
             request.body.payment_intent
             request.body.metadata
