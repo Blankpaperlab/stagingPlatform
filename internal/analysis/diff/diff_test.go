@@ -191,6 +191,42 @@ func TestCompareResponseBodyIgnoreFieldMatchesResponseEventBody(t *testing.T) {
 	}
 }
 
+func TestCompareResponseBodyIgnoreFieldCanRemoveWholeResponseEventBody(t *testing.T) {
+	t.Parallel()
+
+	base := interactionFixture("run_base", "base_int", 1, "stripe", "payment_intents.create", "/v1/payment_intents", map[string]any{}, "")
+	base.Events[1].Data = map[string]any{
+		"body": map[string]any{
+			"id":                   "pi_base",
+			"latest_charge":        "ch_base",
+			"processor_reference":  "base_dynamic_value",
+			"payment_method_types": []any{"card"},
+		},
+	}
+	candidate := interactionFixture("run_candidate", "candidate_int", 1, "stripe", "payment_intents.create", "/v1/payment_intents", map[string]any{}, "")
+	candidate.Events[1].Data = map[string]any{
+		"body": map[string]any{
+			"id":                   "pi_candidate",
+			"latest_charge":        "ch_candidate",
+			"processor_reference":  "candidate_dynamic_value",
+			"payment_method_types": []any{"card"},
+		},
+	}
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{base}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidate}),
+		Options{IgnoredFields: []string{"response.body"}},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	if len(result.Changes) != 0 {
+		t.Fatalf("response.body ignore alias produced changes: %#v", result.Changes)
+	}
+}
+
 func TestCompareResponseHeadersIgnoreFieldMatchesResponseEventHeaders(t *testing.T) {
 	t.Parallel()
 

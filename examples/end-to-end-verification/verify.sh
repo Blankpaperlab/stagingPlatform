@@ -455,6 +455,7 @@ CANDIDATE_RUN_ID="$(json_field run_id "$CANDIDATE_STDOUT")"
 echo "Rendering diffs"
 DIFF_IGNORE_ARGS=(
   --ignore-field response.headers
+  --ignore-field response.body
   --ignore-field request.body.customer
   --ignore-field request.body.payment_intent
   --ignore-field request.body.metadata
