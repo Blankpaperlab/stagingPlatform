@@ -202,6 +202,81 @@ def test_stripe_sdk_replay_matches_scrubbed_email_body_shape() -> None:
     assert customer.id == "cus_123"
 
 
+def test_stripe_sdk_replay_matches_scrubbed_sensitive_metadata_shape() -> None:
+    stagehand.init(session="stripe-sdk-scrubbed-sensitive-metadata", mode="replay")
+    stripe.api_key = "sk_test_stagehand_1234567890"
+    stripe.default_http_client = FailingStripeHTTPClient()
+    assert (
+        stagehand.seed_replay_interactions(
+            [
+                {
+                    "run_id": "run_seed",
+                    "interaction_id": "int_seed_001",
+                    "sequence": 1,
+                    "service": "stripe",
+                    "operation": "POST /v1/customers",
+                    "protocol": "https",
+                    "request": {
+                        "url": "https://api.stripe.com/v1/customers",
+                        "method": "POST",
+                        "body": {
+                            "email": "user_scrubbed@scrub.local",
+                            "name": "Example Customer",
+                            "phone": "hash_phone_scrubbed",
+                            "metadata": {
+                                "stagehand_customer_email": "user_scrubbed@scrub.local",
+                                "stagehand_jwt": "hash_jwt_scrubbed",
+                            },
+                        },
+                    },
+                    "events": [
+                        {
+                            "sequence": 1,
+                            "t_ms": 0,
+                            "sim_t_ms": 0,
+                            "type": "request_sent",
+                        },
+                        {
+                            "sequence": 2,
+                            "t_ms": 1,
+                            "sim_t_ms": 1,
+                            "type": "response_received",
+                            "data": {
+                                "status_code": 200,
+                                "headers": {"content-type": ["application/json"]},
+                                "body": {"id": "cus_123", "object": "customer"},
+                            },
+                        },
+                    ],
+                    "scrub_report": {
+                        "scrub_policy_version": "v1",
+                        "session_salt_id": "salt_test",
+                        "redacted_paths": [
+                            "request.body.email",
+                            "request.body.phone",
+                            "request.body.metadata.stagehand_customer_email",
+                            "request.body.metadata.stagehand_jwt",
+                        ],
+                    },
+                }
+            ]
+        )
+        == 1
+    )
+
+    customer = stripe.Customer.create(
+        email="customer@example.com",
+        name="Example Customer",
+        phone="+15555550100",
+        metadata={
+            "stagehand_customer_email": "customer@example.com",
+            "stagehand_jwt": "eyJhbGciOiJIUzI1NiJ9.payload.signature",
+        },
+    )
+
+    assert customer.id == "cus_123"
+
+
 def test_stripe_sdk_replay_matches_scrubbed_search_query_shape() -> None:
     stagehand.init(session="stripe-sdk-scrubbed-query", mode="replay")
     stripe.api_key = "sk_test_stagehand_1234567890"

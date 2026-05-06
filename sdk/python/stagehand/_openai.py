@@ -178,7 +178,7 @@ def _stripe_replay_key_body(body: Any) -> Any:
     if isinstance(body, dict):
         keyed: dict[str, Any] = {}
         for key in sorted(body):
-            if str(key).lower() in {"email", "query"}:
+            if _stripe_sensitive_key(str(key)):
                 keyed[str(key)] = _content_signature(body[key])
                 continue
             keyed[str(key)] = _stripe_replay_key_body(body[key])
@@ -186,6 +186,16 @@ def _stripe_replay_key_body(body: Any) -> Any:
     if isinstance(body, list):
         return [_stripe_replay_key_body(item) for item in body]
     return body
+
+
+def _stripe_sensitive_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_")
+    if normalized in {"email", "query", "phone", "jwt", "token", "api_key", "secret"}:
+        return True
+    return any(
+        marker in normalized
+        for marker in ("_email", "_phone", "_jwt", "_token", "_api_key", "_secret")
+    )
 
 
 def _message_signature(message: Any) -> Any:
