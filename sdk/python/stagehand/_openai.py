@@ -124,6 +124,7 @@ def _replay_key_url(url: str) -> str:
     if not changed:
         return url
 
+    pairs.sort(key=lambda pair: (pair[0], pair[1]))
     return urlunsplit(
         (
             parsed.scheme,

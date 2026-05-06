@@ -292,7 +292,7 @@ def test_stripe_sdk_replay_matches_scrubbed_search_query_shape() -> None:
                     "operation": "GET /v1/customers/search",
                     "protocol": "https",
                     "request": {
-                        "url": "https://api.stripe.com/v1/customers/search?query=email%3A%27user_scrubbed%40scrub.local%27",
+                        "url": "https://api.stripe.com/v1/customers/search?limit=1&query=email%3A%27user_scrubbed%40scrub.local%27",
                         "method": "GET",
                     },
                     "events": [
@@ -330,7 +330,7 @@ def test_stripe_sdk_replay_matches_scrubbed_search_query_shape() -> None:
         == 1
     )
 
-    customers = stripe.Customer.search(query="email:'customer@example.com'")
+    customers = stripe.Customer.search(query="email:'customer@example.com'", limit=1)
 
     assert customers.data[0].id == "cus_123"
 
