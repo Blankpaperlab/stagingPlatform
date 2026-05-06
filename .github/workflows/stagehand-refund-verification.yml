@@ -19,6 +19,7 @@ jobs:
 
     env:
       STAGEHAND_CUSTOMER_EMAIL: refund-${{ github.run_id }}-${{ github.run_attempt }}@example.com
+      STAGEHAND_IDEMPOTENCY_KEY: stagehand-e2e-${{ github.run_id }}-${{ github.run_attempt }}-baseline
       STAGEHAND_E2E_OUT: ${{ github.workspace }}/.stagehand/e2e
 
     steps:
