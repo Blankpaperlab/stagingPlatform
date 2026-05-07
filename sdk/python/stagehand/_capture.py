@@ -4,10 +4,11 @@ import base64
 import json
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Callable, Final
+from typing import Any, Callable, Final, Iterable
 from urllib.parse import parse_qsl, urlsplit
 from uuid import uuid4
 
+from ._config import ServiceMapping
 from ._providers import is_openai_host
 
 DEFAULT_SCRUB_POLICY_VERSION: Final[str] = "v0-unredacted"
@@ -203,6 +204,7 @@ class CaptureBuffer:
         run_id: str,
         scrub_policy_version: str = DEFAULT_SCRUB_POLICY_VERSION,
         session_salt_id: str = DEFAULT_SESSION_SALT_ID,
+        service_mappings: Iterable[ServiceMapping] = (),
     ) -> None:
         self._run_id = run_id
         self._scrub_report = CapturedScrubReport(
@@ -212,6 +214,7 @@ class CaptureBuffer:
         self._lock = Lock()
         self._next_sequence = 1
         self._interactions: list[CapturedInteraction] = []
+        self._service_mappings = tuple(service_mappings)
 
     def snapshot(self) -> tuple[CapturedInteraction, ...]:
         with self._lock:
@@ -266,7 +269,7 @@ class CaptureBuffer:
         return _normalize_httpx_request(request)
 
     def detect_service(self, url: str) -> str:
-        return _detect_service(url)
+        return _detect_service(url, self._service_mappings)
 
     def detect_protocol(self, url: str) -> str:
         return _detect_protocol(url)
@@ -385,7 +388,7 @@ class CaptureBuffer:
                 run_id=self._run_id,
                 interaction_id=interaction_id,
                 sequence=sequence,
-                service=_detect_service(normalized_request.url),
+                service=_detect_service(normalized_request.url, self._service_mappings),
                 operation=detect_operation(
                     normalized_request.method,
                     normalized_request.url,
@@ -522,7 +525,11 @@ def _detect_protocol(url: str) -> str:
     return scheme if scheme in {"http", "https"} else "https"
 
 
-def _detect_service(url: str) -> str:
+def _detect_service(url: str, service_mappings: Iterable[ServiceMapping] = ()) -> str:
+    for mapping in service_mappings:
+        if mapping.matches(url):
+            return mapping.name
+
     hostname = (urlsplit(url).hostname or "unknown").lower()
     if is_openai_host(hostname):
         return "openai"

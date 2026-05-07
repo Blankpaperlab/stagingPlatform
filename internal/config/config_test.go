@@ -58,6 +58,92 @@ auth:
 	}
 }
 
+func TestLoadConfigSupportsServiceMappings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stagehand.yml")
+	content := `
+schema_version: v1alpha1
+services:
+  - name: internal-crm
+    type: api
+    match:
+      host: crm.internal.acme.com
+      path_prefix: /v1
+    replay:
+      mode: generic_http
+      allowed_tiers: [0, 1]
+  - name: billing-api
+    type: api
+    match:
+      host: billing.internal.acme.com
+`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if len(cfg.Services) != 2 {
+		t.Fatalf("len(Services) = %d, want 2", len(cfg.Services))
+	}
+	if cfg.Services[0].Name != "internal-crm" {
+		t.Fatalf("Services[0].Name = %q, want internal-crm", cfg.Services[0].Name)
+	}
+	if cfg.Services[0].Match.Host != "crm.internal.acme.com" {
+		t.Fatalf("Services[0].Match.Host = %q, want crm.internal.acme.com", cfg.Services[0].Match.Host)
+	}
+	if cfg.Services[0].Replay.Mode != "generic_http" {
+		t.Fatalf("Services[0].Replay.Mode = %q, want generic_http", cfg.Services[0].Replay.Mode)
+	}
+}
+
+func TestLoadRejectsInvalidServiceMappings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stagehand.yml")
+	content := `
+schema_version: v1alpha1
+services:
+  - name: internal-crm
+    type: api
+    match:
+      host: crm.internal.acme.com
+  - name: internal-crm
+    type: queue
+    match:
+      path_prefix: v1
+    replay:
+      mode: synthetic
+      allowed_tiers: [1, 0, 4]
+`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() expected service mapping validation failure")
+	}
+
+	errText := err.Error()
+	for _, want := range []string{
+		"services[1].name duplicates",
+		"services[1].type",
+		"services[1].match.host",
+		"services[1].match.path_prefix",
+		"services[1].replay.mode",
+		"services[1].replay.allowed_tiers",
+	} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("validation error %q missing from %v", want, err)
+		}
+	}
+}
+
 func TestLoadRejectsInvalidConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stagehand.yml")

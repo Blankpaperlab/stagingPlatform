@@ -882,22 +882,24 @@ Z6 adds `examples/end-to-end-verification/stagehand-pr-workflow.yml`, a copy-pas
 
 - Outcome: any HTTP API captured by the SDKs can be replayed exactly without touching the live service.
 - To do:
-  - [ ] match by method, host, path, query, selected headers, and normalized body
-  - [ ] store and replay status, headers, and body
-  - [ ] fail closed on replay miss before live network dispatch
-  - [ ] preserve scrubbed request and response payload shape
-  - [ ] add tests for internal-style REST endpoints with JSON request and response bodies
+  - [x] match by method, host, path, query, selected headers, and normalized body
+  - [x] store and replay status, headers, and body
+  - [x] fail closed on replay miss before live network dispatch
+  - [x] preserve scrubbed request and response payload shape
+  - [x] add tests for internal-style REST endpoints with JSON request and response bodies
+
+N1 is implemented across the Python `httpx` path and TypeScript Undici path. Exact replay now canonicalizes URLs by sorting query parameters, keys replay by normalized request body plus stable selected request headers (`accept`, `content-type`), preserves response status/headers/body, and fails closed before transport dispatch on body or selected-header misses. Regression coverage exercises internal-style JSON REST endpoints in both SDKs.
 
 ### Story N2: Service mapping config
 
 - Outcome: users can name company APIs and expose stable service/operation labels across inspect, diff, assertions, and error injection.
 - To do:
-  - [ ] add service mapping entries to `stagehand.yml`
-  - [ ] match services by host and optional path prefix
-  - [ ] infer operation names such as `POST /v1/customers/search`
-  - [ ] support aliases such as `internal-crm`, `billing-api`, and `admin-api`
-  - [ ] show mapped service and operation names in `inspect`
-  - [ ] make mapped service and operation names available to diff and assertions
+  - [x] add service mapping entries to `stagehand.yml`
+  - [x] match services by host and optional path prefix
+  - [x] infer operation names such as `POST /v1/customers/search`
+  - [x] support aliases such as `internal-crm`, `billing-api`, and `admin-api`
+  - [x] show mapped service and operation names in `inspect`
+  - [x] make mapped service and operation names available to diff and assertions
 
 Example config shape:
 
@@ -912,6 +914,8 @@ services:
       mode: generic_http
       allowed_tiers: [0, 1]
 ```
+
+N2 adds `services` to the runtime config schema and wires those mappings into Python `httpx` and TypeScript Undici capture. Captured interactions now persist mapped service names with inferred HTTP operation labels, so existing inspect, diff, assertions, and error-injection paths consume the stable mapped labels through the normal interaction service/operation fields.
 
 ### Story N3: Dynamic field ignore config
 

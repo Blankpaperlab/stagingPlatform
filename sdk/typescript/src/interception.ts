@@ -8,6 +8,7 @@ import type {
   CapturedInteraction,
   CapturedRequest,
 } from './capture.js';
+import { mappedServiceName, type ServiceMapping } from './config.js';
 import { isOpenAIHost, openAIOperationFromURL } from './providers.js';
 import { ExactReplayStore, ReplayFailureError } from './replay.js';
 import type { InjectionEngine } from './injection.js';
@@ -28,11 +29,13 @@ export function installRequestInterception({
   captureBuffer,
   replayStore,
   injectionEngine,
+  serviceMappings,
 }: {
   mode: 'record' | 'replay' | 'passthrough';
   captureBuffer: CaptureBuffer;
   replayStore: ExactReplayStore;
   injectionEngine: InjectionEngine;
+  serviceMappings: readonly ServiceMapping[];
 }): void {
   if (installed) {
     return;
@@ -44,7 +47,7 @@ export function installRequestInterception({
       const startedAt = Date.now();
       const request = normalizeCapturedRequest(options);
       const targetURL = safeURL(request.url);
-      const service = classifyService(targetURL);
+      const service = classifyService(targetURL, serviceMappings);
       const operation = classifyOperation({
         method: request.method,
         url: targetURL,
@@ -718,7 +721,12 @@ function decodePayload(payload: Buffer, contentType: string): unknown {
   return decoded;
 }
 
-function classifyService(url: URL | undefined): string {
+function classifyService(url: URL | undefined, serviceMappings: readonly ServiceMapping[]): string {
+  const mapped = mappedServiceName(url, serviceMappings);
+  if (mapped !== undefined) {
+    return mapped;
+  }
+
   if (url === undefined) {
     return 'http';
   }

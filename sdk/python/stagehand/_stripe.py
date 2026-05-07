@@ -79,6 +79,7 @@ def install_stripe_interception(
                     method=request.method,
                     url=request.url,
                     body=_request_body(request),
+                    headers=request.headers,
                 )
                 return _build_replay_tuple(match.interaction, capture_buffer)
 

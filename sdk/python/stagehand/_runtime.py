@@ -13,6 +13,7 @@ from typing import Any, Final, Iterable, Literal, TypeAlias
 from uuid import uuid4
 
 from ._capture import CaptureBuffer, CapturedInteraction
+from ._config import load_service_mappings
 from ._httpx import install_httpx_interception, uninstall_httpx_interception
 from ._injection import InjectionEngine, load_engine
 from ._openai import OpenAIReplayStore
@@ -156,9 +157,13 @@ def init(session: str, mode: str, config_path: str | Path | None = None) -> Stag
             artifact_version=ARTIFACT_VERSION,
             initialized_at=datetime.now(timezone.utc),
         )
+        service_mappings = load_service_mappings(resolved_config_path)
         runtime = StagehandRuntime(
             metadata=metadata,
-            _capture_buffer=CaptureBuffer(run_id=metadata.run_id),
+            _capture_buffer=CaptureBuffer(
+                run_id=metadata.run_id,
+                service_mappings=service_mappings,
+            ),
             _openai_replay_store=OpenAIReplayStore(),
             _injection_engine=load_engine(os.environ.get(ENV_ERROR_INJECTION_INPUT)),
         )

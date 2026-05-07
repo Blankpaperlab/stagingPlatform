@@ -88,12 +88,13 @@ var (
 )
 
 type Config struct {
-	SchemaVersion string         `yaml:"schema_version"`
-	Record        RecordConfig   `yaml:"record"`
-	Replay        ReplayConfig   `yaml:"replay"`
-	Scrub         ScrubConfig    `yaml:"scrub"`
-	Fallback      FallbackConfig `yaml:"fallback"`
-	Auth          AuthConfig     `yaml:"auth"`
+	SchemaVersion string          `yaml:"schema_version"`
+	Record        RecordConfig    `yaml:"record"`
+	Replay        ReplayConfig    `yaml:"replay"`
+	Scrub         ScrubConfig     `yaml:"scrub"`
+	Fallback      FallbackConfig  `yaml:"fallback"`
+	Auth          AuthConfig      `yaml:"auth"`
+	Services      []ServiceConfig `yaml:"services"`
 }
 
 type RecordConfig struct {
@@ -152,6 +153,23 @@ type LLMSynthesisConfig struct {
 type AuthConfig struct {
 	DefaultMode  AuthMode            `yaml:"default_mode"`
 	ServiceModes map[string]AuthMode `yaml:"service_modes"`
+}
+
+type ServiceConfig struct {
+	Name   string              `yaml:"name"`
+	Type   string              `yaml:"type"`
+	Match  ServiceMatchConfig  `yaml:"match"`
+	Replay ServiceReplayConfig `yaml:"replay"`
+}
+
+type ServiceMatchConfig struct {
+	Host       string `yaml:"host"`
+	PathPrefix string `yaml:"path_prefix"`
+}
+
+type ServiceReplayConfig struct {
+	Mode         string `yaml:"mode"`
+	AllowedTiers []int  `yaml:"allowed_tiers"`
 }
 
 type TestConfig struct {
@@ -279,6 +297,7 @@ func DefaultConfig() Config {
 			DefaultMode:  AuthModePermissive,
 			ServiceModes: map[string]AuthMode{},
 		},
+		Services: []ServiceConfig{},
 	}
 }
 
@@ -463,7 +482,61 @@ func (c Config) Validate() error {
 		}
 	}
 
+	validateServiceMappings(c.Services, verr)
+
 	return verr.err()
+}
+
+func validateServiceMappings(services []ServiceConfig, verr *ValidationError) {
+	seenNames := map[string]bool{}
+	for idx, service := range services {
+		prefix := fmt.Sprintf("services[%d]", idx)
+		name := strings.TrimSpace(service.Name)
+		if name == "" {
+			verr.add("%s.name is required", prefix)
+		} else if seenNames[name] {
+			verr.add("%s.name duplicates service name %q", prefix, name)
+		}
+		seenNames[name] = true
+
+		serviceType := strings.TrimSpace(service.Type)
+		if serviceType == "" {
+			verr.add("%s.type is required", prefix)
+		} else if serviceType != "api" {
+			verr.add("%s.type must be %q in v1", prefix, "api")
+		}
+
+		if strings.TrimSpace(service.Match.Host) == "" {
+			verr.add("%s.match.host is required", prefix)
+		}
+		if strings.TrimSpace(service.Match.PathPrefix) != "" && !strings.HasPrefix(strings.TrimSpace(service.Match.PathPrefix), "/") {
+			verr.add("%s.match.path_prefix must start with / when set", prefix)
+		}
+
+		mode := strings.TrimSpace(service.Replay.Mode)
+		if mode != "" && mode != "generic_http" {
+			verr.add("%s.replay.mode must be %q when set", prefix, "generic_http")
+		}
+
+		seenTiers := map[int]bool{}
+		lastTier := -1
+		for _, tier := range service.Replay.AllowedTiers {
+			if tier < 0 || tier > 3 {
+				verr.add("%s.replay.allowed_tiers contains invalid tier %d", prefix, tier)
+				continue
+			}
+			if seenTiers[tier] {
+				verr.add("%s.replay.allowed_tiers contains duplicate tier %d", prefix, tier)
+				continue
+			}
+			if tier < lastTier {
+				verr.add("%s.replay.allowed_tiers must keep tiers in ascending order", prefix)
+				break
+			}
+			seenTiers[tier] = true
+			lastTier = tier
+		}
+	}
 }
 
 func (c ScrubConfig) Rules() ([]scrub.Rule, error) {

@@ -45,6 +45,7 @@ Test-runner behavior:
 | `scrub`          | no       | see below  | Scrub policy                          |
 | `fallback`       | no       | see below  | Fallback policy                       |
 | `auth`           | no       | see below  | Auth resolver defaults                |
+| `services`       | no       | `[]`       | Generic HTTP service mappings         |
 
 ### `record`
 
@@ -129,6 +130,33 @@ Canonical tier order:
 | --------------- | -------- | ------------ | -------------------------------------------------------- |
 | `default_mode`  | no       | `permissive` | `permissive`, `strict-recorded`, `strict-match`          |
 | `service_modes` | no       | `{}`         | service names must be non-empty and use valid auth modes |
+
+### `services`
+
+Service mappings give company APIs stable service aliases while keeping operation names inferred from the HTTP method and path.
+
+| Field                         | Required | Default | Validation                    |
+| ----------------------------- | -------- | ------- | ----------------------------- |
+| `services[*].name`            | yes      | none    | non-empty, unique             |
+| `services[*].type`            | yes      | none    | `api`                         |
+| `services[*].match.host`      | yes      | none    | non-empty host                |
+| `services[*].match.path_prefix` | no     | `/`     | must start with `/` when set  |
+| `services[*].replay.mode`     | no       | none    | `generic_http` when set       |
+| `services[*].replay.allowed_tiers` | no  | `[]`    | integers `0` through `3`, ascending and unique |
+
+Example:
+
+```yaml
+services:
+  - name: internal-crm
+    type: api
+    match:
+      host: crm.internal.acme.com
+      path_prefix: /v1
+    replay:
+      mode: generic_http
+      allowed_tiers: [0, 1]
+```
 
 ## `stagehand.test.yml`
 

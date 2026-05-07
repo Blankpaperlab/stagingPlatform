@@ -4,7 +4,13 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { MockAgent, fetch as undiciFetch, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
+import {
+  MockAgent,
+  fetch as undiciFetch,
+  getGlobalDispatcher,
+  request as undiciRequest,
+  setGlobalDispatcher,
+} from 'undici';
 
 import {
   AlreadyInitializedError,
@@ -380,6 +386,236 @@ test(
       assert.equal(terminalEvent(capturedReplay).type, 'response_received');
     } finally {
       await close();
+    }
+  })
+);
+
+test(
+  'replay mode exact-matches internal JSON APIs by canonical query body and selected headers',
+  withCleanRuntime(async () => {
+    let hitCount = 0;
+    const { close, url } = await createTestServer((request, response) => {
+      hitCount += 1;
+      assert.equal(request.method, 'POST');
+      assert.equal(request.headers.accept, 'application/json');
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      request.on('end', () => {
+        assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown, {
+          filters: { email: 'jane.doe@example.com', active: true },
+          limit: 25,
+        });
+        response.writeHead(202, {
+          'content-type': 'application/json',
+          'x-crm-version': '2026-05-07',
+        });
+        response.end(
+          JSON.stringify({
+            customers: [{ id: 'cus_internal_123', email: 'jane.doe@example.com' }],
+            next_cursor: null,
+          })
+        );
+      });
+    });
+
+    try {
+      const recordRuntime = init({ session: 'ts-internal-api-record', mode: 'record' });
+      const recorded = await undiciRequest(`${url}/v1/customers/search?b=2&a=1`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+          'x-request-id': 'record-run',
+        },
+        body: JSON.stringify({
+          filters: { email: 'jane.doe@example.com', active: true },
+          limit: 25,
+        }),
+      });
+      assert.equal(recorded.statusCode, 202);
+      assert.deepEqual((await recorded.body.json()) as unknown, {
+        customers: [{ id: 'cus_internal_123', email: 'jane.doe@example.com' }],
+        next_cursor: null,
+      });
+
+      const seededInteractions = recordRuntime.snapshotCapturedInteractions();
+      const hitsBeforeReplay = hitCount;
+
+      _resetForTests();
+      const replayRuntime = init({ session: 'ts-internal-api-replay', mode: 'replay' });
+      seedReplayInteractions(seededInteractions);
+
+      const replayed = await undiciRequest(`${url}/v1/customers/search?a=1&b=2`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/json',
+          'content-type': 'application/json',
+          'x-request-id': 'candidate-run',
+        },
+        body: JSON.stringify({
+          limit: 25,
+          filters: { active: true, email: 'jane.doe@example.com' },
+        }),
+      });
+
+      assert.equal(replayed.statusCode, 202);
+      assert.equal(replayed.headers['x-crm-version'], '2026-05-07');
+      assert.deepEqual((await replayed.body.json()) as unknown, {
+        customers: [{ id: 'cus_internal_123', email: 'jane.doe@example.com' }],
+        next_cursor: null,
+      });
+      assert.equal(hitCount, hitsBeforeReplay);
+      assert.equal(replayRuntime.snapshotCapturedInteractions()[0]?.fallback_tier, 'exact');
+    } finally {
+      await close();
+    }
+  })
+);
+
+test(
+  'replay mode fails closed when an internal JSON request body changes',
+  withCleanRuntime(async () => {
+    let hitCount = 0;
+    const { close, url } = await createTestServer((_request, response) => {
+      hitCount += 1;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ok: true }));
+    });
+
+    try {
+      const recordRuntime = init({ session: 'ts-internal-api-body-record', mode: 'record' });
+      const recorded = await undiciRequest(`${url}/v1/customers/search`, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({ filters: { email: 'jane.doe@example.com' }, limit: 25 }),
+      });
+      assert.equal(recorded.statusCode, 200);
+      await recorded.body.text();
+      const seededInteractions = recordRuntime.snapshotCapturedInteractions();
+      const hitsBeforeReplay = hitCount;
+
+      _resetForTests();
+      init({ session: 'ts-internal-api-body-replay', mode: 'replay' });
+      seedReplayInteractions(seededInteractions);
+
+      await assertFetchRejectsWithCause(
+        undiciRequest(`${url}/v1/customers/search`, {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          body: JSON.stringify({ filters: { email: 'jane.doe@example.com' }, limit: 50 }),
+        }),
+        ReplayMissError
+      );
+      assert.equal(hitCount, hitsBeforeReplay);
+    } finally {
+      await close();
+    }
+  })
+);
+
+test(
+  'replay mode fails closed when a selected internal request header changes',
+  withCleanRuntime(async () => {
+    let hitCount = 0;
+    const { close, url } = await createTestServer((_request, response) => {
+      hitCount += 1;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ok: true }));
+    });
+
+    try {
+      const recordRuntime = init({ session: 'ts-internal-api-header-record', mode: 'record' });
+      const recorded = await undiciRequest(`${url}/v1/customers/search`, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({ filters: { active: true } }),
+      });
+      assert.equal(recorded.statusCode, 200);
+      await recorded.body.text();
+      const seededInteractions = recordRuntime.snapshotCapturedInteractions();
+      const hitsBeforeReplay = hitCount;
+
+      _resetForTests();
+      init({ session: 'ts-internal-api-header-replay', mode: 'replay' });
+      seedReplayInteractions(seededInteractions);
+
+      await assertFetchRejectsWithCause(
+        undiciRequest(`${url}/v1/customers/search`, {
+          method: 'POST',
+          headers: { accept: 'application/xml', 'content-type': 'application/json' },
+          body: JSON.stringify({ filters: { active: true } }),
+        }),
+        ReplayMissError
+      );
+      assert.equal(hitCount, hitsBeforeReplay);
+    } finally {
+      await close();
+    }
+  })
+);
+
+test(
+  'configured service mappings label generic HTTP interactions',
+  withCleanRuntime(async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-services-'));
+    const configPath = path.join(tempDir, 'stagehand.yml');
+    const previousDispatcher = getGlobalDispatcher();
+    const mockAgent = new MockAgent();
+    try {
+      fs.writeFileSync(
+        configPath,
+        [
+          'schema_version: v1alpha1',
+          'services:',
+          '  - name: internal-crm',
+          '    type: api',
+          '    match:',
+          '      host: crm.internal.test',
+          '      path_prefix: /v1',
+          '    replay:',
+          '      mode: generic_http',
+          '      allowed_tiers: [0, 1]',
+          '  - name: billing-api',
+          '    type: api',
+          '    match:',
+          '      host: billing.internal.test',
+          '  - name: admin-api',
+          '    type: api',
+          '    match:',
+          '      host: admin.internal.test',
+          '      path_prefix: /admin',
+          '',
+        ].join('\n'),
+        'utf8'
+      );
+
+      mockAgent.disableNetConnect();
+      mockAgent.get('https://crm.internal.test').intercept({ path: '/v1/customers/search', method: 'POST' }).reply(200, JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
+      mockAgent.get('https://billing.internal.test').intercept({ path: '/invoices/in_123', method: 'GET' }).reply(200, JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
+      mockAgent.get('https://admin.internal.test').intercept({ path: '/admin/users/u_123', method: 'GET' }).reply(200, JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
+      mockAgent.get('https://admin.internal.test').intercept({ path: '/public/status', method: 'GET' }).reply(200, JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
+      setGlobalDispatcher(mockAgent);
+
+      const runtime = init({ session: 'ts-mapped-service-record', mode: 'record', configPath });
+      await (await fetch('https://crm.internal.test/v1/customers/search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'jane.doe@example.com' }),
+      })).text();
+      await (await fetch('https://billing.internal.test/invoices/in_123')).text();
+      await (await fetch('https://admin.internal.test/admin/users/u_123')).text();
+      await (await fetch('https://admin.internal.test/public/status')).text();
+
+      assert.deepEqual(
+        runtime.snapshotCapturedInteractions().map((interaction) => interaction.service),
+        ['internal-crm', 'billing-api', 'admin-api', 'admin.internal.test']
+      );
+      assert.equal(runtime.snapshotCapturedInteractions()[0]?.operation, 'POST /v1/customers/search');
+    } finally {
+      _resetForTests();
+      await mockAgent.close();
+      setGlobalDispatcher(previousDispatcher);
+      fs.rmSync(tempDir, { recursive: true, force: true });
     }
   })
 );

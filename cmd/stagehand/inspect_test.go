@@ -212,6 +212,102 @@ func TestRunInspectRendersIncompleteRunClearly(t *testing.T) {
 	}
 }
 
+func TestRunInspectShowsMappedGenericHTTPServiceLabels(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, strings.Join([]string{
+		"schema_version: v1alpha1",
+		"record:",
+		"  storage_path: " + toSlash(storagePath),
+		"services:",
+		"  - name: internal-crm",
+		"    type: api",
+		"    match:",
+		"      host: crm.internal.acme.com",
+		"      path_prefix: /v1",
+		"    replay:",
+		"      mode: generic_http",
+		"      allowed_tiers: [0, 1]",
+		"",
+	}, "\n"))
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	runRecord, err := newRunRecordForMode("mapped-inspect", minimalConfig(), recorder.RunModeRecord)
+	if err != nil {
+		t.Fatalf("newRunRecordForMode() error = %v", err)
+	}
+	runRecord.RunID = "run_inspect_mapped_service"
+	runRecord.StartedAt = time.Date(2026, time.May, 7, 10, 0, 0, 0, time.UTC)
+	endedAt := runRecord.StartedAt.Add(5 * time.Second)
+	runRecord.EndedAt = &endedAt
+	runRecord.Status = store.RunLifecycleStatusComplete
+	if err := sqliteStore.CreateRun(context.Background(), runRecord); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+
+	interaction := recorder.Interaction{
+		RunID:         runRecord.RunID,
+		InteractionID: "int_mapped_crm_001",
+		Sequence:      1,
+		Service:       "internal-crm",
+		Operation:     "POST /v1/customers/search",
+		Protocol:      recorder.ProtocolHTTPS,
+		Request: recorder.Request{
+			URL:    "https://crm.internal.acme.com/v1/customers/search",
+			Method: "POST",
+			Headers: map[string][]string{
+				"content-type": {"application/json"},
+			},
+			Body: map[string]any{
+				"email": "customer@scrub.local",
+			},
+		},
+		Events: []recorder.Event{
+			{Sequence: 1, TMS: 0, SimTMS: 0, Type: recorder.EventTypeRequestSent},
+			{
+				Sequence: 2,
+				TMS:      5,
+				SimTMS:   5,
+				Type:     recorder.EventTypeResponseReceived,
+				Data: map[string]any{
+					"status_code": 200,
+					"body":        map[string]any{"ok": true},
+				},
+			},
+		},
+		ScrubReport: recorder.ScrubReport{
+			ScrubPolicyVersion: "v1",
+			SessionSaltID:      "salt_inspect",
+		},
+		LatencyMS: 5,
+	}
+	if err := sqliteStore.WriteInteraction(context.Background(), interaction); err != nil {
+		t.Fatalf("WriteInteraction() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"inspect", "--run-id", runRecord.RunID, "--config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(inspect) error = %v", err)
+	}
+
+	output := stdout.String()
+	for _, expected := range []string{
+		"- [1] internal-crm POST /v1/customers/search protocol=https latency=5ms fallback=none",
+		"request: POST https://crm.internal.acme.com/v1/customers/search",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("inspect output missing %q\noutput:\n%s", expected, output)
+		}
+	}
+}
+
 func seedInspectableRun(
 	t *testing.T,
 	artifactStore store.ArtifactStore,

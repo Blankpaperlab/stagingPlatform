@@ -383,6 +383,202 @@ def test_replay_returns_exact_non_openai_response_without_network() -> None:
     assert replayed_interaction.fallback_tier == "exact"
 
 
+def test_generic_http_replay_matches_internal_json_api_exactly() -> None:
+    record_runtime = stagehand.init(session="internal-api-record", mode="record")
+
+    def record_handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://crm.internal.test/v1/customers/search?b=2&a=1"
+        assert request.headers["accept"] == "application/json"
+        return httpx.Response(
+            status_code=202,
+            headers={
+                "content-type": "application/json",
+                "x-crm-version": "2026-05-07",
+            },
+            json={
+                "customers": [
+                    {
+                        "id": "cus_internal_123",
+                        "email": "jane.doe@example.com",
+                    }
+                ],
+                "next_cursor": None,
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(record_handler)) as client:
+        recorded_response = client.post(
+            "https://crm.internal.test/v1/customers/search?b=2&a=1",
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "x-request-id": "record-run",
+            },
+            json={
+                "filters": {"email": "jane.doe@example.com", "active": True},
+                "limit": 25,
+            },
+        )
+
+    assert recorded_response.status_code == 202
+    recorded_interactions = record_runtime.captured_interactions()
+    captured = recorded_interactions[0]
+    assert captured.service == "crm.internal.test"
+    assert captured.operation == "POST /v1/customers/search"
+    assert captured.request.body == {
+        "filters": {"email": "jane.doe@example.com", "active": True},
+        "limit": 25,
+    }
+    assert captured.events[1].data is not None
+    assert captured.events[1].data["body"] == {
+        "customers": [{"id": "cus_internal_123", "email": "jane.doe@example.com"}],
+        "next_cursor": None,
+    }
+    _reset_for_tests()
+
+    replay_runtime = stagehand.init(session="internal-api-replay", mode="replay")
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("generic HTTP exact replay should not call the transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        replayed_response = client.post(
+            "https://crm.internal.test/v1/customers/search?a=1&b=2",
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "x-request-id": "candidate-run",
+            },
+            json={
+                "limit": 25,
+                "filters": {"active": True, "email": "jane.doe@example.com"},
+            },
+        )
+
+    assert replayed_response.status_code == 202
+    assert replayed_response.headers["x-crm-version"] == "2026-05-07"
+    assert replayed_response.json() == {
+        "customers": [{"id": "cus_internal_123", "email": "jane.doe@example.com"}],
+        "next_cursor": None,
+    }
+    replayed_interaction = replay_runtime.captured_interactions()[0]
+    assert replayed_interaction.fallback_tier == "exact"
+
+
+def test_generic_http_replay_miss_for_changed_json_body_fails_before_network() -> None:
+    record_runtime = stagehand.init(session="internal-api-body-record", mode="record")
+
+    def record_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=200, json={"ok": True})
+
+    with httpx.Client(transport=httpx.MockTransport(record_handler)) as client:
+        client.post(
+            "https://crm.internal.test/v1/customers/search",
+            headers={"accept": "application/json"},
+            json={"filters": {"email": "jane.doe@example.com"}, "limit": 25},
+        )
+
+    recorded_interactions = record_runtime.captured_interactions()
+    _reset_for_tests()
+
+    stagehand.init(session="internal-api-body-replay", mode="replay")
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("generic HTTP replay miss should fail before transport use")
+
+    with pytest.raises(stagehand.ReplayMissError, match="crm.internal.test"):
+        with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+            client.post(
+                "https://crm.internal.test/v1/customers/search",
+                headers={"accept": "application/json"},
+                json={"filters": {"email": "jane.doe@example.com"}, "limit": 50},
+            )
+
+
+def test_generic_http_replay_miss_for_selected_header_change_fails_before_network() -> None:
+    record_runtime = stagehand.init(session="internal-api-header-record", mode="record")
+
+    def record_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=200, json={"ok": True})
+
+    with httpx.Client(transport=httpx.MockTransport(record_handler)) as client:
+        client.post(
+            "https://crm.internal.test/v1/customers/search",
+            headers={"accept": "application/json"},
+            json={"filters": {"active": True}},
+        )
+
+    recorded_interactions = record_runtime.captured_interactions()
+    _reset_for_tests()
+
+    stagehand.init(session="internal-api-header-replay", mode="replay")
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("generic HTTP replay miss should fail before transport use")
+
+    with pytest.raises(stagehand.ReplayMissError, match="crm.internal.test"):
+        with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+            client.post(
+                "https://crm.internal.test/v1/customers/search",
+                headers={"accept": "application/xml"},
+                json={"filters": {"active": True}},
+            )
+
+
+def test_configured_service_mapping_labels_generic_http_interactions(tmp_path: Path) -> None:
+    config_path = tmp_path / "stagehand.yml"
+    config_path.write_text(
+        """
+schema_version: v1alpha1
+services:
+  - name: internal-crm
+    type: api
+    match:
+      host: crm.internal.test
+      path_prefix: /v1
+    replay:
+      mode: generic_http
+      allowed_tiers: [0, 1]
+  - name: billing-api
+    type: api
+    match:
+      host: billing.internal.test
+  - name: admin-api
+    type: api
+    match:
+      host: admin.internal.test
+      path_prefix: /admin
+""",
+        encoding="utf-8",
+    )
+    stagehand.init(session="mapped-service-record", mode="record", config_path=config_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=200, json={"ok": True})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        client.post(
+            "https://crm.internal.test/v1/customers/search",
+            headers={"content-type": "application/json"},
+            json={"email": "jane.doe@example.com"},
+        )
+        client.get("https://billing.internal.test/invoices/in_123")
+        client.get("https://admin.internal.test/admin/users/u_123")
+        client.get("https://admin.internal.test/public/status")
+
+    interactions = stagehand.get_runtime().captured_interactions()
+    assert [interaction.service for interaction in interactions] == [
+        "internal-crm",
+        "billing-api",
+        "admin-api",
+        "admin.internal.test",
+    ]
+    assert interactions[0].operation == "POST /v1/customers/search"
+
+
 def test_replay_miss_for_non_openai_request_fails_before_network() -> None:
     stagehand.init(session="stripe-miss", mode="replay")
 

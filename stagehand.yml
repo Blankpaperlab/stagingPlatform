@@ -42,3 +42,22 @@ auth:
   service_modes:
     stripe: strict-recorded
     openai: permissive
+
+services:
+  - name: internal-crm
+    type: api
+    match:
+      host: crm.internal.acme.com
+      path_prefix: /v1
+    replay:
+      mode: generic_http
+      allowed_tiers: [0, 1]
+  - name: billing-api
+    type: api
+    match:
+      host: billing.internal.acme.com
+  - name: admin-api
+    type: api
+    match:
+      host: admin.internal.acme.com
+      path_prefix: /admin

@@ -8,6 +8,7 @@ import {
   DEFAULT_SESSION_SALT_ID,
   type CapturedInteraction,
 } from './capture.js';
+import { loadServiceMappings } from './config.js';
 import { ExactReplayStore } from './replay.js';
 import { installRequestInterception, resetRequestInterceptionForTests } from './interception.js';
 import { InjectionEngine, loadInjectionEngine } from './injection.js';
@@ -145,6 +146,7 @@ export function init(options: InitOptions): StagehandRuntime {
   const mode = normalizeMode(options.mode);
   const configPath = resolveConfigPath(options.configPath);
   const runId = generateRunId();
+  const serviceMappings = loadServiceMappings(configPath);
   const captureBuffer = new CaptureBuffer({
     runId,
     scrubPolicyVersion: DEFAULT_SCRUB_POLICY_VERSION,
@@ -174,6 +176,7 @@ export function init(options: InitOptions): StagehandRuntime {
       captureBuffer,
       replayStore,
       injectionEngine,
+      serviceMappings,
     });
   }
 
