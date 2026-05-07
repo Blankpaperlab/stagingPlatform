@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -179,6 +180,10 @@ func identityKey(interaction recorder.Interaction, ignored map[string]bool) stri
 }
 
 func canonicalInteraction(interaction recorder.Interaction, ignored map[string]bool) string {
+	return canonicalJSON(decodedInteraction(interaction, ignored))
+}
+
+func decodedInteraction(interaction recorder.Interaction, ignored map[string]bool) any {
 	encoded, err := json.Marshal(interaction)
 	if err != nil {
 		return fmt.Sprintf("%#v", interaction)
@@ -191,7 +196,7 @@ func canonicalInteraction(interaction recorder.Interaction, ignored map[string]b
 	if object, ok := decoded.(map[string]any); ok {
 		removeIgnoredFields(object, ignored)
 	}
-	return canonicalJSON(decoded)
+	return decoded
 }
 
 func normalizedURL(raw string) string {
@@ -493,6 +498,8 @@ func modifiedChange(base, candidate recorder.Interaction, ignored map[string]boo
 	}
 	sort.Strings(ignoredFields)
 
+	details := modifiedDetails(base, candidate, ignored)
+
 	return Change{
 		Type:                   ChangeModified,
 		Failing:                true,
@@ -503,6 +510,92 @@ func modifiedChange(base, candidate recorder.Interaction, ignored map[string]boo
 		Service:                candidate.Service,
 		Operation:              candidate.Operation,
 		IgnoredFields:          ignoredFields,
-		Details:                "matched interaction fields changed",
+		Details:                details,
 	}
+}
+
+func modifiedDetails(base, candidate recorder.Interaction, ignored map[string]bool) string {
+	paths := differingPaths(decodedInteraction(base, ignored), decodedInteraction(candidate, ignored))
+	if len(paths) == 0 {
+		return "matched interaction fields changed"
+	}
+	const maxShown = 8
+	if len(paths) <= maxShown {
+		return "matched interaction fields changed at " + strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf(
+		"matched interaction fields changed at %s (+%d more)",
+		strings.Join(paths[:maxShown], ", "),
+		len(paths)-maxShown,
+	)
+}
+
+func differingPaths(left, right any) []string {
+	paths := []string{}
+	collectDifferingPaths("", normalizeValue(left), normalizeValue(right), &paths)
+	sort.Strings(paths)
+	return paths
+}
+
+func collectDifferingPaths(path string, left, right any, paths *[]string) {
+	if reflect.DeepEqual(left, right) {
+		return
+	}
+
+	leftMap, leftIsMap := left.(map[string]any)
+	rightMap, rightIsMap := right.(map[string]any)
+	if leftIsMap && rightIsMap {
+		keys := map[string]bool{}
+		for key := range leftMap {
+			keys[key] = true
+		}
+		for key := range rightMap {
+			keys[key] = true
+		}
+		ordered := make([]string, 0, len(keys))
+		for key := range keys {
+			ordered = append(ordered, key)
+		}
+		sort.Strings(ordered)
+		for _, key := range ordered {
+			nextPath := joinDiffPath(path, key)
+			leftValue, leftOK := leftMap[key]
+			rightValue, rightOK := rightMap[key]
+			if !leftOK || !rightOK {
+				*paths = append(*paths, nextPath)
+				continue
+			}
+			collectDifferingPaths(nextPath, leftValue, rightValue, paths)
+		}
+		return
+	}
+
+	leftSlice, leftIsSlice := left.([]any)
+	rightSlice, rightIsSlice := right.([]any)
+	if leftIsSlice && rightIsSlice {
+		if len(leftSlice) != len(rightSlice) {
+			*paths = append(*paths, pathOrRoot(path))
+			return
+		}
+		for idx := range leftSlice {
+			collectDifferingPaths(fmt.Sprintf("%s[%d]", pathOrRoot(path), idx), leftSlice[idx], rightSlice[idx], paths)
+		}
+		return
+	}
+
+	*paths = append(*paths, pathOrRoot(path))
+}
+
+func joinDiffPath(prefix, key string) string {
+	if prefix == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
+func pathOrRoot(path string) string {
+	if path == "" {
+		return "$"
+	}
+	return path
 }

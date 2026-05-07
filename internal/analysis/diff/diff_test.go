@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -192,6 +193,49 @@ func TestCompareDoesNotFlagScrubEvidenceOnlyDifferencesAsModified(t *testing.T) 
 
 	if len(result.Changes) != 0 {
 		t.Fatalf("scrub evidence-only differences produced changes: %#v", result.Changes)
+	}
+}
+
+func TestCompareCanIgnoreScrubbedRequestIdentityFields(t *testing.T) {
+	t.Parallel()
+
+	baseCustomer := interactionFixture("run_base", "base_customer", 1, "stripe", "customers.create", "/v1/customers", map[string]any{
+		"email": "user_d3aee2997c9f@scrub.local",
+		"name":  "Stagehand E2E Verification",
+		"metadata": map[string]any{
+			"stagehand_customer_email": "user_d3aee2997c9f@scrub.local",
+			"stagehand_example":        "end_to_end_verification",
+		},
+	}, "")
+	candidateCustomer := interactionFixture("run_candidate", "candidate_customer", 1, "stripe", "customers.create", "/v1/customers", map[string]any{
+		"email": "user_9ce2348f2991@scrub.local",
+		"name":  "Stagehand E2E Verification",
+		"metadata": map[string]any{
+			"stagehand_customer_email": "user_9ce2348f2991@scrub.local",
+			"stagehand_example":        "end_to_end_verification",
+		},
+	}, "")
+
+	baseSearch := interactionFixture("run_base", "base_search", 2, "stripe", "customers.search", "/v1/customers/search", nil, "")
+	baseSearch.Request.Method = "GET"
+	baseSearch.Request.URL = "https://api.stripe.com/v1/customers/search?limit=1&query=email%3A%27user_d3aee2997c9f%40scrub.local%27"
+	baseSearch.Request.Body = nil
+	candidateSearch := interactionFixture("run_candidate", "candidate_search", 2, "stripe", "customers.search", "/v1/customers/search", nil, "")
+	candidateSearch.Request.Method = "GET"
+	candidateSearch.Request.URL = "https://api.stripe.com/v1/customers/search?query=email%3A%27user_9ce2348f2991%40scrub.local%27&limit=1"
+	candidateSearch.Request.Body = nil
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{baseCustomer, baseSearch}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidateCustomer, candidateSearch}),
+		Options{IgnoredFields: []string{"request.url", "request.body.email", "request.body.metadata"}},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	if len(result.Changes) != 0 {
+		t.Fatalf("scrubbed request identity fields produced changes after ignores: %#v", result.Changes)
 	}
 }
 
@@ -400,6 +444,45 @@ func TestCompareDetectsModifiedInteractionWhenFieldsAreNotIgnored(t *testing.T) 
 	}
 
 	assertChangeTypes(t, result.Changes, []ChangeType{ChangeModified})
+}
+
+func TestModifiedChangeDetailsListRemainingDiffPaths(t *testing.T) {
+	t.Parallel()
+
+	baseInteraction := interactionFixture("run_base", "base_int", 1, "stripe", "refunds.create", "/v1/refunds", map[string]any{
+		"amount": 1000,
+		"reason": "requested_by_customer",
+		"metadata": map[string]any{
+			"run_id": "base",
+		},
+	}, "")
+	candidateInteraction := interactionFixture("run_candidate", "candidate_int", 1, "stripe", "refunds.create", "/v1/refunds", map[string]any{
+		"amount": 500,
+		"reason": "duplicate",
+		"metadata": map[string]any{
+			"run_id": "candidate",
+		},
+	}, "")
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{baseInteraction}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidateInteraction}),
+		Options{IgnoredFields: []string{"request.body.metadata"}},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	assertChangeTypes(t, result.Changes, []ChangeType{ChangeModified})
+	details := result.Changes[0].Details
+	for _, want := range []string{"request.body.amount", "request.body.reason"} {
+		if !strings.Contains(details, want) {
+			t.Fatalf("Details = %q, want changed path %q", details, want)
+		}
+	}
+	if strings.Contains(details, "request.body.metadata") {
+		t.Fatalf("Details = %q, ignored metadata path should not be reported", details)
+	}
 }
 
 func assertChangeTypes(t *testing.T, changes []Change, want []ChangeType) {
