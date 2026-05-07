@@ -374,13 +374,13 @@ func normalizeValue(value any) any {
 
 func normalizeIgnoredFields(fields []string) map[string]bool {
 	ignored := map[string]bool{
-		"run_id":             true,
-		"interaction_id":     true,
-		"sequence":           true,
-		"fallback_tier":      true,
-		"latency_ms":         true,
-		"events[*].t_ms":     true,
-		"events[*].sim_t_ms": true,
+		"run_id":                       true,
+		"interaction_id":               true,
+		"sequence":                     true,
+		"fallback_tier":                true,
+		"latency_ms":                   true,
+		"events[*].t_ms":               true,
+		"events[*].sim_t_ms":           true,
 		"scrub_report.detector_kinds":  true,
 		"scrub_report.redacted_paths":  true,
 		"scrub_report.session_salt_id": true,
