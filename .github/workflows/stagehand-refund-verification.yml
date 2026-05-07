@@ -108,7 +108,9 @@ jobs:
           output-dir: .stagehand/action/refund-primary
           report-format: github-markdown
           ignore-fields: |
+            request.url
             request.headers
+            request.body.email
             response.headers
             response.body
             request.body.customer
