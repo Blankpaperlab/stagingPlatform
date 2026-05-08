@@ -488,6 +488,74 @@ assertions:
 	}
 }
 
+func TestEvaluateToolAssertions(t *testing.T) {
+	t.Parallel()
+
+	file, err := Parse([]byte(`
+schema_version: v1alpha1
+assertions:
+  - id: lookup-called
+    type: count
+    match:
+      tool: lookup_customer
+    expect:
+      count:
+        equals: 1
+  - id: no-delete-tool
+    type: forbidden-operation
+    match:
+      tool: delete_customer
+  - id: lookup-argument
+    type: payload-field
+    match:
+      tool: lookup_customer
+    expect:
+      path: request.body.arguments.email
+      equals: customer@example.com
+  - id: lookup-before-refund
+    type: ordering
+    before:
+      tool: lookup_customer
+    after:
+      service: stripe
+      operation: refunds.create
+  - id: lookup-result-linked-to-refund
+    type: cross-service
+    left:
+      tool: lookup_customer
+      path: response.result.id
+    right:
+      service: stripe
+      operation: refunds.create
+      path: request.body.customer
+    relationship: equals
+`))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	results, err := Evaluate(toolAssertionRun(), file)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if !AllPassed(results) {
+		t.Fatalf("AllPassed() = false, results = %#v", results)
+	}
+
+	argument := resultByID(t, results, "lookup-argument")
+	if argument.Evidence.Actual != "customer@example.com" {
+		t.Fatalf("tool argument actual = %#v, want customer@example.com", argument.Evidence.Actual)
+	}
+	ordering := resultByID(t, results, "lookup-before-refund")
+	if ordering.Evidence.Before == nil || ordering.Evidence.Before.Service != "stagehand.tool" {
+		t.Fatalf("ordering before evidence = %#v, want stagehand.tool", ordering.Evidence.Before)
+	}
+	linked := resultByID(t, results, "lookup-result-linked-to-refund")
+	if len(linked.Evidence.LinkedEntities) != 1 {
+		t.Fatalf("linked tool result count = %d, want 1", len(linked.Evidence.LinkedEntities))
+	}
+}
+
 func resultByID(t *testing.T, results []Result, id string) Result {
 	t.Helper()
 
@@ -498,6 +566,35 @@ func resultByID(t *testing.T, results []Result, id string) Result {
 	}
 	t.Fatalf("missing result %q in %#v", id, results)
 	return Result{}
+}
+
+func toolAssertionRun() recorder.Run {
+	now := time.Date(2026, time.May, 8, 10, 0, 0, 0, time.UTC)
+	return recorder.Run{
+		SchemaVersion:      recorder.ArtifactSchemaVersion,
+		SDKVersion:         "0.1.0-alpha.0",
+		RuntimeVersion:     "0.1.0-alpha.0",
+		ScrubPolicyVersion: "v1",
+		RunID:              "run_tool_assertions",
+		SessionName:        "tool-assertions",
+		Mode:               recorder.RunModeReplay,
+		Status:             recorder.RunStatusComplete,
+		StartedAt:          now,
+		EndedAt:            &now,
+		Interactions: []recorder.Interaction{
+			toolInteraction("int_lookup_customer", 1, "lookup_customer", map[string]any{
+				"email": "customer@example.com",
+			}, map[string]any{
+				"id": "cus_123",
+			}),
+			sampleServiceInteraction("int_refund", 2, "stripe", "refunds.create", recorder.ProtocolHTTPS, map[string]any{
+				"customer": "cus_123",
+				"amount":   500,
+			}, map[string]any{
+				"id": "rf_123",
+			}),
+		},
+	}
 }
 
 func sampleRun() recorder.Run {
@@ -542,6 +639,94 @@ func sampleRun() recorder.Run {
 					"message": "Your card was declined.",
 				},
 			}),
+		},
+	}
+}
+
+func toolInteraction(
+	interactionID string,
+	sequence int,
+	name string,
+	arguments map[string]any,
+	result map[string]any,
+) recorder.Interaction {
+	return recorder.Interaction{
+		RunID:         "run_tool_assertions",
+		InteractionID: interactionID,
+		Sequence:      sequence,
+		Service:       "stagehand.tool",
+		Operation:     name,
+		Protocol:      recorder.ProtocolTool,
+		Request: recorder.Request{
+			Method: "CALL",
+			URL:    "stagehand://tool/" + name,
+			Body: map[string]any{
+				"name":        name,
+				"arguments":   arguments,
+				"side_effect": "read",
+				"replay":      "recorded",
+			},
+		},
+		Events: []recorder.Event{
+			{
+				Sequence: 1,
+				Type:     recorder.EventTypeRequestSent,
+			},
+			{
+				Sequence: 2,
+				Type:     recorder.EventTypeResponseReceived,
+				Data: map[string]any{
+					"result":      result,
+					"side_effect": "read",
+					"replay":      "recorded",
+				},
+			},
+		},
+		ScrubReport: recorder.ScrubReport{
+			ScrubPolicyVersion: "v1",
+			SessionSaltID:      "salt_assertions",
+		},
+	}
+}
+
+func sampleServiceInteraction(
+	interactionID string,
+	sequence int,
+	service string,
+	operation string,
+	protocol recorder.Protocol,
+	requestBody map[string]any,
+	responseBody map[string]any,
+) recorder.Interaction {
+	return recorder.Interaction{
+		RunID:         "run_tool_assertions",
+		InteractionID: interactionID,
+		Sequence:      sequence,
+		Service:       service,
+		Operation:     operation,
+		Protocol:      protocol,
+		Request: recorder.Request{
+			Method: "POST",
+			URL:    "https://api.example.test/" + operation,
+			Body:   requestBody,
+		},
+		Events: []recorder.Event{
+			{
+				Sequence: 1,
+				Type:     recorder.EventTypeRequestSent,
+			},
+			{
+				Sequence: 2,
+				Type:     recorder.EventTypeResponseReceived,
+				Data: map[string]any{
+					"status": 200,
+					"body":   responseBody,
+				},
+			},
+		},
+		ScrubReport: recorder.ScrubReport{
+			ScrubPolicyVersion: "v1",
+			SessionSaltID:      "salt_assertions",
 		},
 	}
 }

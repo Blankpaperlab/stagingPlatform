@@ -65,6 +65,89 @@ assertions:
 	}
 }
 
+func TestParseAcceptsToolSelectorsAndEntityRefs(t *testing.T) {
+	t.Parallel()
+
+	file, err := Parse([]byte(`
+schema_version: v1alpha1
+assertions:
+  - id: lookup-called
+    type: count
+    match:
+      tool: lookup_customer
+    expect:
+      count:
+        min: 1
+  - id: lookup-before-refund
+    type: ordering
+    before:
+      tool: lookup_customer
+    after:
+      service: stripe
+      operation: refunds.create
+  - id: lookup-linked-to-refund
+    type: cross-service
+    left:
+      tool: lookup_customer
+      path: response.result.id
+    right:
+      service: stripe
+      operation: refunds.create
+      path: request.body.customer
+    relationship: equals
+`))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if file.Assertions[0].Match.Tool != "lookup_customer" {
+		t.Fatalf("tool selector = %q, want lookup_customer", file.Assertions[0].Match.Tool)
+	}
+	if file.Assertions[2].Left == nil || file.Assertions[2].Left.Tool != "lookup_customer" {
+		t.Fatalf("left tool ref = %#v, want lookup_customer", file.Assertions[2].Left)
+	}
+}
+
+func TestParseRejectsAmbiguousToolSelectors(t *testing.T) {
+	t.Parallel()
+
+	_, err := Parse([]byte(`
+schema_version: v1alpha1
+assertions:
+  - id: ambiguous-match
+    type: count
+    match:
+      tool: lookup_customer
+      service: stagehand.tool
+    expect:
+      count:
+        equals: 1
+  - id: ambiguous-entity
+    type: cross-service
+    left:
+      tool: lookup_customer
+      operation: lookup_customer
+      path: response.result.id
+    right:
+      service: stripe
+      operation: refunds.create
+      path: request.body.customer
+    relationship: equals
+`))
+	if err == nil {
+		t.Fatal("Parse() expected ambiguous tool selector failure")
+	}
+
+	errText := err.Error()
+	for _, want := range []string{
+		"assertions[0].match.tool cannot be combined with service or operation",
+		"assertions[1].left.tool cannot be combined with service or operation",
+	} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("validation error %q missing from %v", want, err)
+		}
+	}
+}
+
 func TestValidateReturnsClearFieldCombinationErrors(t *testing.T) {
 	t.Parallel()
 

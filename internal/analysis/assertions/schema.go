@@ -65,6 +65,7 @@ type Assertion struct {
 type Match struct {
 	Service       string `yaml:"service"`
 	Operation     string `yaml:"operation"`
+	Tool          string `yaml:"tool"`
 	InteractionID string `yaml:"interaction_id"`
 	EventType     string `yaml:"event_type"`
 	FallbackTier  string `yaml:"fallback_tier"`
@@ -73,6 +74,7 @@ type Match struct {
 type EntityRef struct {
 	Service   string `yaml:"service"`
 	Operation string `yaml:"operation"`
+	Tool      string `yaml:"tool"`
 	Path      string `yaml:"path"`
 }
 
@@ -251,12 +253,13 @@ func validatePayloadField(prefix string, assertion Assertion, verr *ValidationEr
 }
 
 func validateForbiddenOperation(prefix string, assertion Assertion, verr *ValidationError) {
-	if strings.TrimSpace(assertion.Match.Service) == "" {
+	if strings.TrimSpace(assertion.Match.Tool) == "" && strings.TrimSpace(assertion.Match.Service) == "" {
 		verr.add("%s.match.service is required for forbidden-operation assertions", prefix)
 	}
-	if strings.TrimSpace(assertion.Match.Operation) == "" {
+	if strings.TrimSpace(assertion.Match.Tool) == "" && strings.TrimSpace(assertion.Match.Operation) == "" {
 		verr.add("%s.match.operation is required for forbidden-operation assertions", prefix)
 	}
+	validateMatch(prefix+".match", assertion.Match, verr)
 	rejectExpectFields(prefix, assertion.Expect, verr)
 	rejectOrderingFields(prefix, assertion, verr)
 	rejectCrossServiceFields(prefix, assertion, verr)
@@ -307,13 +310,19 @@ func validateMatch(prefix string, match Match, verr *ValidationError) {
 	if !hasMatch(match) {
 		verr.add("%s must set at least one selector field", prefix)
 	}
+	if strings.TrimSpace(match.Tool) != "" && (strings.TrimSpace(match.Service) != "" || strings.TrimSpace(match.Operation) != "") {
+		verr.add("%s.tool cannot be combined with service or operation", prefix)
+	}
 }
 
 func validateEntityRef(prefix string, ref EntityRef, verr *ValidationError) {
-	if strings.TrimSpace(ref.Service) == "" {
+	if strings.TrimSpace(ref.Tool) != "" && (strings.TrimSpace(ref.Service) != "" || strings.TrimSpace(ref.Operation) != "") {
+		verr.add("%s.tool cannot be combined with service or operation", prefix)
+	}
+	if strings.TrimSpace(ref.Tool) == "" && strings.TrimSpace(ref.Service) == "" {
 		verr.add("%s.service is required", prefix)
 	}
-	if strings.TrimSpace(ref.Operation) == "" {
+	if strings.TrimSpace(ref.Tool) == "" && strings.TrimSpace(ref.Operation) == "" {
 		verr.add("%s.operation is required", prefix)
 	}
 	if strings.TrimSpace(ref.Path) == "" {
@@ -350,6 +359,7 @@ func rejectCrossServiceFields(prefix string, assertion Assertion, verr *Validati
 func hasMatch(match Match) bool {
 	return strings.TrimSpace(match.Service) != "" ||
 		strings.TrimSpace(match.Operation) != "" ||
+		strings.TrimSpace(match.Tool) != "" ||
 		strings.TrimSpace(match.InteractionID) != "" ||
 		strings.TrimSpace(match.EventType) != "" ||
 		strings.TrimSpace(match.FallbackTier) != ""

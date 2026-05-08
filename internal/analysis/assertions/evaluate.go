@@ -366,6 +366,7 @@ func matchingInteractions(interactions []recorder.Interaction, match Match) []re
 }
 
 func interactionMatches(interaction recorder.Interaction, match Match) bool {
+	match = normalizeToolMatch(match)
 	if match.Service != "" && interaction.Service != match.Service {
 		return false
 	}
@@ -382,6 +383,16 @@ func interactionMatches(interaction recorder.Interaction, match Match) bool {
 		return false
 	}
 	return true
+}
+
+func normalizeToolMatch(match Match) Match {
+	tool := strings.TrimSpace(match.Tool)
+	if tool == "" {
+		return match
+	}
+	match.Service = "stagehand.tool"
+	match.Operation = tool
+	return match
 }
 
 func interactionHasEventType(interaction recorder.Interaction, eventType string) bool {
@@ -412,6 +423,7 @@ func interactionEvidence(interaction recorder.Interaction) InteractionEvidence {
 }
 
 func entityMatches(interactions []recorder.Interaction, ref EntityRef) []EntityEvidence {
+	ref = normalizeToolEntityRef(ref)
 	entities := make([]EntityEvidence, 0)
 	for _, interaction := range interactions {
 		if interaction.Service != ref.Service || interaction.Operation != ref.Operation {
@@ -438,6 +450,16 @@ func entityMatches(interactions []recorder.Interaction, ref EntityRef) []EntityE
 		}
 	}
 	return entities
+}
+
+func normalizeToolEntityRef(ref EntityRef) EntityRef {
+	tool := strings.TrimSpace(ref.Tool)
+	if tool == "" {
+		return ref
+	}
+	ref.Service = "stagehand.tool"
+	ref.Operation = tool
+	return ref
 }
 
 func equalEntityLinks(leftEntities []EntityEvidence, rightEntities []EntityEvidence) []EntityLinkEvidence {

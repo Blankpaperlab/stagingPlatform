@@ -40,12 +40,15 @@ J1 defines and validates six assertion types. J2 executes the five core types. J
 match:
   service: stripe
   operation: payment_intents.create
+  tool: lookup_customer
   interaction_id: int_123
   event_type: response_received
   fallback_tier: exact
 ```
 
 At least one selector field is required when a selector is present.
+
+`tool` is a shortcut for `service: stagehand.tool` plus `operation: <tool-name>`. It can be used in `match`, `before`, and `after`, and it cannot be combined with explicit `service` or `operation`.
 
 ## Expectations
 
@@ -78,6 +81,24 @@ expect:
   exists: true
 ```
 
+Tool arguments and results are normal payload paths:
+
+```yaml
+match:
+  tool: lookup_customer
+expect:
+  path: request.body.arguments.email
+  equals: customer@example.com
+```
+
+```yaml
+match:
+  tool: lookup_customer
+expect:
+  path: response.result.id
+  exists: true
+```
+
 `fallback-prohibition` supports disallowed tiers:
 
 ```yaml
@@ -92,9 +113,8 @@ expect:
 
 ```yaml
 left:
-  service: stripe
-  operation: customers.create
-  path: response.body.id
+  tool: lookup_customer
+  path: response.result.id
 right:
   service: stripe
   operation: payment_intents.create
@@ -102,7 +122,46 @@ right:
 relationship: equals
 ```
 
-The evaluator extracts values from interactions matching each entity reference and passes when at least one left/right pair is equal. If a referenced path resolves to an object or array, scalar leaf values are compared so simple one-hop and shallow nested links are supported.
+The evaluator extracts values from interactions matching each entity reference and passes when at least one left/right pair is equal. Entity references also support the `tool` shortcut, which cannot be combined with explicit `service` or `operation`. If a referenced path resolves to an object or array, scalar leaf values are compared so simple one-hop and shallow nested links are supported.
+
+## Tool Assertions
+
+Tool assertions use the existing assertion types:
+
+```yaml
+assertions:
+  - id: lookup-customer-called
+    type: count
+    match:
+      tool: lookup_customer
+    expect:
+      count:
+        min: 1
+
+  - id: delete-tool-not-called
+    type: forbidden-operation
+    match:
+      tool: delete_customer
+
+  - id: lookup-before-refund
+    type: ordering
+    before:
+      tool: lookup_customer
+    after:
+      service: stripe
+      operation: refunds.create
+
+  - id: lookup-result-used-in-refund
+    type: cross-service
+    left:
+      tool: lookup_customer
+      path: response.result.id
+    right:
+      service: stripe
+      operation: refunds.create
+      path: request.body.customer
+    relationship: equals
+```
 
 ## Validation Behavior
 

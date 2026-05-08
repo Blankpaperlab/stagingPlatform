@@ -1091,11 +1091,13 @@ Y3 makes tool calls a first-class artifact protocol (`protocol: tool`) with cano
 
 - Outcome: teams can assert business rules over local tool usage.
 - To do:
-  - [ ] assert that a tool was called
-  - [ ] assert that a tool was not called
-  - [ ] assert tool arguments match expected shape or field values
-  - [ ] assert tool ordering relative to model calls and API calls
-  - [ ] assert tool result values are linked to later API calls
+  - [x] assert that a tool was called
+  - [x] assert that a tool was not called
+  - [x] assert tool arguments match expected shape or field values
+  - [x] assert tool ordering relative to model calls and API calls
+  - [x] assert tool result values are linked to later API calls
+
+Y4 adds a `tool: <name>` selector shortcut to assertions. It works in `match`, `before`, `after`, and cross-service entity references by resolving to `service: stagehand.tool` and `operation: <name>`. Existing `count`, `forbidden-operation`, `payload-field`, `ordering`, and `cross-service` assertions now cover tool called/not-called checks, argument/result field checks, tool-to-API ordering, and result-to-request linkage evidence.
 
 Example assertion goals:
 
@@ -1147,7 +1149,7 @@ error_injection:
 - [x] Python tool wrapper records and replays local tools
 - [x] TypeScript tool wrapper records and replays local tools
 - [x] tool calls appear in inspect and diff timelines
-- [ ] assertions can target tool calls
+- [x] assertions can target tool calls
 - [ ] error injection can target tool calls
 - [ ] a custom tool demo exists
 
