@@ -226,6 +226,42 @@ error_injection:
 	}
 }
 
+func TestLoadSDKErrorInjectionBundleAcceptsGenericHTTPShortcutShape(t *testing.T) {
+	workdir := t.TempDir()
+	injectionPath := filepath.Join(workdir, "error-injection.yml")
+	writeFile(t, injectionPath, `schema_version: v1alpha1
+error_injection:
+  - name: CRM timeout on third lookup
+    service: internal-crm
+    operation: POST /v1/customers/search
+    nth_call: 3
+    response:
+      error: timeout
+      latency_ms: 25
+  - name: Billing API returns malformed 500
+    service: internal-billing
+    operation: POST /api/refunds
+    probability: 1.0
+    response:
+      status: 500
+      body: "{malformed-json"
+`)
+
+	bundle, err := loadSDKErrorInjectionBundle(injectionPath)
+	if err != nil {
+		t.Fatalf("loadSDKErrorInjectionBundle() error = %v", err)
+	}
+	if len(bundle.Rules) != 2 {
+		t.Fatalf("len(bundle.Rules) = %d, want 2", len(bundle.Rules))
+	}
+	if bundle.Rules[0].Inject.Error != "timeout" || bundle.Rules[0].Inject.LatencyMS != 25 {
+		t.Fatalf("timeout inject = %#v, want timeout latency", bundle.Rules[0].Inject)
+	}
+	if bundle.Rules[1].Inject.Status != 500 || bundle.Rules[1].Inject.Body != "{malformed-json" {
+		t.Fatalf("status inject = %#v, want malformed 500", bundle.Rules[1].Inject)
+	}
+}
+
 func TestRunRecordTreatsEmptyCaptureBundleAsCompleteEmptyRun(t *testing.T) {
 	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
 	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
@@ -845,6 +881,49 @@ func TestRunDiffRendersJSONAgainstLatestBaseline(t *testing.T) {
 	}
 	if report.FailingChanges[0].Type != analysisdiff.ChangeModified {
 		t.Fatalf("failing change type = %q, want %q", report.FailingChanges[0].Type, analysisdiff.ChangeModified)
+	}
+}
+
+func TestServiceIgnoredFieldsFromConfigSkipsBlankNamesAndEmptyIgnores(t *testing.T) {
+	got := serviceIgnoredFieldsFromConfig([]config.ServiceConfig{
+		{Name: "internal-billing", Ignore: config.ServiceIgnoreConfig{
+			RequestPaths:  []string{"headers.x-request-id", "body.request_id"},
+			ResponsePaths: []string{"body.generated_at"},
+		}},
+		{Name: "billing-api"},
+		{Name: "  ", Ignore: config.ServiceIgnoreConfig{
+			RequestPaths: []string{"body.skip"},
+		}},
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1 (blank-name and ignore-less services should be skipped): %#v", len(got), got)
+	}
+	billing, ok := got["internal-billing"]
+	if !ok {
+		t.Fatalf("got = %#v, want internal-billing entry", got)
+	}
+	if len(billing.RequestPaths) != 2 || billing.RequestPaths[0] != "headers.x-request-id" || billing.RequestPaths[1] != "body.request_id" {
+		t.Fatalf("RequestPaths = %#v, want [headers.x-request-id body.request_id]", billing.RequestPaths)
+	}
+	if len(billing.ResponsePaths) != 1 || billing.ResponsePaths[0] != "body.generated_at" {
+		t.Fatalf("ResponsePaths = %#v, want [body.generated_at]", billing.ResponsePaths)
+	}
+}
+
+func TestServiceIgnoredFieldsFromConfigCopiesSlicesToBlockMutation(t *testing.T) {
+	requestPaths := []string{"body.request_id"}
+	services := []config.ServiceConfig{
+		{Name: "internal-billing", Ignore: config.ServiceIgnoreConfig{
+			RequestPaths: requestPaths,
+		}},
+	}
+
+	got := serviceIgnoredFieldsFromConfig(services)
+	requestPaths[0] = "body.MUTATED"
+
+	if got["internal-billing"].RequestPaths[0] != "body.request_id" {
+		t.Fatalf("returned slice aliased the source slice; got %q", got["internal-billing"].RequestPaths[0])
 	}
 }
 

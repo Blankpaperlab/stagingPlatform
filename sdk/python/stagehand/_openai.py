@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from threading import Lock
@@ -10,9 +11,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import httpx
 
 from ._capture import CapturedInteraction, _decode_body
+from ._config import ServiceMapping
 from ._providers import is_openai_host
 
 _REPLAY_KEY_HEADERS = ("accept", "content-type")
+_MINIMUM_NEAREST_SCORE = 0.35
 
 
 class ReplayMissError(RuntimeError):
@@ -50,25 +53,47 @@ class ReplayFailureError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class ExactReplayMatch:
     interaction: CapturedInteraction
+    fallback_tier: str = "exact"
+    fallback_reason: str | None = "exact request match"
 
 
 class OpenAIReplayStore:
-    def __init__(self) -> None:
+    def __init__(self, *, service_mappings: Iterable[ServiceMapping] = ()) -> None:
         self._entries: dict[str, deque[CapturedInteraction]] = defaultdict(deque)
+        self._available: list[CapturedInteraction] = []
+        self._used_interaction_ids: set[str] = set()
+        self._service_mappings = tuple(service_mappings)
         self._lock = Lock()
 
     def seed(self, interactions: Iterable[CapturedInteraction]) -> int:
         count = 0
         with self._lock:
             for interaction in interactions:
-                for key in _request_keys_from_interaction(interaction):
+                ignored_paths = self._ignored_request_paths_for_url(interaction.request.url)
+                for key in _request_keys_from_interaction(
+                    interaction,
+                    ignored_request_paths=ignored_paths,
+                ):
                     self._entries[key].append(interaction)
+                self._available.append(interaction)
                 count += 1
         return count
 
     def pop_match(self, request: httpx.Request) -> ExactReplayMatch:
-        keys = request_keys_from_httpx_request(request)
-        return self.pop_match_for_keys(keys, request_label=f"{request.method} {request.url}")
+        mapping = self._service_mapping_for_url(str(request.url))
+        ignored_paths = mapping.ignore_request_paths if mapping is not None else ()
+        keys = request_keys_from_httpx_request(request, ignored_request_paths=ignored_paths)
+        return self.pop_match_for_keys(
+            keys,
+            request_label=f"{request.method} {request.url}",
+            request={
+                "method": str(request.method),
+                "url": str(request.url),
+                "body": _decode_httpx_request_body(request),
+                "headers": dict(request.headers),
+            },
+            mapping=mapping,
+        )
 
     def pop_match_for_parts(
         self,
@@ -78,8 +103,26 @@ class OpenAIReplayStore:
         body: Any | None,
         headers: Mapping[str, Any] | None = None,
     ) -> ExactReplayMatch:
-        keys = request_keys_from_parts(method=method, url=url, body=body, headers=headers)
-        return self.pop_match_for_keys(keys, request_label=f"{method} {url}")
+        mapping = self._service_mapping_for_url(url)
+        ignored_paths = mapping.ignore_request_paths if mapping is not None else ()
+        keys = request_keys_from_parts(
+            method=method,
+            url=url,
+            body=body,
+            headers=headers,
+            ignored_request_paths=ignored_paths,
+        )
+        return self.pop_match_for_keys(
+            keys,
+            request_label=f"{method} {url}",
+            request={
+                "method": method,
+                "url": url,
+                "body": body,
+                "headers": headers,
+            },
+            mapping=mapping,
+        )
 
     def pop_match_for_key(self, key: str, *, request_label: str) -> ExactReplayMatch:
         return self.pop_match_for_keys((key,), request_label=request_label)
@@ -89,6 +132,8 @@ class OpenAIReplayStore:
         keys: Iterable[str],
         *,
         request_label: str,
+        request: Mapping[str, Any] | None = None,
+        mapping: ServiceMapping | None = None,
     ) -> ExactReplayMatch:
         with self._lock:
             for key in keys:
@@ -96,9 +141,54 @@ class OpenAIReplayStore:
                 if not matches:
                     continue
 
-                return ExactReplayMatch(interaction=matches.popleft())
+                if matches:
+                    interaction = matches.popleft()
+                    return ExactReplayMatch(interaction=interaction)
+
+            if mapping is not None and 1 in mapping.allowed_tiers and request is not None:
+                nearest = self._nearest_match(request=request, mapping=mapping)
+                if nearest is not None:
+                    interaction, score, reasons = nearest
+                    self._used_interaction_ids.add(interaction.interaction_id)
+                    reason = _nearest_reason(score=score, reasons=reasons)
+                    return ExactReplayMatch(
+                        interaction=interaction,
+                        fallback_tier="nearest_neighbor",
+                        fallback_reason=reason,
+                    )
 
             raise ReplayMissError(f"no exact replay match for request {request_label}")
+
+    def _ignored_request_paths_for_url(self, url: str) -> tuple[str, ...]:
+        mapping = self._service_mapping_for_url(url)
+        return mapping.ignore_request_paths if mapping is not None else ()
+
+    def _service_mapping_for_url(self, url: str) -> ServiceMapping | None:
+        for mapping in self._service_mappings:
+            if mapping.matches(url):
+                return mapping
+        return None
+
+    def _nearest_match(
+        self,
+        *,
+        request: Mapping[str, Any],
+        mapping: ServiceMapping,
+    ) -> tuple[CapturedInteraction, float, tuple[str, ...]] | None:
+        best: tuple[CapturedInteraction, float, tuple[str, ...]] | None = None
+        for candidate in self._available:
+            if candidate.interaction_id in self._used_interaction_ids:
+                continue
+            if not mapping.matches(candidate.request.url):
+                continue
+            if not _compatible_nearest_candidate(candidate, request):
+                continue
+            score, reasons = _nearest_score(candidate, request, mapping.ignore_request_paths)
+            if best is None or score > best[1]:
+                best = (candidate, score, reasons)
+        if best is None or best[1] < _MINIMUM_NEAREST_SCORE:
+            return None
+        return best
 
 
 def is_openai_request(request: httpx.Request) -> bool:
@@ -109,14 +199,191 @@ def request_key_from_httpx_request(request: httpx.Request) -> str:
     return request_keys_from_httpx_request(request)[0]
 
 
-def request_keys_from_httpx_request(request: httpx.Request) -> tuple[str, ...]:
+def request_keys_from_httpx_request(
+    request: httpx.Request,
+    *,
+    ignored_request_paths: Iterable[str] = (),
+) -> tuple[str, ...]:
     body = _decode_httpx_request_body(request)
     return request_keys_from_parts(
         method=str(request.method),
         url=str(request.url),
         body=body,
         headers=dict(request.headers),
+        ignored_request_paths=ignored_request_paths,
     )
+
+
+def _compatible_nearest_candidate(
+    candidate: CapturedInteraction,
+    request: Mapping[str, Any],
+) -> bool:
+    if candidate.request.method.upper() != str(request.get("method", "")).upper():
+        return False
+    left = urlsplit(candidate.request.url)
+    right = urlsplit(str(request.get("url", "")))
+    return left.netloc.lower() == right.netloc.lower() and (left.path or "/") == (right.path or "/")
+
+
+def _nearest_score(
+    candidate: CapturedInteraction,
+    request: Mapping[str, Any],
+    ignored_request_paths: Iterable[str],
+) -> tuple[float, tuple[str, ...]]:
+    ignored_paths = _normalize_request_ignore_paths(ignored_request_paths)
+    candidate_query = _nearest_query_parts(candidate.request.url, ignored_paths)
+    request_query = _nearest_query_parts(str(request.get("url", "")), ignored_paths)
+    candidate_body = _nearest_body_parts(candidate.request.body, ignored_paths)
+    request_body = _nearest_body_parts(request.get("body"), ignored_paths)
+    candidate_headers = _nearest_header_parts(candidate.request.headers, ignored_paths)
+    request_headers = _nearest_header_parts(request.get("headers"), ignored_paths)
+
+    query_score = _set_similarity(candidate_query, request_query)
+    body_score = _set_similarity(candidate_body, request_body)
+    header_score = _set_similarity(candidate_headers, request_headers)
+    score = (0.5 * body_score) + (0.35 * query_score) + (0.15 * header_score)
+    if not candidate_body and not request_body:
+        score += 0.25
+    if not candidate_query and not request_query:
+        score += 0.15
+    return min(score, 1.0), _nearest_reasons(
+        query_score=query_score,
+        body_score=body_score,
+        header_score=header_score,
+    )
+
+
+def _nearest_query_parts(url: str, ignored_request_paths: tuple[str, ...]) -> list[str]:
+    parsed = urlsplit(url)
+    ignored_query_keys = {
+        path.removeprefix("query.").lower()
+        for path in ignored_request_paths
+        if path.startswith("query.") and path != "query."
+    }
+    parts = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        normalized_key = key.lower()
+        if normalized_key in ignored_query_keys or _mutable_request_field(normalized_key, value):
+            continue
+        parts.append(f"{normalized_key}={_nearest_value_signature(value)}")
+    return sorted(parts)
+
+
+def _nearest_body_parts(value: Any, ignored_request_paths: tuple[str, ...]) -> list[str]:
+    if "body" in ignored_request_paths:
+        return []
+    body = _remove_ignored_body_paths(value, ignored_request_paths)
+    parts: list[str] = []
+    _flatten_nearest_body("", body, parts)
+    return sorted(parts)
+
+
+def _flatten_nearest_body(path: str, value: Any, parts: list[str]) -> None:
+    if isinstance(value, dict):
+        for key in sorted(value):
+            child_path = f"{path}.{key}" if path else str(key)
+            _flatten_nearest_body(child_path, value[key], parts)
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _flatten_nearest_body(f"{path}[{index}]", item, parts)
+        return
+    field_name = path.rsplit(".", 1)[-1].split("[", 1)[0].lower()
+    if _mutable_request_field(field_name, value):
+        return
+    parts.append(f"{path}={_nearest_value_signature(value)}")
+
+
+def _nearest_header_parts(
+    headers: Mapping[str, Any] | None,
+    ignored_request_paths: tuple[str, ...],
+) -> list[str]:
+    selected = _remove_ignored_header_paths(_replay_key_headers(headers), ignored_request_paths)
+    parts: list[str] = []
+    for key, values in selected.items():
+        if _mutable_header(key):
+            continue
+        for value in values:
+            parts.append(f"{key.lower()}={str(value).strip()}")
+    return sorted(parts)
+
+
+def _mutable_request_field(name: str, value: Any) -> bool:
+    normalized = name.lower().replace("-", "_")
+    if normalized in {
+        "request_id",
+        "trace_id",
+        "correlation_id",
+        "idempotency_key",
+        "cursor",
+        "next_cursor",
+        "page_token",
+        "pagination_token",
+        "starting_after",
+        "ending_before",
+        "created_at",
+        "updated_at",
+        "generated_at",
+        "timestamp",
+        "time",
+    }:
+        return True
+    return isinstance(value, str) and _timestamp_like(value)
+
+
+def _mutable_header(name: str) -> bool:
+    normalized = name.lower()
+    return normalized in {
+        "x-request-id",
+        "x-trace-id",
+        "x-correlation-id",
+        "idempotency-key",
+        "date",
+    }
+
+
+def _timestamp_like(value: str) -> bool:
+    return bool(
+        re.match(r"^\d{4}-\d{2}-\d{2}(?:[tT ][0-9:.+-]+(?:Z)?)?$", value)
+        or re.match(r"^\d{10}(?:\.\d+)?$", value)
+        or re.match(r"^\d{13}$", value)
+    )
+
+
+def _nearest_value_signature(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _set_similarity(left: list[str], right: list[str]) -> float:
+    if not left and not right:
+        return 1.0
+    if not left or not right:
+        return 0.0
+    left_set = set(left)
+    right_set = set(right)
+    union = left_set | right_set
+    if not union:
+        return 1.0
+    return len(left_set & right_set) / len(union)
+
+
+def _nearest_reasons(
+    *, query_score: float, body_score: float, header_score: float
+) -> tuple[str, ...]:
+    reasons = []
+    if body_score < 1:
+        reasons.append("body differed only within nearest-neighbor tolerance")
+    if query_score < 1:
+        reasons.append("query differed only within nearest-neighbor tolerance")
+    if header_score < 1:
+        reasons.append("headers differed only within nearest-neighbor tolerance")
+    return tuple(reasons) or ("request differed only by mutable fields",)
+
+
+def _nearest_reason(*, score: float, reasons: tuple[str, ...]) -> str:
+    return f"nearest request match score={score:.2f}; " + "; ".join(reasons)
 
 
 def request_key_from_parts(
@@ -135,8 +402,10 @@ def request_keys_from_parts(
     url: str,
     body: Any | None,
     headers: Mapping[str, Any] | None = None,
+    ignored_request_paths: Iterable[str] = (),
 ) -> tuple[str, ...]:
-    selected_headers = _replay_key_headers(headers)
+    ignored_paths = _normalize_request_ignore_paths(ignored_request_paths)
+    selected_headers = _remove_ignored_header_paths(_replay_key_headers(headers), ignored_paths)
     return _request_key_candidates(
         method=method,
         url=url,
@@ -144,6 +413,7 @@ def request_keys_from_parts(
         headers=selected_headers,
         include_legacy_key=True,
         allow_header_subsets=True,
+        ignored_request_paths=ignored_paths,
     )
 
 
@@ -153,11 +423,15 @@ def _request_key_payload(
     url: str,
     body: Any | None,
     headers: dict[str, list[str]] | None,
+    ignored_request_paths: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     payload = {
         "method": str(method).upper(),
-        "url": _replay_key_url(str(url)),
-        "body": _replay_key_body_for_url(str(url), body),
+        "url": _replay_key_url(str(url), ignored_request_paths=ignored_request_paths),
+        "body": _remove_ignored_body_paths(
+            _replay_key_body_for_url(str(url), body),
+            ignored_request_paths,
+        ),
     }
     if headers is not None:
         payload["headers"] = headers
@@ -172,20 +446,39 @@ def _request_key_candidates(
     headers: dict[str, list[str]],
     include_legacy_key: bool,
     allow_header_subsets: bool,
+    ignored_request_paths: tuple[str, ...] = (),
 ) -> tuple[str, ...]:
     if include_legacy_key and len(headers) == 0:
-        legacy = _request_key_payload(method=method, url=url, body=body, headers=None)
+        legacy = _request_key_payload(
+            method=method,
+            url=url,
+            body=body,
+            headers=None,
+            ignored_request_paths=ignored_request_paths,
+        )
         return (json.dumps(legacy, sort_keys=True, separators=(",", ":")),)
 
     keys: list[str] = []
     header_candidates = _header_subsets(headers) if allow_header_subsets else [headers]
     for header_subset in header_candidates:
-        payload = _request_key_payload(method=method, url=url, body=body, headers=header_subset)
+        payload = _request_key_payload(
+            method=method,
+            url=url,
+            body=body,
+            headers=header_subset,
+            ignored_request_paths=ignored_request_paths,
+        )
         key = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         if key not in keys:
             keys.append(key)
     if include_legacy_key:
-        legacy = _request_key_payload(method=method, url=url, body=body, headers=None)
+        legacy = _request_key_payload(
+            method=method,
+            url=url,
+            body=body,
+            headers=None,
+            ignored_request_paths=ignored_request_paths,
+        )
         legacy_key = json.dumps(legacy, sort_keys=True, separators=(",", ":"))
         if legacy_key not in keys:
             keys.append(legacy_key)
@@ -196,8 +489,16 @@ def _request_key_from_interaction(interaction: CapturedInteraction) -> str:
     return _request_keys_from_interaction(interaction)[0]
 
 
-def _request_keys_from_interaction(interaction: CapturedInteraction) -> tuple[str, ...]:
-    headers = _replay_key_headers(interaction.request.headers)
+def _request_keys_from_interaction(
+    interaction: CapturedInteraction,
+    *,
+    ignored_request_paths: Iterable[str] = (),
+) -> tuple[str, ...]:
+    ignored_paths = _normalize_request_ignore_paths(ignored_request_paths)
+    headers = _remove_ignored_header_paths(
+        _replay_key_headers(interaction.request.headers),
+        ignored_paths,
+    )
     include_legacy_key = len(headers) == 0
     return _request_key_candidates(
         method=interaction.request.method,
@@ -206,6 +507,7 @@ def _request_keys_from_interaction(interaction: CapturedInteraction) -> tuple[st
         headers=headers,
         include_legacy_key=include_legacy_key,
         allow_header_subsets=False,
+        ignored_request_paths=ignored_paths,
     )
 
 
@@ -249,8 +551,13 @@ def _mapping_get_case_insensitive(headers: Mapping[str, Any], name: str) -> Any 
     return None
 
 
-def _replay_key_url(url: str) -> str:
+def _replay_key_url(url: str, *, ignored_request_paths: Iterable[str] = ()) -> str:
     parsed = urlsplit(url)
+    ignored_query_keys = {
+        path.removeprefix("query.").lower()
+        for path in _normalize_request_ignore_paths(ignored_request_paths)
+        if path.startswith("query.") and path != "query."
+    }
     if not parsed.query:
         return urlunsplit(
             (
@@ -264,6 +571,8 @@ def _replay_key_url(url: str) -> str:
 
     pairs = []
     for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() in ignored_query_keys:
+            continue
         if parsed.hostname == "api.stripe.com" and key.lower() in {"email", "query"}:
             pairs.append((key, json.dumps(_content_signature(value), sort_keys=True)))
             continue
@@ -279,6 +588,102 @@ def _replay_key_url(url: str) -> str:
             "",
         )
     )
+
+
+def _normalize_request_ignore_paths(paths: Iterable[str]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for path in paths:
+        item = str(path).strip().removeprefix("$.").removeprefix(".")
+        if item.startswith("request."):
+            item = item.removeprefix("request.")
+        if item and item not in normalized:
+            normalized.append(item)
+    return tuple(normalized)
+
+
+def _remove_ignored_header_paths(
+    headers: dict[str, list[str]],
+    ignored_request_paths: tuple[str, ...],
+) -> dict[str, list[str]]:
+    if not headers:
+        return headers
+    ignored = {
+        path.removeprefix("headers.").lower()
+        for path in ignored_request_paths
+        if path.startswith("headers.") and path != "headers."
+    }
+    if "headers" in ignored_request_paths:
+        return {}
+    return {key: value for key, value in headers.items() if key.lower() not in ignored}
+
+
+def _remove_ignored_body_paths(value: Any, ignored_request_paths: tuple[str, ...]) -> Any:
+    if "body" in ignored_request_paths:
+        return None
+    body_paths = [
+        path.removeprefix("body.")
+        for path in ignored_request_paths
+        if path.startswith("body.") and path != "body."
+    ]
+    if not body_paths:
+        return value
+    cloned = _clone_replay_value(value)
+    for path in body_paths:
+        _remove_path(cloned, _split_ignore_path(path))
+    return cloned
+
+
+def _clone_replay_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _clone_replay_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clone_replay_value(item) for item in value]
+    return value
+
+
+def _split_ignore_path(path: str) -> list[str]:
+    parts: list[str] = []
+    for raw in path.split("."):
+        while raw:
+            bracket = raw.find("[")
+            if bracket < 0:
+                parts.append(raw)
+                break
+            if bracket > 0:
+                parts.append(raw[:bracket])
+            close_bracket = raw.find("]", bracket)
+            if close_bracket < 0:
+                parts.append(raw[bracket:])
+                break
+            selector = raw[bracket + 1 : close_bracket]
+            parts.append("*" if selector == "*" else selector)
+            raw = raw[close_bracket + 1 :]
+    return [part for part in parts if part]
+
+
+def _remove_path(value: Any, parts: list[str]) -> None:
+    if not parts:
+        return
+    if isinstance(value, list):
+        segment = parts[0]
+        if segment == "*":
+            for item in value:
+                _remove_path(item, parts[1:])
+            return
+        if segment.isdigit():
+            index = int(segment)
+            if 0 <= index < len(value):
+                _remove_path(value[index], parts[1:])
+            return
+        for item in value:
+            _remove_path(item, parts)
+        return
+    if not isinstance(value, dict):
+        return
+    if len(parts) == 1:
+        value.pop(parts[0], None)
+        return
+    _remove_path(value.get(parts[0]), parts[1:])
 
 
 def _replay_key_body_for_url(url: str, body: Any) -> Any:

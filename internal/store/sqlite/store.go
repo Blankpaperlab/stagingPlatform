@@ -1050,8 +1050,8 @@ func (s *Store) WriteInteraction(ctx context.Context, interaction recorder.Inter
 		ctx,
 		`INSERT INTO interactions (
 			interaction_id, run_id, parent_interaction_id, sequence, service, operation, protocol,
-			streaming, fallback_tier, request_json, scrub_report_json, extracted_entities_json, latency_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			streaming, fallback_tier, fallback_reason, request_json, scrub_report_json, extracted_entities_json, latency_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(interaction_id) DO UPDATE SET
 			run_id = excluded.run_id,
 			parent_interaction_id = excluded.parent_interaction_id,
@@ -1061,6 +1061,7 @@ func (s *Store) WriteInteraction(ctx context.Context, interaction recorder.Inter
 			protocol = excluded.protocol,
 			streaming = excluded.streaming,
 			fallback_tier = excluded.fallback_tier,
+			fallback_reason = excluded.fallback_reason,
 			request_json = excluded.request_json,
 			scrub_report_json = excluded.scrub_report_json,
 			extracted_entities_json = excluded.extracted_entities_json,
@@ -1074,6 +1075,7 @@ func (s *Store) WriteInteraction(ctx context.Context, interaction recorder.Inter
 		string(interaction.Protocol),
 		boolToInt(interaction.Streaming),
 		nullIfEmpty(string(interaction.FallbackTier)),
+		nullIfEmpty(interaction.FallbackReason),
 		string(requestJSON),
 		string(scrubReportJSON),
 		string(extractedEntitiesJSON),
@@ -1126,7 +1128,7 @@ func (s *Store) ListInteractions(ctx context.Context, runID string) ([]recorder.
 		ctx,
 		`SELECT
 			interaction_id, run_id, parent_interaction_id, sequence, service, operation, protocol,
-			streaming, fallback_tier, request_json, scrub_report_json, extracted_entities_json, latency_ms
+			streaming, fallback_tier, fallback_reason, request_json, scrub_report_json, extracted_entities_json, latency_ms
 		FROM interactions
 		WHERE run_id = ?
 		ORDER BY sequence ASC`,
@@ -1146,6 +1148,7 @@ func (s *Store) ListInteractions(ctx context.Context, runID string) ([]recorder.
 		protocol            string
 		streaming           int
 		fallbackTier        sql.NullString
+		fallbackReason      sql.NullString
 		requestJSON         string
 		scrubReportJSON     string
 		extractedEntities   sql.NullString
@@ -1165,6 +1168,7 @@ func (s *Store) ListInteractions(ctx context.Context, runID string) ([]recorder.
 			&scanned.protocol,
 			&scanned.streaming,
 			&scanned.fallbackTier,
+			&scanned.fallbackReason,
 			&scanned.requestJSON,
 			&scanned.scrubReportJSON,
 			&scanned.extractedEntities,
@@ -1220,6 +1224,7 @@ func (s *Store) ListInteractions(ctx context.Context, runID string) ([]recorder.
 			Protocol:            recorder.Protocol(scanned.protocol),
 			Streaming:           scanned.streaming == 1,
 			FallbackTier:        recorder.FallbackTier(scanned.fallbackTier.String),
+			FallbackReason:      scanned.fallbackReason.String,
 			Request:             request,
 			Events:              events,
 			ExtractedEntities:   extracted,

@@ -152,7 +152,7 @@ export function init(options: InitOptions): StagehandRuntime {
     scrubPolicyVersion: DEFAULT_SCRUB_POLICY_VERSION,
     sessionSaltId: DEFAULT_SESSION_SALT_ID,
   });
-  const replayStore = new ExactReplayStore();
+  const replayStore = new ExactReplayStore({ serviceMappings });
   const injectionEngine = loadInjectionEngine(process.env[ENV_ERROR_INJECTION_INPUT]);
 
   const runtime = new StagehandRuntime(

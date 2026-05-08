@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from contextlib import contextmanager
 from functools import wraps
 from threading import Lock, local
@@ -57,6 +58,8 @@ def install_httpx_interception(
                     request=request,
                     interaction=match.interaction,
                     capture_buffer=capture_buffer,
+                    fallback_tier=match.fallback_tier,
+                    fallback_reason=match.fallback_reason,
                     streamed=streamed,
                     async_mode=False,
                 )
@@ -125,6 +128,8 @@ def install_httpx_interception(
                     request=request,
                     interaction=match.interaction,
                     capture_buffer=capture_buffer,
+                    fallback_tier=match.fallback_tier,
+                    fallback_reason=match.fallback_reason,
                     streamed=streamed,
                     async_mode=True,
                 )
@@ -352,11 +357,17 @@ def _build_replay_response(
     request: httpx.Request,
     interaction: CapturedInteraction,
     capture_buffer: CaptureBuffer,
+    fallback_tier: str,
+    fallback_reason: str | None,
     streamed: bool,
     async_mode: bool,
 ) -> httpx.Response:
     def replayed() -> None:
-        capture_buffer.record_replay_interaction(interaction, fallback_tier="exact")
+        capture_buffer.record_replay_interaction(
+            interaction,
+            fallback_tier=fallback_tier,
+            fallback_reason=fallback_reason,
+        )
 
     terminal_event = _terminal_replay_event(interaction)
     if terminal_event is None:
@@ -427,6 +438,26 @@ def _injected_response(
     if decision is None:
         return None
 
+    if decision.override.latency_ms > 0:
+        time.sleep(decision.override.latency_ms / 1000)
+        elapsed_ms += decision.override.latency_ms
+
+    provenance = decision.provenance.to_dict()
+    if decision.override.error == "timeout":
+        message = "Injected Stagehand timeout."
+        capture_buffer.record_failure_for_request(
+            normalized_request=normalized_request,
+            service=service,
+            operation=operation,
+            protocol=capture_buffer.detect_protocol(normalized_request.url),
+            elapsed_ms=elapsed_ms,
+            failure_type="timeout",
+            error_class="TimeoutException",
+            message=message,
+            data={"stagehand_injection": provenance},
+        )
+        raise httpx.TimeoutException(message, request=request)
+
     headers = {"content-type": ["application/json"], "x-stagehand-injected": ["true"]}
     capture_buffer.record_success_for_request(
         normalized_request=normalized_request,
@@ -439,6 +470,7 @@ def _injected_response(
             "status_code": decision.override.status,
             "headers": headers,
             "body": decision.override.body,
+            "stagehand_injection": provenance,
         },
     )
     return httpx.Response(

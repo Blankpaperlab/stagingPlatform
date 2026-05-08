@@ -160,6 +160,7 @@ type ServiceConfig struct {
 	Type   string              `yaml:"type"`
 	Match  ServiceMatchConfig  `yaml:"match"`
 	Replay ServiceReplayConfig `yaml:"replay"`
+	Ignore ServiceIgnoreConfig `yaml:"ignore"`
 }
 
 type ServiceMatchConfig struct {
@@ -170,6 +171,11 @@ type ServiceMatchConfig struct {
 type ServiceReplayConfig struct {
 	Mode         string `yaml:"mode"`
 	AllowedTiers []int  `yaml:"allowed_tiers"`
+}
+
+type ServiceIgnoreConfig struct {
+	RequestPaths  []string `yaml:"request_paths"`
+	ResponsePaths []string `yaml:"response_paths"`
 }
 
 type TestConfig struct {
@@ -215,9 +221,11 @@ type ErrorMatch struct {
 }
 
 type ErrorInject struct {
-	Library string         `yaml:"library"`
-	Status  int            `yaml:"status"`
-	Body    map[string]any `yaml:"body"`
+	Library   string `yaml:"library"`
+	Status    int    `yaml:"status"`
+	Error     string `yaml:"error"`
+	LatencyMS int    `yaml:"latency_ms"`
+	Body      any    `yaml:"body"`
 }
 
 type CIConfig struct {
@@ -536,6 +544,25 @@ func validateServiceMappings(services []ServiceConfig, verr *ValidationError) {
 			seenTiers[tier] = true
 			lastTier = tier
 		}
+
+		validateIgnorePaths(prefix+".ignore.request_paths", service.Ignore.RequestPaths, verr)
+		validateIgnorePaths(prefix+".ignore.response_paths", service.Ignore.ResponsePaths, verr)
+	}
+}
+
+func validateIgnorePaths(label string, paths []string, verr *ValidationError) {
+	seen := map[string]bool{}
+	for idx, path := range paths {
+		trimmed := strings.TrimSpace(path)
+		if trimmed == "" {
+			verr.add("%s[%d] cannot be empty", label, idx)
+			continue
+		}
+		if seen[trimmed] {
+			verr.add("%s contains duplicate path %q", label, trimmed)
+			continue
+		}
+		seen[trimmed] = true
 	}
 }
 
@@ -694,13 +721,18 @@ func validateErrorRule(index int, rule ErrorInjectionRule, verr *ValidationError
 		verr.add("%s.match.probability must be between 0 and 1", prefix)
 	}
 
-	if strings.TrimSpace(rule.Inject.Library) != "" && (rule.Inject.Status != 0 || len(rule.Inject.Body) > 0) {
-		verr.add("%s.inject must use either library or status/body, not both", prefix)
+	if rule.Inject.LatencyMS < 0 {
+		verr.add("%s.inject.latency_ms must be greater than or equal to 0", prefix)
+	}
+
+	if strings.TrimSpace(rule.Inject.Library) != "" && (rule.Inject.Status != 0 || rule.Inject.Body != nil || strings.TrimSpace(rule.Inject.Error) != "" || rule.Inject.LatencyMS > 0) {
+		verr.add("%s.inject must use either library or explicit response fields, not both", prefix)
 	}
 
 	if strings.TrimSpace(rule.Inject.Library) == "" {
-		if rule.Inject.Status < 100 || rule.Inject.Status > 599 {
-			verr.add("%s.inject.status must be between 100 and 599 when library is not used", prefix)
+		injectsTimeout := strings.EqualFold(strings.TrimSpace(rule.Inject.Error), "timeout")
+		if !injectsTimeout && (rule.Inject.Status < 100 || rule.Inject.Status > 599) {
+			verr.add("%s.inject.status must be between 100 and 599 unless inject.error is timeout", prefix)
 		}
 	}
 }

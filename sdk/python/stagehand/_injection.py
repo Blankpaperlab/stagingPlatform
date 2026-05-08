@@ -9,8 +9,10 @@ from typing import Any
 
 @dataclass(frozen=True, slots=True)
 class ResponseOverride:
-    status: int
-    body: dict[str, Any]
+    status: int = 0
+    body: Any = None
+    error: str = ""
+    latency_ms: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +27,8 @@ class Provenance:
     any_call: bool = False
     probability: float | None = None
     library: str = ""
+    error: str = ""
+    latency_ms: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -32,8 +36,9 @@ class Provenance:
             "service": self.service,
             "operation": self.operation,
             "call_number": self.call_number,
-            "status": self.status,
         }
+        if self.status:
+            data["status"] = self.status
         if self.name:
             data["name"] = self.name
         if self.nth_call > 0:
@@ -44,6 +49,10 @@ class Provenance:
             data["probability"] = self.probability
         if self.library:
             data["library"] = self.library
+        if self.error:
+            data["error"] = self.error
+        if self.latency_ms:
+            data["latency_ms"] = self.latency_ms
         return data
 
 
@@ -63,7 +72,9 @@ class _Rule:
     probability: float | None
     library: str
     status: int
-    body: dict[str, Any]
+    error: str
+    latency_ms: int
+    body: Any
 
 
 class InjectionEngine:
@@ -102,10 +113,17 @@ class InjectionEngine:
                 probability=rule.probability,
                 library=rule.library,
                 status=rule.status,
+                error=rule.error,
+                latency_ms=rule.latency_ms,
             )
             self._applied.append(provenance)
             return Decision(
-                override=ResponseOverride(status=rule.status, body=dict(rule.body)),
+                override=ResponseOverride(
+                    status=rule.status,
+                    body=_clone_value(rule.body),
+                    error=rule.error,
+                    latency_ms=rule.latency_ms,
+                ),
                 provenance=provenance,
             )
 
@@ -136,7 +154,9 @@ def load_engine(path: str | Path | None) -> InjectionEngine:
                 probability=inject_probability(match.get("probability")),
                 library=str(inject.get("library", "")).strip(),
                 status=int(inject.get("status", 0) or 0),
-                body=dict(inject.get("body") or {}),
+                error=str(inject.get("error", "")).strip(),
+                latency_ms=int(inject.get("latency_ms", 0) or 0),
+                body=_clone_value(inject.get("body")),
             )
         )
     return InjectionEngine(rules)
@@ -146,3 +166,11 @@ def inject_probability(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
+
+
+def _clone_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _clone_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clone_value(item) for item in value]
+    return value

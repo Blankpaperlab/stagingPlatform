@@ -141,6 +141,219 @@ func TestCompareIgnoresConfiguredRequestHeaderFields(t *testing.T) {
 	}
 }
 
+func TestCompareAppliesMappedServiceIgnorePaths(t *testing.T) {
+	t.Parallel()
+
+	baseInteraction := interactionFixture("run_base", "base_int", 1, "internal-billing", "POST /api/invoices", "/api/invoices?cursor=base", map[string]any{
+		"amount":     1000,
+		"request_id": "req_base",
+		"created_at": "2026-05-07T02:00:00Z",
+	}, "")
+	baseInteraction.Request.Headers = map[string][]string{
+		"x-request-id": {"req_base"},
+	}
+	baseInteraction.Events[1].Data = map[string]any{
+		"status_code": 200,
+		"body": map[string]any{
+			"id":           "inv_123",
+			"generated_at": "2026-05-07T02:00:00Z",
+			"trace_id":     "trace_base",
+		},
+	}
+	candidateInteraction := interactionFixture("run_candidate", "candidate_int", 1, "internal-billing", "POST /api/invoices", "/api/invoices?cursor=candidate", map[string]any{
+		"amount":     1000,
+		"request_id": "req_candidate",
+		"created_at": "2026-05-07T02:05:00Z",
+	}, "")
+	candidateInteraction.Request.Headers = map[string][]string{
+		"x-request-id": {"req_candidate"},
+	}
+	candidateInteraction.Events[1].Data = map[string]any{
+		"status_code": 200,
+		"body": map[string]any{
+			"id":           "inv_123",
+			"generated_at": "2026-05-07T02:05:00Z",
+			"trace_id":     "trace_candidate",
+		},
+	}
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{baseInteraction}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidateInteraction}),
+		Options{
+			ServiceIgnoredFields: map[string]ServiceIgnoredFields{
+				"internal-billing": {
+					RequestPaths:  []string{"headers.x-request-id", "query.cursor", "body.request_id", "body.created_at"},
+					ResponsePaths: []string{"body.generated_at", "body.trace_id"},
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	if len(result.Changes) != 0 {
+		t.Fatalf("service ignore paths produced changes: %#v", result.Changes)
+	}
+}
+
+func TestCompareDoesNotApplyServiceIgnorePathsToOtherServices(t *testing.T) {
+	t.Parallel()
+
+	baseInteraction := interactionFixture("run_base", "base_int", 1, "external-billing", "POST /api/invoices", "/api/invoices?cursor=base", map[string]any{
+		"amount":     1000,
+		"request_id": "req_base",
+	}, "")
+	baseInteraction.Request.Headers = map[string][]string{
+		"x-request-id": {"req_base"},
+	}
+	candidateInteraction := interactionFixture("run_candidate", "candidate_int", 1, "external-billing", "POST /api/invoices", "/api/invoices?cursor=candidate", map[string]any{
+		"amount":     1000,
+		"request_id": "req_candidate",
+	}, "")
+	candidateInteraction.Request.Headers = map[string][]string{
+		"x-request-id": {"req_candidate"},
+	}
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{baseInteraction}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidateInteraction}),
+		Options{
+			ServiceIgnoredFields: map[string]ServiceIgnoredFields{
+				"internal-billing": {
+					RequestPaths: []string{"headers.x-request-id", "query.cursor", "body.request_id"},
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	if len(result.Changes) == 0 {
+		t.Fatalf("ignore paths configured for internal-billing leaked into external-billing; expected changes for differing identity fields, got none")
+	}
+}
+
+func TestCompareReportsNonIgnoredModificationsWhenServiceIgnorePathsSet(t *testing.T) {
+	t.Parallel()
+
+	baseInteraction := interactionFixture("run_base", "base_int", 1, "internal-billing", "POST /api/invoices", "/api/invoices?cursor=base", map[string]any{
+		"amount":     1000,
+		"request_id": "req_base",
+		"created_at": "2026-05-07T02:00:00Z",
+	}, "")
+	candidateInteraction := interactionFixture("run_candidate", "candidate_int", 1, "internal-billing", "POST /api/invoices", "/api/invoices?cursor=candidate", map[string]any{
+		"amount":     2500,
+		"request_id": "req_candidate",
+		"created_at": "2026-05-07T02:05:00Z",
+	}, "")
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{baseInteraction}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidateInteraction}),
+		Options{
+			ServiceIgnoredFields: map[string]ServiceIgnoredFields{
+				"internal-billing": {
+					RequestPaths: []string{"query.cursor", "body.request_id", "body.created_at"},
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	assertChangeTypes(t, result.Changes, []ChangeType{ChangeModified})
+	if !strings.Contains(result.Changes[0].Details, "request.body.amount") {
+		t.Fatalf("Details = %q, want diff to mention request.body.amount", result.Changes[0].Details)
+	}
+}
+
+func TestCompareNormalizesServiceIgnorePathsAndDropsBlankEntries(t *testing.T) {
+	t.Parallel()
+
+	baseInteraction := interactionFixture("run_base", "base_int", 1, "internal-billing", "POST /api/invoices", "/api/invoices", map[string]any{
+		"amount":     1000,
+		"request_id": "req_base",
+	}, "")
+	baseInteraction.Events[1].Data = map[string]any{
+		"status_code": 200,
+		"body": map[string]any{
+			"id":           "inv_123",
+			"generated_at": "2026-05-07T02:00:00Z",
+		},
+	}
+	candidateInteraction := interactionFixture("run_candidate", "candidate_int", 1, "internal-billing", "POST /api/invoices", "/api/invoices", map[string]any{
+		"amount":     1000,
+		"request_id": "req_candidate",
+	}, "")
+	candidateInteraction.Events[1].Data = map[string]any{
+		"status_code": 200,
+		"body": map[string]any{
+			"id":           "inv_123",
+			"generated_at": "2026-05-07T02:05:00Z",
+		},
+	}
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{baseInteraction}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidateInteraction}),
+		Options{
+			ServiceIgnoredFields: map[string]ServiceIgnoredFields{
+				"  ": {RequestPaths: []string{"body.amount"}},
+				"internal-billing": {
+					RequestPaths:  []string{"  ", "$.body.request_id", ".body.request_id"},
+					ResponsePaths: []string{"", "response.body.generated_at"},
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	if len(result.Changes) != 0 {
+		t.Fatalf("normalized service ignore paths should suppress request_id/generated_at differences: %#v", result.Changes)
+	}
+}
+
+func TestCompareMergesGlobalIgnoreFieldsWithServiceSpecific(t *testing.T) {
+	t.Parallel()
+
+	baseInteraction := interactionFixture("run_base", "base_int", 1, "internal-billing", "POST /api/invoices", "/api/invoices", map[string]any{
+		"amount":      1000,
+		"request_id":  "req_base",
+		"trace_token": "trace_base",
+	}, "")
+	candidateInteraction := interactionFixture("run_candidate", "candidate_int", 1, "internal-billing", "POST /api/invoices", "/api/invoices", map[string]any{
+		"amount":      1000,
+		"request_id":  "req_candidate",
+		"trace_token": "trace_candidate",
+	}, "")
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{baseInteraction}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidateInteraction}),
+		Options{
+			IgnoredFields: []string{"request.body.trace_token"},
+			ServiceIgnoredFields: map[string]ServiceIgnoredFields{
+				"internal-billing": {
+					RequestPaths: []string{"body.request_id"},
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	if len(result.Changes) != 0 {
+		t.Fatalf("global + service-specific ignores should suppress all differences: %#v", result.Changes)
+	}
+}
+
 func TestCompareDoesNotFlagTimingOnlyDifferencesAsModified(t *testing.T) {
 	t.Parallel()
 

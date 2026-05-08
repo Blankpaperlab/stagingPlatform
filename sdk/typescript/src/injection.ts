@@ -1,8 +1,10 @@
 import fs from 'node:fs';
 
 export type ResponseOverride = {
-  status: number;
-  body?: Record<string, unknown>;
+  status?: number;
+  body?: unknown;
+  error?: string;
+  latency_ms?: number;
 };
 
 export type InjectionProvenance = {
@@ -15,7 +17,9 @@ export type InjectionProvenance = {
   any_call?: boolean;
   probability?: number;
   library?: string;
-  status: number;
+  status?: number;
+  error?: string;
+  latency_ms?: number;
 };
 
 export type InjectionDecision = {
@@ -39,6 +43,8 @@ type RawRule = {
   inject?: {
     library?: unknown;
     status?: unknown;
+    error?: unknown;
+    latency_ms?: unknown;
     body?: unknown;
   };
 };
@@ -52,7 +58,9 @@ type Rule = {
   probability?: number;
   library?: string;
   status: number;
-  body: Record<string, unknown>;
+  error?: string;
+  latencyMs: number;
+  body: unknown;
 };
 
 export class InjectionEngine {
@@ -106,13 +114,17 @@ export class InjectionEngine {
         ...(rule.anyCall ? { any_call: rule.anyCall } : {}),
         ...(rule.probability === undefined ? {} : { probability: rule.probability }),
         ...(rule.library === undefined ? {} : { library: rule.library }),
-        status: rule.status,
+        ...(rule.status === 0 ? {} : { status: rule.status }),
+        ...(rule.error === undefined ? {} : { error: rule.error }),
+        ...(rule.latencyMs === 0 ? {} : { latency_ms: rule.latencyMs }),
       };
       this.applied.push(provenance);
       return {
         override: {
-          status: rule.status,
+          ...(rule.status === 0 ? {} : { status: rule.status }),
           body: structuredClone(rule.body),
+          ...(rule.error === undefined ? {} : { error: rule.error }),
+          ...(rule.latencyMs === 0 ? {} : { latency_ms: rule.latencyMs }),
         },
         provenance,
       };
@@ -160,7 +172,9 @@ function normalizeRule(raw: RawRule): Rule {
     probability: optionalNumber(match.probability),
     library: optionalString(inject.library),
     status: integerValue(inject.status),
-    body: recordValue(inject.body),
+    error: optionalString(inject.error),
+    latencyMs: integerValue(inject.latency_ms),
+    body: cloneValue(inject.body),
   };
 }
 
@@ -192,9 +206,14 @@ function optionalNumber(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function recordValue(value: unknown): Record<string, unknown> {
-  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-    return { ...(value as Record<string, unknown>) };
+function cloneValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneValue(item));
   }
-  return {};
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, cloneValue(item)])
+    );
+  }
+  return value;
 }

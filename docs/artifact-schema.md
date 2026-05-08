@@ -97,6 +97,7 @@ Optional fields:
 
 - `parent_interaction_id`
 - `fallback_tier`
+- `fallback_reason`
 - `streaming`
 - `extracted_entities`
 - `latency_ms`
@@ -110,6 +111,7 @@ Validation rules:
   - `nearest_neighbor`
   - `state_synthesis`
   - `llm_synthesis`
+- `fallback_reason` records human-readable match provenance when a replay interaction was selected by a fallback tier.
 
 Supported protocol values in `v1alpha1`:
 

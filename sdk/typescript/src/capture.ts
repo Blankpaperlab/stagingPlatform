@@ -49,6 +49,7 @@ export type CapturedInteraction = {
   scrub_report: CapturedScrubReport;
   latency_ms?: number;
   fallback_tier?: string;
+  fallback_reason?: string;
 };
 
 export type SuccessCaptureInput = {
@@ -61,6 +62,7 @@ export type SuccessCaptureInput = {
     statusText?: string;
     headers: CapturedHeaders;
     body?: unknown;
+    metadata?: Record<string, unknown>;
   };
   elapsedMs: number;
   streaming?: boolean;
@@ -75,6 +77,7 @@ export type FailureCaptureInput = {
   failureType: Extract<CapturedEventType, 'error' | 'timeout'>;
   errorClass?: string;
   message?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type OpenAIStreamCaptureInput = {
@@ -125,7 +128,8 @@ export class CaptureBuffer {
 
   recordReplayInteraction(
     interaction: CapturedInteraction,
-    fallbackTier: string = 'exact'
+    fallbackTier: string = 'exact',
+    fallbackReason: string | undefined = undefined
   ): CapturedInteraction {
     return this.appendInteraction({
       service: interaction.service,
@@ -136,6 +140,7 @@ export class CaptureBuffer {
       elapsedMs: interaction.latency_ms ?? terminalEventLatency(interaction) ?? 0,
       events: structuredClone(interaction.events),
       fallbackTier,
+      fallbackReason,
     });
   }
 
@@ -166,6 +171,7 @@ export class CaptureBuffer {
               : { status_text: input.response.statusText }),
             headers: input.response.headers,
             body: input.response.body ?? null,
+            ...(input.response.metadata ?? {}),
           },
         },
       ],
@@ -195,6 +201,7 @@ export class CaptureBuffer {
           data: {
             ...(input.errorClass === undefined ? {} : { error_class: input.errorClass }),
             ...(input.message === undefined ? {} : { message: input.message }),
+            ...(input.metadata ?? {}),
           },
         },
       ],
@@ -247,6 +254,7 @@ export class CaptureBuffer {
     elapsedMs,
     events,
     fallbackTier,
+    fallbackReason,
   }: {
     service: string;
     operation: string;
@@ -256,6 +264,7 @@ export class CaptureBuffer {
     elapsedMs: number;
     events: CapturedEvent[];
     fallbackTier?: string;
+    fallbackReason?: string;
   }): CapturedInteraction {
     const interaction: CapturedInteraction = {
       run_id: this.runId,
@@ -273,6 +282,7 @@ export class CaptureBuffer {
       },
       latency_ms: elapsedMs,
       ...(fallbackTier === undefined ? {} : { fallback_tier: fallbackTier }),
+      ...(fallbackReason === undefined ? {} : { fallback_reason: fallbackReason }),
     };
 
     this.nextSequence += 1;

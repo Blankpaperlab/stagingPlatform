@@ -83,6 +83,46 @@ func TestMatcherUsesNearestNeighborForRequestVariation(t *testing.T) {
 	if result.Interaction.FallbackTier != recorder.FallbackTierNearestNeighbor {
 		t.Fatalf("Interaction.FallbackTier = %q, want nearest_neighbor", result.Interaction.FallbackTier)
 	}
+	if result.Interaction.FallbackReason == "" {
+		t.Fatal("Interaction.FallbackReason is empty, want nearest-neighbor reason")
+	}
+}
+
+func TestMatcherNearestNeighborIgnoresMutableGenericHTTPFields(t *testing.T) {
+	t.Parallel()
+
+	recorded := []recorder.Interaction{
+		fallbackInteraction("int_nearest", 1, "https://api.example.test/v1/customers?cursor=record&page_token=page_1", map[string]any{
+			"customer_id":     "cus_001",
+			"limit":           25,
+			"request_id":      "req_record",
+			"idempotency_key": "idem_record",
+			"created_at":      "2026-05-07T12:00:00Z",
+		}),
+	}
+	matcher, err := NewMatcher(recorded)
+	if err != nil {
+		t.Fatalf("NewMatcher() error = %v", err)
+	}
+
+	request := fallbackInteraction("request_001", 1, "https://api.example.test/v1/customers?cursor=candidate&page_token=page_2", map[string]any{
+		"customer_id":     "cus_001",
+		"limit":           25,
+		"request_id":      "req_candidate",
+		"idempotency_key": "idem_candidate",
+		"created_at":      "2026-05-07T12:01:00Z",
+	})
+	result, err := matcher.Match(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Match() error = %v", err)
+	}
+
+	if result.Tier != recorder.FallbackTierNearestNeighbor {
+		t.Fatalf("Tier = %q, want %q", result.Tier, recorder.FallbackTierNearestNeighbor)
+	}
+	if result.Score != 1 {
+		t.Fatalf("Score = %f, want 1 after mutable field normalization", result.Score)
+	}
 }
 
 func TestMatcherHonorsAllowedFallbackTiersFromConfig(t *testing.T) {

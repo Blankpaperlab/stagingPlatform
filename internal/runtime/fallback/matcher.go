@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -15,6 +16,12 @@ import (
 )
 
 const minimumNearestScore = 0.35
+
+var (
+	isoDateLikePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}([Tt ][0-9:.+-]+Z?)?$`)
+	unixSecondsPattern = regexp.MustCompile(`^\d{10}(\.\d+)?$`)
+	unixMillisPattern  = regexp.MustCompile(`^\d{13}$`)
+)
 
 var ErrNoMatch = errors.New("fallback match not found")
 
@@ -100,6 +107,7 @@ func (m *Matcher) Match(ctx context.Context, request recorder.Interaction) (Matc
 	if m.allowed[recorder.FallbackTierExact] {
 		if interaction, ok := exactMatch(candidates, request); ok {
 			interaction.FallbackTier = recorder.FallbackTierExact
+			interaction.FallbackReason = "exact request match"
 			return MatchResult{
 				Tier:           recorder.FallbackTierExact,
 				Interaction:    interaction,
@@ -113,6 +121,7 @@ func (m *Matcher) Match(ctx context.Context, request recorder.Interaction) (Matc
 	if m.allowed[recorder.FallbackTierNearestNeighbor] {
 		if interaction, score, ok := nearestMatch(candidates, request); ok {
 			interaction.FallbackTier = recorder.FallbackTierNearestNeighbor
+			interaction.FallbackReason = fmt.Sprintf("nearest request match score=%.2f", score)
 			return MatchResult{
 				Tier:           recorder.FallbackTierNearestNeighbor,
 				Interaction:    interaction,
@@ -132,6 +141,7 @@ func (m *Matcher) Match(ctx context.Context, request recorder.Interaction) (Matc
 			return MatchResult{}, fmt.Errorf("state synthesis fallback: %w", err)
 		}
 		interaction.FallbackTier = recorder.FallbackTierStateSynthesis
+		interaction.FallbackReason = "state synthesis hook"
 		return MatchResult{
 			Tier:           recorder.FallbackTierStateSynthesis,
 			Interaction:    interaction,
@@ -315,6 +325,9 @@ func queryParts(raw string) []string {
 	parts := make([]string, 0)
 	for key, entries := range values {
 		for _, value := range entries {
+			if mutableRequestField(key, value) {
+				continue
+			}
 			parts = append(parts, key+"="+value)
 		}
 	}
@@ -330,7 +343,7 @@ func headerParts(headers map[string][]string) []string {
 	parts := make([]string, 0)
 	for key, entries := range headers {
 		normalizedKey := strings.ToLower(strings.TrimSpace(key))
-		if normalizedKey == "authorization" || normalizedKey == "cookie" || normalizedKey == "set-cookie" {
+		if normalizedKey == "authorization" || normalizedKey == "cookie" || normalizedKey == "set-cookie" || mutableHeader(normalizedKey) {
 			continue
 		}
 		for _, value := range entries {
@@ -369,6 +382,16 @@ func flattenValue(path string, value any, parts *[]string) {
 			flattenValue(fmt.Sprintf("%s[%d]", path, idx), item, parts)
 		}
 	default:
+		fieldName := path
+		if idx := strings.LastIndex(fieldName, "."); idx >= 0 {
+			fieldName = fieldName[idx+1:]
+		}
+		if idx := strings.Index(fieldName, "["); idx >= 0 {
+			fieldName = fieldName[:idx]
+		}
+		if mutableRequestField(fieldName, typed) {
+			return
+		}
 		*parts = append(*parts, path+"="+canonicalJSON(typed))
 	}
 }
@@ -442,4 +465,32 @@ func setSimilarity(left []string, right []string) float64 {
 		return 1
 	}
 	return float64(intersection) / float64(union)
+}
+
+func mutableRequestField(name string, value any) bool {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "-", "_")
+	switch normalized {
+	case "request_id", "trace_id", "correlation_id", "idempotency_key",
+		"cursor", "next_cursor", "page_token", "pagination_token", "starting_after", "ending_before",
+		"created_at", "updated_at", "generated_at", "timestamp", "time":
+		return true
+	}
+	text, ok := value.(string)
+	return ok && timestampLike(text)
+}
+
+func mutableHeader(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "x-request-id", "x-trace-id", "x-correlation-id", "idempotency-key", "date":
+		return true
+	default:
+		return false
+	}
+}
+
+func timestampLike(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return isoDateLikePattern.MatchString(trimmed) ||
+		unixSecondsPattern.MatchString(trimmed) ||
+		unixMillisPattern.MatchString(trimmed)
 }

@@ -124,6 +124,7 @@ class CapturedInteraction:
     streaming: bool = False
     parent_interaction_id: str | None = None
     fallback_tier: str | None = None
+    fallback_reason: str | None = None
     extracted_entities: tuple[dict[str, Any], ...] = ()
     latency_ms: int | None = None
 
@@ -142,6 +143,7 @@ class CapturedInteraction:
             streaming=bool(payload.get("streaming", False)),
             parent_interaction_id=payload.get("parent_interaction_id"),
             fallback_tier=payload.get("fallback_tier"),
+            fallback_reason=payload.get("fallback_reason"),
             extracted_entities=tuple(payload.get("extracted_entities", [])),
             latency_ms=payload.get("latency_ms"),
         )
@@ -163,6 +165,8 @@ class CapturedInteraction:
             data["parent_interaction_id"] = self.parent_interaction_id
         if self.fallback_tier is not None:
             data["fallback_tier"] = self.fallback_tier
+        if self.fallback_reason is not None:
+            data["fallback_reason"] = self.fallback_reason
         if self.extracted_entities:
             data["extracted_entities"] = list(self.extracted_entities)
         if self.latency_ms is not None:
@@ -176,6 +180,7 @@ class CapturedInteraction:
         interaction_id: str,
         sequence: int,
         fallback_tier: str | None = None,
+        fallback_reason: str | None = None,
     ) -> "CapturedInteraction":
         return CapturedInteraction(
             run_id=run_id,
@@ -190,6 +195,9 @@ class CapturedInteraction:
             streaming=self.streaming,
             parent_interaction_id=self.parent_interaction_id,
             fallback_tier=fallback_tier if fallback_tier is not None else self.fallback_tier,
+            fallback_reason=(
+                fallback_reason if fallback_reason is not None else self.fallback_reason
+            ),
             extracted_entities=self.extracted_entities,
             latency_ms=self.latency_ms,
         )
@@ -225,6 +233,7 @@ class CaptureBuffer:
         interaction: CapturedInteraction,
         *,
         fallback_tier: str = "exact",
+        fallback_reason: str | None = None,
     ) -> CapturedInteraction:
         return self._append_interaction(
             lambda sequence, interaction_id: interaction.clone_for_run(
@@ -232,6 +241,7 @@ class CaptureBuffer:
                 interaction_id=interaction_id,
                 sequence=sequence,
                 fallback_tier=fallback_tier,
+                fallback_reason=fallback_reason,
             )
         )
 
@@ -310,6 +320,50 @@ class CaptureBuffer:
                 ),
                 scrub_report=self._scrub_report,
                 streaming=streaming,
+                latency_ms=elapsed_ms,
+            )
+        )
+
+    def record_failure_for_request(
+        self,
+        *,
+        normalized_request: CapturedRequest,
+        service: str,
+        operation: str,
+        protocol: str,
+        elapsed_ms: int,
+        failure_type: str,
+        error_class: str,
+        message: str,
+        data: dict[str, Any] | None = None,
+    ) -> CapturedInteraction:
+        failure_data: dict[str, Any] = {
+            "error_class": error_class,
+            "message": message,
+        }
+        if data:
+            failure_data.update(data)
+        return self._append_interaction(
+            lambda sequence, interaction_id: CapturedInteraction(
+                run_id=self._run_id,
+                interaction_id=interaction_id,
+                sequence=sequence,
+                service=service,
+                operation=operation,
+                protocol=protocol,
+                request=normalized_request,
+                events=(
+                    CapturedEvent(sequence=1, t_ms=0, sim_t_ms=0, type="request_sent"),
+                    CapturedEvent(
+                        sequence=2,
+                        t_ms=elapsed_ms,
+                        sim_t_ms=elapsed_ms,
+                        type=failure_type,
+                        data=failure_data,
+                    ),
+                ),
+                scrub_report=self._scrub_report,
+                streaming=False,
                 latency_ms=elapsed_ms,
             )
         )

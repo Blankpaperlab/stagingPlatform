@@ -68,12 +68,29 @@ Rules are evaluated in list order. The first matching rule wins.
 Rules can inject either:
 
 - explicit `status` plus optional `body`
+- `error: timeout`
+- optional `latency_ms` on explicit HTTP-style overrides
 - a named `library` entry
 
 Explicit overrides produce a `ResponseOverride` with:
 
 - HTTP-style `status`
+- timeout `error`
+- injected latency in milliseconds
 - JSON-like `body`
+
+The CLI also accepts a shortcut shape for generic HTTP rules:
+
+```yaml
+error_injection:
+  - name: CRM timeout on third lookup
+    service: internal-crm
+    operation: POST /v1/customers/search
+    nth_call: 3
+    response:
+      error: timeout
+      latency_ms: 250
+```
 
 ## Named Error Library
 
@@ -101,6 +118,8 @@ Each applied injection returns `Provenance`:
 - `probability`
 - `library`
 - `status`
+- `error`
+- `latency_ms`
 
 `AppendProvenance` writes provenance under:
 
@@ -112,7 +131,7 @@ Each applied injection returns `Provenance`:
 }
 ```
 
-The Stripe simulator records applied injection provenance in memory and exposes it as run metadata through `ErrorInjectionMetadata`. Python and TypeScript SDK interception also attach applied provenance to the capture-bundle metadata. The CLI preserves capture-bundle metadata on the persisted run record, and SQLite persists top-level run metadata through `runs.metadata_json`. `stagehand inspect` renders run-level error-injection metadata when present.
+The Stripe simulator records applied injection provenance in memory and exposes it as run metadata through `ErrorInjectionMetadata`. Python and TypeScript SDK interception also attach applied provenance to the capture-bundle metadata. Generic HTTP injected response and timeout interactions include `stagehand_injection` provenance in the terminal event data, so inspect output, diffs, and assertion evidence can point at the concrete injected interaction. The CLI preserves capture-bundle metadata on the persisted run record, and SQLite persists top-level run metadata through `runs.metadata_json`. `stagehand inspect` renders run-level error-injection metadata when present.
 
 ## Current Limits
 

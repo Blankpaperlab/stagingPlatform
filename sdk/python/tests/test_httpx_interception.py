@@ -7,7 +7,76 @@ import httpx
 import pytest
 
 import stagehand
+from stagehand._config import load_service_mappings
 from stagehand._runtime import _reset_for_tests
+
+
+def test_load_service_mappings_parses_ignore_request_and_response_paths(tmp_path: Path) -> None:
+    config_path = tmp_path / "stagehand.yml"
+    config_path.write_text(
+        """
+schema_version: v1alpha1
+services:
+  - name: internal-billing
+    type: api
+    match:
+      host: billing.internal.test
+      path_prefix: /api
+    ignore:
+      request_paths:
+        - headers.x-request-id
+        - query.cursor
+        - body.request_id
+      response_paths:
+        - body.generated_at
+        - body.trace_id
+  - name: billing-api
+    type: api
+    match:
+      host: legacy.internal.test
+""",
+        encoding="utf-8",
+    )
+
+    mappings = load_service_mappings(config_path)
+    by_name = {mapping.name: mapping for mapping in mappings}
+
+    billing = by_name["internal-billing"]
+    assert billing.ignore_request_paths == (
+        "headers.x-request-id",
+        "query.cursor",
+        "body.request_id",
+    )
+    assert billing.ignore_response_paths == ("body.generated_at", "body.trace_id")
+
+    legacy = by_name["billing-api"]
+    assert legacy.ignore_request_paths == ()
+    assert legacy.ignore_response_paths == ()
+
+
+def test_load_service_mappings_drops_blank_ignore_entries(tmp_path: Path) -> None:
+    config_path = tmp_path / "stagehand.yml"
+    config_path.write_text(
+        """
+schema_version: v1alpha1
+services:
+  - name: internal-billing
+    type: api
+    match:
+      host: billing.internal.test
+      path_prefix: /api
+    ignore:
+      request_paths:
+        - "  "
+        - body.request_id
+        - ""
+""",
+        encoding="utf-8",
+    )
+
+    mappings = load_service_mappings(config_path)
+    assert len(mappings) == 1
+    assert mappings[0].ignore_request_paths == ("body.request_id",)
 
 
 def test_httpx_sync_response_is_captured() -> None:
@@ -577,6 +646,273 @@ services:
         "admin.internal.test",
     ]
     assert interactions[0].operation == "POST /v1/customers/search"
+
+
+def test_configured_service_ignore_paths_allow_exact_replay_variation(tmp_path: Path) -> None:
+    config_path = tmp_path / "stagehand.yml"
+    config_path.write_text(
+        """
+schema_version: v1alpha1
+services:
+  - name: internal-billing
+    type: api
+    match:
+      host: billing.internal.test
+      path_prefix: /api
+    replay:
+      mode: generic_http
+      allowed_tiers: [0]
+    ignore:
+      request_paths:
+        - headers.x-request-id
+        - query.cursor
+        - body.request_id
+        - body.created_at
+      response_paths:
+        - body.generated_at
+        - body.trace_id
+""",
+        encoding="utf-8",
+    )
+    stagehand.init(
+        session="mapped-service-ignore-record",
+        mode="record",
+        config_path=config_path,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={"id": "inv_123", "generated_at": "record-time", "trace_id": "trace-record"},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        recorded = client.post(
+            "https://billing.internal.test/api/invoices?cursor=record",
+            headers={"content-type": "application/json", "x-request-id": "req-record"},
+            json={"amount": 1000, "request_id": "req-record", "created_at": "record-time"},
+        )
+
+    assert recorded.status_code == 200
+    recorded_interactions = stagehand.get_runtime().captured_interactions()
+
+    _reset_for_tests()
+    stagehand.init(
+        session="mapped-service-ignore-replay",
+        mode="replay",
+        config_path=config_path,
+    )
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("ignored-path exact replay should not call live transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        replayed = client.post(
+            "https://billing.internal.test/api/invoices?cursor=candidate",
+            headers={"content-type": "application/json", "x-request-id": "req-candidate"},
+            json={
+                "amount": 1000,
+                "request_id": "req-candidate",
+                "created_at": "candidate-time",
+            },
+        )
+
+    assert replayed.status_code == 200
+    assert replayed.json()["id"] == "inv_123"
+
+
+def test_service_ignore_paths_do_not_leak_into_unmapped_url(tmp_path: Path) -> None:
+    config_path = tmp_path / "stagehand.yml"
+    config_path.write_text(
+        """
+schema_version: v1alpha1
+services:
+  - name: internal-billing
+    type: api
+    match:
+      host: billing.internal.test
+      path_prefix: /api
+    replay:
+      mode: generic_http
+      allowed_tiers: [0]
+    ignore:
+      request_paths:
+        - body.request_id
+""",
+        encoding="utf-8",
+    )
+    stagehand.init(
+        session="mapped-service-ignore-isolation-record",
+        mode="record",
+        config_path=config_path,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=200, json={"ok": True})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        recorded = client.post(
+            "https://billing.internal.test/other/path",
+            headers={"content-type": "application/json"},
+            json={"request_id": "req-record"},
+        )
+    assert recorded.status_code == 200
+    recorded_interactions = stagehand.get_runtime().captured_interactions()
+
+    _reset_for_tests()
+    stagehand.init(
+        session="mapped-service-ignore-isolation-replay",
+        mode="replay",
+        config_path=config_path,
+    )
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("unmapped URL replay miss should fail before transport use")
+
+    with pytest.raises(stagehand.ReplayMissError):
+        with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+            client.post(
+                "https://billing.internal.test/other/path",
+                headers={"content-type": "application/json"},
+                json={"request_id": "req-different"},
+            )
+
+
+def test_service_ignore_paths_support_nested_body_and_array_wildcards(tmp_path: Path) -> None:
+    config_path = tmp_path / "stagehand.yml"
+    config_path.write_text(
+        """
+schema_version: v1alpha1
+services:
+  - name: internal-billing
+    type: api
+    match:
+      host: billing.internal.test
+      path_prefix: /api
+    replay:
+      mode: generic_http
+      allowed_tiers: [0]
+    ignore:
+      request_paths:
+        - body.metadata.trace_id
+        - body.line_items[*].request_id
+""",
+        encoding="utf-8",
+    )
+    stagehand.init(
+        session="ignore-nested-record",
+        mode="record",
+        config_path=config_path,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=200, json={"id": "inv_123"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        recorded = client.post(
+            "https://billing.internal.test/api/invoices",
+            headers={"content-type": "application/json"},
+            json={
+                "amount": 100,
+                "metadata": {"trace_id": "trace-record", "region": "us-east-1"},
+                "line_items": [
+                    {"sku": "A", "request_id": "li-record-a"},
+                    {"sku": "B", "request_id": "li-record-b"},
+                ],
+            },
+        )
+    assert recorded.status_code == 200
+    recorded_interactions = stagehand.get_runtime().captured_interactions()
+
+    _reset_for_tests()
+    stagehand.init(
+        session="ignore-nested-replay",
+        mode="replay",
+        config_path=config_path,
+    )
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("nested-ignore exact replay should not call live transport")
+
+    with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+        replayed = client.post(
+            "https://billing.internal.test/api/invoices",
+            headers={"content-type": "application/json"},
+            json={
+                "amount": 100,
+                "metadata": {"trace_id": "trace-candidate", "region": "us-east-1"},
+                "line_items": [
+                    {"sku": "A", "request_id": "li-candidate-a"},
+                    {"sku": "B", "request_id": "li-candidate-b"},
+                ],
+            },
+        )
+
+    assert replayed.status_code == 200
+    assert replayed.json()["id"] == "inv_123"
+    [replayed_interaction] = stagehand.get_runtime().captured_interactions()
+    assert replayed_interaction.fallback_tier == "exact"
+
+
+def test_service_ignore_paths_still_miss_on_non_ignored_body_change(tmp_path: Path) -> None:
+    config_path = tmp_path / "stagehand.yml"
+    config_path.write_text(
+        """
+schema_version: v1alpha1
+services:
+  - name: internal-billing
+    type: api
+    match:
+      host: billing.internal.test
+      path_prefix: /api
+    replay:
+      mode: generic_http
+      allowed_tiers: [0]
+    ignore:
+      request_paths:
+        - body.request_id
+""",
+        encoding="utf-8",
+    )
+    stagehand.init(
+        session="ignore-miss-record",
+        mode="record",
+        config_path=config_path,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=200, json={"id": "inv_123"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        recorded = client.post(
+            "https://billing.internal.test/api/invoices",
+            headers={"content-type": "application/json"},
+            json={"amount": 100, "request_id": "req-record"},
+        )
+    assert recorded.status_code == 200
+    recorded_interactions = stagehand.get_runtime().captured_interactions()
+
+    _reset_for_tests()
+    stagehand.init(
+        session="ignore-miss-replay",
+        mode="replay",
+        config_path=config_path,
+    )
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    def fail_if_network_is_used(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("non-ignored body change replay miss should fail before transport use")
+
+    with pytest.raises(stagehand.ReplayMissError):
+        with httpx.Client(transport=httpx.MockTransport(fail_if_network_is_used)) as client:
+            client.post(
+                "https://billing.internal.test/api/invoices",
+                headers={"content-type": "application/json"},
+                json={"amount": 250, "request_id": "req-candidate"},
+            )
 
 
 def test_replay_miss_for_non_openai_request_fails_before_network() -> None:

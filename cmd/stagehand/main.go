@@ -607,7 +607,10 @@ func runDiff(args []string, stdout io.Writer, _ io.Writer) error {
 		return fmt.Errorf("load candidate run %q: %w", resolvedCandidateRunID, err)
 	}
 
-	result, err := analysisdiff.Compare(baseRun, candidateRun, analysisdiff.Options{IgnoredFields: ignoredFields})
+	result, err := analysisdiff.Compare(baseRun, candidateRun, analysisdiff.Options{
+		IgnoredFields:        ignoredFields,
+		ServiceIgnoredFields: serviceIgnoredFieldsFromConfig(cfg.Services),
+	})
 	if err != nil {
 		return fmt.Errorf("compare runs: %w", err)
 	}
@@ -629,6 +632,24 @@ func runDiff(args []string, stdout io.Writer, _ io.Writer) error {
 	default:
 		return fmt.Errorf("diff --format must be one of %q, %q, or %q\n\n%s", config.ReportFormatTerminal, config.ReportFormatJSON, config.ReportFormatGitHubMarkdown, diffHelpText())
 	}
+}
+
+func serviceIgnoredFieldsFromConfig(services []config.ServiceConfig) map[string]analysisdiff.ServiceIgnoredFields {
+	fields := map[string]analysisdiff.ServiceIgnoredFields{}
+	for _, service := range services {
+		name := strings.TrimSpace(service.Name)
+		if name == "" {
+			continue
+		}
+		if len(service.Ignore.RequestPaths) == 0 && len(service.Ignore.ResponsePaths) == 0 {
+			continue
+		}
+		fields[name] = analysisdiff.ServiceIgnoredFields{
+			RequestPaths:  append([]string(nil), service.Ignore.RequestPaths...),
+			ResponsePaths: append([]string(nil), service.Ignore.ResponsePaths...),
+		}
+	}
+	return fields
 }
 
 func runAssert(args []string, stdout io.Writer, _ io.Writer) error {

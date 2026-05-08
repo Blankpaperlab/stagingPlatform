@@ -1,0 +1,59 @@
+schema_version: v1alpha1
+
+record:
+  storage_path: .stagehand/runs
+
+services:
+  - name: internal-hr
+    type: api
+    match:
+      host: hr.internal.acme.test
+      path_prefix: /v1
+    replay:
+      mode: generic_http
+      allowed_tiers: [0]
+    ignore:
+      request_paths:
+        - headers.x-request-id
+        - query.cursor
+        - body.request_id
+        - body.created_at
+      response_paths:
+        - body.generated_at
+        - body.trace_id
+
+  - name: internal-billing
+    type: api
+    match:
+      host: billing.internal.acme.test
+      path_prefix: /api
+    replay:
+      mode: generic_http
+      allowed_tiers: [0, 1]
+    ignore:
+      request_paths:
+        - headers.idempotency-key
+        - headers.x-trace-id
+        - body.request_id
+        - body.created_at
+      response_paths:
+        - body.generated_at
+        - body.trace_id
+
+  - name: internal-notifier
+    type: api
+    match:
+      host: notify.internal.acme.test
+      path_prefix: /api
+    replay:
+      mode: generic_http
+      allowed_tiers: [0]
+    ignore:
+      request_paths:
+        - headers.x-trace-id
+        - body.request_id
+        - body.created_at
+      response_paths:
+        - body.generated_at
+        - body.trace_id
+        - body.message_id

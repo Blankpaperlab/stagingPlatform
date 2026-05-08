@@ -164,7 +164,7 @@ def init(session: str, mode: str, config_path: str | Path | None = None) -> Stag
                 run_id=metadata.run_id,
                 service_mappings=service_mappings,
             ),
-            _openai_replay_store=OpenAIReplayStore(),
+            _openai_replay_store=OpenAIReplayStore(service_mappings=service_mappings),
             _injection_engine=load_engine(os.environ.get(ENV_ERROR_INJECTION_INPUT)),
         )
         install_httpx_interception(

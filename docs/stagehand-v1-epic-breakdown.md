@@ -921,11 +921,11 @@ N2 adds `services` to the runtime config schema and wires those mappings into Py
 
 - Outcome: replay and diff can tolerate expected request variation such as trace IDs, timestamps, pagination cursors, and generated request IDs.
 - To do:
-  - [ ] support ignored request paths per mapped service
-  - [ ] support ignored response paths per mapped service
-  - [ ] apply ignored paths before exact-match fingerprinting where configured
-  - [ ] reuse the diff engine's ignored-field model where practical
-  - [ ] document common ignore patterns for request IDs, trace IDs, timestamps, cursors, and idempotency keys
+  - [x] support ignored request paths per mapped service
+  - [x] support ignored response paths per mapped service
+  - [x] apply ignored paths before exact-match fingerprinting where configured
+  - [x] reuse the diff engine's ignored-field model where practical
+  - [x] document common ignore patterns for request IDs, trace IDs, timestamps, cursors, and idempotency keys
 
 Example config shape:
 
@@ -950,26 +950,30 @@ services:
         - body.trace_id
 ```
 
+N3 adds mapped-service `ignore.request_paths` and `ignore.response_paths` to `stagehand.yml`. Python `httpx` and TypeScript Undici exact replay now remove configured request body fields, selected request headers, and query parameters before fingerprinting. The Go diff engine also applies the mapped-service ignore config, translating request paths into `request.*` diff paths and response paths into the existing response-event ignore model. Common dynamic paths are request IDs, trace IDs, pagination cursors, timestamps, generated response timestamps, response trace IDs, and idempotency keys.
+
 ### Story N4: Nearest-neighbor matching
 
 - Outcome: simple request variation does not always force a miss when tier 1 fallback is explicitly allowed.
 - To do:
-  - [ ] define mutable field heuristics for generic HTTP
-  - [ ] support pagination and timestamp-like values
-  - [ ] record why a tier-1 match was selected
-  - [ ] expose tier selection in artifacts
-  - [ ] make fallback-regression assertions work for custom API calls
+  - [x] define mutable field heuristics for generic HTTP
+  - [x] support pagination and timestamp-like values
+  - [x] record why a tier-1 match was selected
+  - [x] expose tier selection in artifacts
+  - [x] make fallback-regression assertions work for custom API calls
+
+N4 adds mapped-service tier-1 nearest-neighbor replay for Python `httpx` and TypeScript Undici when `replay.allowed_tiers` explicitly includes `1`. Exact replay remains the first tier and exact-only services still fail closed on misses. Tier-1 scoring ignores common mutable generic HTTP fields such as request IDs, trace IDs, idempotency keys, pagination cursors/tokens, and timestamp-like values, then records both `fallback_tier: nearest_neighbor` and a `fallback_reason` in replay artifacts. The Go artifact schema and SQLite store now preserve `fallback_reason`, and the Go fallback matcher applies the same mutable-field heuristics so fallback-regression diffs and assertions continue to work for custom API calls.
 
 ### Story N5: Generic HTTP error injection
 
 - Outcome: users can test agent recovery when internal APIs timeout, return 500s, return malformed payloads, or become slow.
 - To do:
-  - [ ] inject timeout responses
-  - [ ] inject latency
-  - [ ] inject HTTP status and response body
-  - [ ] match by service, operation, nth call, and probability
-  - [ ] persist provenance metadata for injected generic HTTP failures
-  - [ ] expose injected failures in inspect, diff, and assertion evidence
+  - [x] inject timeout responses
+  - [x] inject latency
+  - [x] inject HTTP status and response body
+  - [x] match by service, operation, nth call, and probability
+  - [x] persist provenance metadata for injected generic HTTP failures
+  - [x] expose injected failures in inspect, diff, and assertion evidence
 
 Example config shape:
 
@@ -992,27 +996,31 @@ error_injection:
         error: internal_server_error
 ```
 
+N5 extends the shared error-injection contract for generic HTTP with timeout errors, injected latency, arbitrary response bodies for malformed payload testing, and the shortcut `error_injection: - ... response:` file shape. Python `httpx` and TypeScript Undici/fetch interception now record injected generic HTTP failures before live dispatch, preserve applied provenance in run metadata, and attach `stagehand_injection` provenance to the injected interaction's terminal event so inspect, diff, and assertion evidence can reference the concrete failure.
+
 ### Story N6: Custom API docs and demo
 
 - Outcome: users understand that Stagehand works with their own internal services, not only prebuilt provider profiles.
 - To do:
-  - [ ] document supported behavior
-  - [ ] document unsupported stateful semantics
-  - [ ] show when exact generic HTTP is enough
-  - [ ] show when a prebuilt or user-defined simulator hook is needed later
-  - [ ] build an internal CRM replay demo
-  - [ ] build an internal billing replay demo
-  - [ ] build a custom API regression demo used by CI
+  - [x] document supported behavior
+  - [x] document unsupported stateful semantics
+  - [x] show when exact generic HTTP is enough
+  - [x] show when a prebuilt or user-defined simulator hook is needed later
+  - [x] build an internal CRM replay demo
+  - [x] build an internal billing replay demo
+  - [x] build a custom API regression demo used by CI
+
+N6 adds `docs/custom-api-generic-http.md` to explain mapped custom API behavior, exact replay, nearest-neighbor replay, generic HTTP error injection, and the stateful semantics intentionally not inferred by V1. It also adds `examples/custom-api-regression-demo`, a CI-covered internal CRM and internal billing demo that replays exact generic HTTP responses with dynamic fields ignored and verifies that a billing behavior regression is reported by the diff engine.
 
 ### Epic N completion checklist
 
-- [ ] generic HTTP exact replay works for internal-style APIs
-- [ ] service mapping labels custom APIs clearly
-- [ ] dynamic field ignores work for common request variance
-- [ ] tier-1 matching works for simple variance when allowed
-- [ ] generic HTTP error injection works
-- [ ] custom API demos exist
-- [ ] limitations are documented
+- [x] generic HTTP exact replay works for internal-style APIs
+- [x] service mapping labels custom APIs clearly
+- [x] dynamic field ignores work for common request variance
+- [x] tier-1 matching works for simple variance when allowed
+- [x] generic HTTP error injection works
+- [x] custom API demos exist
+- [x] limitations are documented
 
 ## Epic Y: Custom Tool Capture and Replay
 

@@ -590,18 +590,40 @@ test(
       );
 
       mockAgent.disableNetConnect();
-      mockAgent.get('https://crm.internal.test').intercept({ path: '/v1/customers/search', method: 'POST' }).reply(200, JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
-      mockAgent.get('https://billing.internal.test').intercept({ path: '/invoices/in_123', method: 'GET' }).reply(200, JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
-      mockAgent.get('https://admin.internal.test').intercept({ path: '/admin/users/u_123', method: 'GET' }).reply(200, JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
-      mockAgent.get('https://admin.internal.test').intercept({ path: '/public/status', method: 'GET' }).reply(200, JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
+      mockAgent
+        .get('https://crm.internal.test')
+        .intercept({ path: '/v1/customers/search', method: 'POST' })
+        .reply(200, JSON.stringify({ ok: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      mockAgent
+        .get('https://billing.internal.test')
+        .intercept({ path: '/invoices/in_123', method: 'GET' })
+        .reply(200, JSON.stringify({ ok: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      mockAgent
+        .get('https://admin.internal.test')
+        .intercept({ path: '/admin/users/u_123', method: 'GET' })
+        .reply(200, JSON.stringify({ ok: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      mockAgent
+        .get('https://admin.internal.test')
+        .intercept({ path: '/public/status', method: 'GET' })
+        .reply(200, JSON.stringify({ ok: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
       setGlobalDispatcher(mockAgent);
 
       const runtime = init({ session: 'ts-mapped-service-record', mode: 'record', configPath });
-      await (await fetch('https://crm.internal.test/v1/customers/search', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'jane.doe@example.com' }),
-      })).text();
+      await (
+        await fetch('https://crm.internal.test/v1/customers/search', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email: 'jane.doe@example.com' }),
+        })
+      ).text();
       await (await fetch('https://billing.internal.test/invoices/in_123')).text();
       await (await fetch('https://admin.internal.test/admin/users/u_123')).text();
       await (await fetch('https://admin.internal.test/public/status')).text();
@@ -610,11 +632,394 @@ test(
         runtime.snapshotCapturedInteractions().map((interaction) => interaction.service),
         ['internal-crm', 'billing-api', 'admin-api', 'admin.internal.test']
       );
-      assert.equal(runtime.snapshotCapturedInteractions()[0]?.operation, 'POST /v1/customers/search');
+      assert.equal(
+        runtime.snapshotCapturedInteractions()[0]?.operation,
+        'POST /v1/customers/search'
+      );
     } finally {
       _resetForTests();
       await mockAgent.close();
       setGlobalDispatcher(previousDispatcher);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  })
+);
+
+test(
+  'configured service ignore paths allow exact replay variation',
+  withCleanRuntime(async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-ignore-'));
+    const configPath = path.join(tempDir, 'stagehand.yml');
+    let hitCount = 0;
+    const { close, url } = await createTestServer((_request, response) => {
+      hitCount += 1;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(
+        JSON.stringify({ id: 'inv_123', generated_at: 'record-time', trace_id: 'trace-record' })
+      );
+    });
+    const host = new URL(url).hostname;
+    try {
+      fs.writeFileSync(
+        configPath,
+        [
+          'schema_version: v1alpha1',
+          'services:',
+          '  - name: internal-billing',
+          '    type: api',
+          '    match:',
+          `      host: ${host}`,
+          '      path_prefix: /api',
+          '    replay:',
+          '      mode: generic_http',
+          '      allowed_tiers: [0]',
+          '    ignore:',
+          '      request_paths:',
+          '        - headers.x-request-id',
+          '        - query.cursor',
+          '        - body.request_id',
+          '        - body.created_at',
+          '      response_paths:',
+          '        - body.generated_at',
+          '        - body.trace_id',
+          '',
+        ].join('\n'),
+        'utf8'
+      );
+
+      const recordRuntime = init({ session: 'ts-ignore-record', mode: 'record', configPath });
+      const recorded = await fetch(`${url}/api/invoices?cursor=record`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-request-id': 'req-record' },
+        body: JSON.stringify({ amount: 1000, request_id: 'req-record', created_at: 'record-time' }),
+      });
+      assert.equal(recorded.status, 200);
+      await recorded.text();
+      const recordedInteractions = recordRuntime.snapshotCapturedInteractions();
+      const hitsBeforeReplay = hitCount;
+
+      _resetForTests();
+      init({ session: 'ts-ignore-replay', mode: 'replay', configPath });
+      seedReplayInteractions(recordedInteractions);
+
+      const replayed = await fetch(`${url}/api/invoices?cursor=candidate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-request-id': 'req-candidate' },
+        body: JSON.stringify({
+          amount: 1000,
+          request_id: 'req-candidate',
+          created_at: 'candidate-time',
+        }),
+      });
+      assert.equal(replayed.status, 200);
+      assert.equal(((await replayed.json()) as { id: string }).id, 'inv_123');
+      assert.equal(hitCount, hitsBeforeReplay);
+    } finally {
+      _resetForTests();
+      await close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  })
+);
+
+test(
+  'configured service nearest-neighbor replay handles mutable request variation when allowed',
+  withCleanRuntime(async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-nearest-'));
+    const configPath = path.join(tempDir, 'stagehand.yml');
+    let hitCount = 0;
+    const { close, url } = await createTestServer((_request, response) => {
+      hitCount += 1;
+      response.writeHead(202, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ id: 'cus_internal_123' }));
+    });
+    const host = new URL(url).hostname;
+    try {
+      fs.writeFileSync(
+        configPath,
+        [
+          'schema_version: v1alpha1',
+          'services:',
+          '  - name: internal-crm',
+          '    type: api',
+          '    match:',
+          `      host: ${host}`,
+          '      path_prefix: /v1',
+          '    replay:',
+          '      mode: generic_http',
+          '      allowed_tiers: [0, 1]',
+          '',
+        ].join('\n'),
+        'utf8'
+      );
+
+      const recordRuntime = init({ session: 'ts-nearest-record', mode: 'record', configPath });
+      const recorded = await fetch(`${url}/v1/customers/search?cursor=record&page_token=page_1`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-request-id': 'req-record' },
+        body: JSON.stringify({
+          filters: { email: 'jane.doe@example.com', active: true },
+          limit: 25,
+          request_id: 'record-run',
+          created_at: '2026-05-07T12:00:00Z',
+        }),
+      });
+      assert.equal(recorded.status, 202);
+      await recorded.text();
+      const recordedInteractions = recordRuntime.snapshotCapturedInteractions();
+      const hitsBeforeReplay = hitCount;
+
+      _resetForTests();
+      const replayRuntime = init({ session: 'ts-nearest-replay', mode: 'replay', configPath });
+      seedReplayInteractions(recordedInteractions);
+
+      const replayed = await fetch(
+        `${url}/v1/customers/search?cursor=candidate&page_token=page_2`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-request-id': 'req-candidate' },
+          body: JSON.stringify({
+            limit: 25,
+            filters: { active: true, email: 'jane.doe@example.com' },
+            request_id: 'candidate-run',
+            created_at: '2026-05-07T12:01:00Z',
+          }),
+        }
+      );
+      assert.equal(replayed.status, 202);
+      assert.equal(((await replayed.json()) as { id: string }).id, 'cus_internal_123');
+      assert.equal(hitCount, hitsBeforeReplay);
+      const [capturedReplay] = replayRuntime.snapshotCapturedInteractions();
+      assert.equal(capturedReplay?.fallback_tier, 'nearest_neighbor');
+      assert.match(capturedReplay?.fallback_reason ?? '', /nearest request match score=/);
+    } finally {
+      _resetForTests();
+      await close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  })
+);
+
+test(
+  'service ignore paths do not leak into URLs outside the mapping',
+  withCleanRuntime(async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-ignore-isolation-'));
+    const configPath = path.join(tempDir, 'stagehand.yml');
+    let hitCount = 0;
+    const { close, url } = await createTestServer((_request, response) => {
+      hitCount += 1;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ok: true }));
+    });
+    const host = new URL(url).hostname;
+    try {
+      fs.writeFileSync(
+        configPath,
+        [
+          'schema_version: v1alpha1',
+          'services:',
+          '  - name: internal-billing',
+          '    type: api',
+          '    match:',
+          `      host: ${host}`,
+          '      path_prefix: /api',
+          '    replay:',
+          '      mode: generic_http',
+          '      allowed_tiers: [0]',
+          '    ignore:',
+          '      request_paths:',
+          '        - body.request_id',
+          '',
+        ].join('\n'),
+        'utf8'
+      );
+
+      const recordRuntime = init({
+        session: 'ts-ignore-isolation-record',
+        mode: 'record',
+        configPath,
+      });
+      const recorded = await undiciRequest(`${url}/other/path`, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({ request_id: 'req-record' }),
+      });
+      assert.equal(recorded.statusCode, 200);
+      await recorded.body.text();
+      const recordedInteractions = recordRuntime.snapshotCapturedInteractions();
+      const hitsBeforeReplay = hitCount;
+
+      _resetForTests();
+      init({ session: 'ts-ignore-isolation-replay', mode: 'replay', configPath });
+      seedReplayInteractions(recordedInteractions);
+
+      await assertFetchRejectsWithCause(
+        undiciRequest(`${url}/other/path`, {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          body: JSON.stringify({ request_id: 'req-different' }),
+        }),
+        ReplayMissError
+      );
+      assert.equal(hitCount, hitsBeforeReplay);
+    } finally {
+      _resetForTests();
+      await close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  })
+);
+
+test(
+  'service ignore paths suppress nested body and array-wildcard variation in exact replay',
+  withCleanRuntime(async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-ignore-nested-'));
+    const configPath = path.join(tempDir, 'stagehand.yml');
+    const { close, url } = await createTestServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ id: 'inv_123' }));
+    });
+    const host = new URL(url).hostname;
+    try {
+      fs.writeFileSync(
+        configPath,
+        [
+          'schema_version: v1alpha1',
+          'services:',
+          '  - name: internal-billing',
+          '    type: api',
+          '    match:',
+          `      host: ${host}`,
+          '      path_prefix: /api',
+          '    replay:',
+          '      mode: generic_http',
+          '      allowed_tiers: [0]',
+          '    ignore:',
+          '      request_paths:',
+          '        - body.metadata.trace_id',
+          '        - body.line_items[*].request_id',
+          '',
+        ].join('\n'),
+        'utf8'
+      );
+
+      const recordRuntime = init({
+        session: 'ts-ignore-nested-record',
+        mode: 'record',
+        configPath,
+      });
+      const recorded = await fetch(`${url}/api/invoices`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          amount: 100,
+          metadata: { trace_id: 'trace-record', region: 'us-east-1' },
+          line_items: [
+            { sku: 'A', request_id: 'li-record-a' },
+            { sku: 'B', request_id: 'li-record-b' },
+          ],
+        }),
+      });
+      assert.equal(recorded.status, 200);
+      await recorded.text();
+      const recordedInteractions = recordRuntime.snapshotCapturedInteractions();
+
+      _resetForTests();
+      const replayRuntime = init({
+        session: 'ts-ignore-nested-replay',
+        mode: 'replay',
+        configPath,
+      });
+      seedReplayInteractions(recordedInteractions);
+
+      const replayed = await fetch(`${url}/api/invoices`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          amount: 100,
+          metadata: { trace_id: 'trace-candidate', region: 'us-east-1' },
+          line_items: [
+            { sku: 'A', request_id: 'li-candidate-a' },
+            { sku: 'B', request_id: 'li-candidate-b' },
+          ],
+        }),
+      });
+      assert.equal(replayed.status, 200);
+      assert.equal(((await replayed.json()) as { id: string }).id, 'inv_123');
+      assert.equal(replayRuntime.snapshotCapturedInteractions()[0]?.fallback_tier, 'exact');
+    } finally {
+      _resetForTests();
+      await close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  })
+);
+
+test(
+  'service ignore paths still flag a non-ignored body change as a replay miss',
+  withCleanRuntime(async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-ignore-miss-'));
+    const configPath = path.join(tempDir, 'stagehand.yml');
+    let hitCount = 0;
+    const { close, url } = await createTestServer((_request, response) => {
+      hitCount += 1;
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ id: 'inv_123' }));
+    });
+    const host = new URL(url).hostname;
+    try {
+      fs.writeFileSync(
+        configPath,
+        [
+          'schema_version: v1alpha1',
+          'services:',
+          '  - name: internal-billing',
+          '    type: api',
+          '    match:',
+          `      host: ${host}`,
+          '      path_prefix: /api',
+          '    replay:',
+          '      mode: generic_http',
+          '      allowed_tiers: [0]',
+          '    ignore:',
+          '      request_paths:',
+          '        - body.request_id',
+          '',
+        ].join('\n'),
+        'utf8'
+      );
+
+      const recordRuntime = init({
+        session: 'ts-ignore-miss-record',
+        mode: 'record',
+        configPath,
+      });
+      const recorded = await undiciRequest(`${url}/api/invoices`, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: 100, request_id: 'req-record' }),
+      });
+      assert.equal(recorded.statusCode, 200);
+      await recorded.body.text();
+      const recordedInteractions = recordRuntime.snapshotCapturedInteractions();
+      const hitsBeforeReplay = hitCount;
+
+      _resetForTests();
+      init({ session: 'ts-ignore-miss-replay', mode: 'replay', configPath });
+      seedReplayInteractions(recordedInteractions);
+
+      await assertFetchRejectsWithCause(
+        undiciRequest(`${url}/api/invoices`, {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          body: JSON.stringify({ amount: 250, request_id: 'req-candidate' }),
+        }),
+        ReplayMissError
+      );
+      assert.equal(hitCount, hitsBeforeReplay);
+    } finally {
+      _resetForTests();
+      await close();
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   })
@@ -765,6 +1170,105 @@ test(
       };
       assert.equal(metadata.applied[0].call_number, 3);
     } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  })
+);
+
+test(
+  'generic HTTP error injection supports timeout latency malformed body and provenance',
+  withCleanRuntime(async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-generic-inject-'));
+    const configPath = path.join(tempDir, 'stagehand.yml');
+    const injectionPath = path.join(tempDir, 'injection.json');
+    let hitCount = 0;
+    const { close, url } = await createTestServer((_request, response) => {
+      hitCount += 1;
+      response.writeHead(202, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ ok: true }));
+    });
+    const host = new URL(url).hostname;
+    try {
+      fs.writeFileSync(
+        configPath,
+        [
+          'schema_version: v1alpha1',
+          'services:',
+          '  - name: internal-crm',
+          '    type: api',
+          '    match:',
+          `      host: ${host}`,
+          '      path_prefix: /v1',
+          '',
+        ].join('\n'),
+        'utf8'
+      );
+      fs.writeFileSync(
+        injectionPath,
+        JSON.stringify({
+          schema_version: 'v1alpha1',
+          rules: [
+            {
+              name: 'CRM timeout on third lookup',
+              match: {
+                service: 'internal-crm',
+                operation: 'POST /v1/customers/search',
+                nth_call: 3,
+              },
+              inject: { error: 'timeout', latency_ms: 5 },
+            },
+            {
+              name: 'Billing API malformed 500',
+              match: {
+                service: 'internal-crm',
+                operation: 'POST /v1/refunds',
+                probability: 1.0,
+              },
+              inject: { status: 500, latency_ms: 5, body: '{malformed-json' },
+            },
+          ],
+        }),
+        'utf8'
+      );
+      process.env[ENV_ERROR_INJECTION_INPUT] = injectionPath;
+
+      const runtime = init({ session: 'ts-generic-inject', mode: 'record', configPath });
+      assert.equal((await fetch(`${url}/v1/customers/search`, { method: 'POST' })).status, 202);
+      assert.equal((await fetch(`${url}/v1/customers/search`, { method: 'POST' })).status, 202);
+      await assert.rejects(
+        fetch(`${url}/v1/customers/search`, { method: 'POST' }),
+        (error: unknown) =>
+          error instanceof Error &&
+          (error.message.includes('Injected Stagehand timeout') ||
+            String((error as { cause?: unknown }).cause).includes('Injected Stagehand timeout'))
+      );
+
+      const refund = await fetch(`${url}/v1/refunds`, { method: 'POST' });
+      assert.equal(refund.status, 500);
+      assert.equal(await refund.text(), '{malformed-json');
+      assert.equal(hitCount, 2);
+
+      const interactions = runtime.snapshotCapturedInteractions();
+      assert.equal(interactions[2]?.events.at(-1)?.type, 'timeout');
+      assert.equal(
+        (interactions[2]?.events.at(-1)?.data?.stagehand_injection as { name?: string })?.name,
+        'CRM timeout on third lookup'
+      );
+      assert.equal(
+        (interactions[3]?.events.at(-1)?.data?.stagehand_injection as { name?: string })?.name,
+        'Billing API malformed 500'
+      );
+      assert.equal(interactions[3]?.events.at(-1)?.data?.body, '{malformed-json');
+      const metadata = runtime.recorderMetadata().error_injection as {
+        applied: Array<{ name: string }>;
+      };
+      assert.deepEqual(
+        metadata.applied.map((item) => item.name),
+        ['CRM timeout on third lookup', 'Billing API malformed 500']
+      );
+    } finally {
+      _resetForTests();
+      await close();
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   })

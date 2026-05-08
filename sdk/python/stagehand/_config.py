@@ -11,6 +11,9 @@ class ServiceMapping:
     name: str
     host: str
     path_prefix: str
+    allowed_tiers: tuple[int, ...] = (0,)
+    ignore_request_paths: tuple[str, ...] = ()
+    ignore_response_paths: tuple[str, ...] = ()
 
     def matches(self, url: str) -> bool:
         parsed = urlsplit(url)
@@ -43,7 +46,30 @@ def load_service_mappings(config_path: str | Path | None) -> tuple[ServiceMappin
         if not path_prefix.startswith("/"):
             path_prefix = f"/{path_prefix}"
 
-        mappings.append(ServiceMapping(name=name, host=host, path_prefix=path_prefix))
+        ignore = service.get("ignore")
+        ignore_request_paths: tuple[str, ...] = ()
+        ignore_response_paths: tuple[str, ...] = ()
+        if isinstance(ignore, dict):
+            ignore_request_paths = _string_tuple(ignore.get("request_paths"))
+            ignore_response_paths = _string_tuple(ignore.get("response_paths"))
+
+        replay = service.get("replay")
+        allowed_tiers = (0,)
+        if isinstance(replay, dict):
+            configured_tiers = _int_tuple(replay.get("allowed_tiers"))
+            if configured_tiers:
+                allowed_tiers = configured_tiers
+
+        mappings.append(
+            ServiceMapping(
+                name=name,
+                host=host,
+                path_prefix=path_prefix,
+                allowed_tiers=allowed_tiers,
+                ignore_request_paths=ignore_request_paths,
+                ignore_response_paths=ignore_response_paths,
+            )
+        )
 
     return tuple(
         sorted(
@@ -58,6 +84,7 @@ def _parse_services(raw: str) -> list[dict[str, Any]]:
     services: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     section: str | None = None
+    list_key: str | None = None
     in_services = False
 
     for raw_line in raw.splitlines():
@@ -71,6 +98,7 @@ def _parse_services(raw: str) -> list[dict[str, Any]]:
             in_services = stripped == "services:"
             current = None
             section = None
+            list_key = None
             continue
 
         if not in_services:
@@ -80,6 +108,7 @@ def _parse_services(raw: str) -> list[dict[str, Any]]:
             current = {}
             services.append(current)
             section = None
+            list_key = None
             remainder = stripped[2:].strip()
             if remainder:
                 key, value = _split_key_value(remainder)
@@ -97,8 +126,10 @@ def _parse_services(raw: str) -> list[dict[str, Any]]:
             if value is None:
                 section = key
                 current.setdefault(section, {})
+                list_key = None
                 continue
             section = None
+            list_key = None
             current[key] = value
             continue
 
@@ -107,9 +138,38 @@ def _parse_services(raw: str) -> list[dict[str, Any]]:
             if isinstance(parent, dict):
                 key, value = _split_key_value(stripped)
                 if key:
-                    parent[key] = value
+                    if value is None:
+                        parent.setdefault(key, [])
+                        list_key = key
+                    else:
+                        parent[key] = value
+                        list_key = None
+            continue
+
+        if indent == 8 and section is not None and list_key is not None:
+            parent = current.setdefault(section, {})
+            if isinstance(parent, dict) and stripped.startswith("- "):
+                items = parent.setdefault(list_key, [])
+                if isinstance(items, list):
+                    items.append(_parse_scalar(stripped[2:].strip()))
 
     return services
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item).strip() for item in value if str(item).strip())
+
+
+def _int_tuple(value: Any) -> tuple[int, ...]:
+    if not isinstance(value, list):
+        return ()
+    tiers: list[int] = []
+    for item in value:
+        if isinstance(item, int) and item not in tiers:
+            tiers.append(item)
+    return tuple(tiers)
 
 
 def _split_key_value(value: str) -> tuple[str | None, Any]:

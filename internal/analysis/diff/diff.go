@@ -23,7 +23,13 @@ const (
 )
 
 type Options struct {
-	IgnoredFields []string
+	IgnoredFields        []string
+	ServiceIgnoredFields map[string]ServiceIgnoredFields
+}
+
+type ServiceIgnoredFields struct {
+	RequestPaths  []string
+	ResponsePaths []string
 }
 
 type Result struct {
@@ -69,7 +75,8 @@ func Compare(base, candidate recorder.Run, opts Options) (Result, error) {
 	}
 
 	ignored := normalizeIgnoredFields(opts.IgnoredFields)
-	aligned := alignInteractions(base.Interactions, candidate.Interactions, ignored)
+	serviceIgnored := normalizeServiceIgnoredFields(opts.ServiceIgnoredFields)
+	aligned := alignInteractions(base.Interactions, candidate.Interactions, ignored, serviceIgnored)
 
 	result := Result{
 		BaseRunID:      base.RunID,
@@ -93,8 +100,9 @@ func Compare(base, candidate recorder.Run, opts Options) (Result, error) {
 			if fallbackRegressed(baseInteraction.FallbackTier, candidateInteraction.FallbackTier) {
 				result.Changes = append(result.Changes, fallbackRegressionChange(baseInteraction, candidateInteraction))
 			}
-			if canonicalInteraction(baseInteraction, ignored) != canonicalInteraction(candidateInteraction, ignored) {
-				result.Changes = append(result.Changes, modifiedChange(baseInteraction, candidateInteraction, ignored))
+			pairIgnored := ignoredForInteraction(baseInteraction, ignored, serviceIgnored)
+			if canonicalInteraction(baseInteraction, pairIgnored) != canonicalInteraction(candidateInteraction, pairIgnored) {
+				result.Changes = append(result.Changes, modifiedChange(baseInteraction, candidateInteraction, pairIgnored))
 			}
 		}
 	}
@@ -102,9 +110,9 @@ func Compare(base, candidate recorder.Run, opts Options) (Result, error) {
 	return result, nil
 }
 
-func alignInteractions(base []recorder.Interaction, candidate []recorder.Interaction, ignored map[string]bool) []alignedInteraction {
-	baseIndexed := indexInteractions(base, ignored)
-	candidateIndexed := indexInteractions(candidate, ignored)
+func alignInteractions(base []recorder.Interaction, candidate []recorder.Interaction, ignored map[string]bool, serviceIgnored map[string]map[string]bool) []alignedInteraction {
+	baseIndexed := indexInteractions(base, ignored, serviceIgnored)
+	candidateIndexed := indexInteractions(candidate, ignored, serviceIgnored)
 
 	byKey := map[string]*alignedInteraction{}
 	order := make([]string, 0, len(baseIndexed)+len(candidateIndexed))
@@ -141,7 +149,7 @@ func alignInteractions(base []recorder.Interaction, candidate []recorder.Interac
 	return aligned
 }
 
-func indexInteractions(interactions []recorder.Interaction, ignored map[string]bool) []indexedInteraction {
+func indexInteractions(interactions []recorder.Interaction, ignored map[string]bool, serviceIgnored map[string]map[string]bool) []indexedInteraction {
 	ordered := append([]recorder.Interaction(nil), interactions...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		if ordered[i].Sequence == ordered[j].Sequence {
@@ -153,7 +161,7 @@ func indexInteractions(interactions []recorder.Interaction, ignored map[string]b
 	seen := map[string]int{}
 	indexed := make([]indexedInteraction, 0, len(ordered))
 	for _, interaction := range ordered {
-		baseKey := identityKey(interaction, ignored)
+		baseKey := identityKey(interaction, ignoredForInteraction(interaction, ignored, serviceIgnored))
 		seen[baseKey]++
 		key := fmt.Sprintf("%s\x00%d", baseKey, seen[baseKey])
 		indexed = append(indexed, indexedInteraction{
@@ -172,7 +180,7 @@ func identityKey(interaction recorder.Interaction, ignored map[string]bool) stri
 		"protocol":  interaction.Protocol,
 		"request": map[string]any{
 			"method": strings.ToUpper(interaction.Request.Method),
-			"url":    normalizedURL(interaction.Request.URL),
+			"url":    normalizedURLWithIgnoredQuery(interaction.Request.URL, ignored),
 		},
 	}
 	removeIgnoredFields(identity, ignored)
@@ -194,12 +202,17 @@ func decodedInteraction(interaction recorder.Interaction, ignored map[string]boo
 		return string(encoded)
 	}
 	if object, ok := decoded.(map[string]any); ok {
+		removeIgnoredRequestQueryParams(object, ignored)
 		removeIgnoredFields(object, ignored)
 	}
 	return decoded
 }
 
 func normalizedURL(raw string) string {
+	return normalizedURLWithIgnoredQuery(raw, nil)
+}
+
+func normalizedURLWithIgnoredQuery(raw string, ignored map[string]bool) string {
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return strings.TrimSpace(raw)
@@ -208,6 +221,9 @@ func normalizedURL(raw string) string {
 	parsed.Scheme = strings.ToLower(parsed.Scheme)
 	parsed.Host = strings.ToLower(parsed.Host)
 	values := parsed.Query()
+	for key := range ignoredQueryKeys(ignored) {
+		values.Del(key)
+	}
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		sort.Strings(values[key])
@@ -223,6 +239,48 @@ func normalizedURL(raw string) string {
 	parsed.RawQuery = ordered.Encode()
 	parsed.Fragment = ""
 	return parsed.String()
+}
+
+func ignoredForInteraction(interaction recorder.Interaction, global map[string]bool, serviceIgnored map[string]map[string]bool) map[string]bool {
+	serviceFields := serviceIgnored[interaction.Service]
+	if len(serviceFields) == 0 {
+		return global
+	}
+	merged := make(map[string]bool, len(global)+len(serviceFields))
+	for key, value := range global {
+		merged[key] = value
+	}
+	for key, value := range serviceFields {
+		merged[key] = value
+	}
+	return merged
+}
+
+func ignoredQueryKeys(ignored map[string]bool) map[string]bool {
+	keys := map[string]bool{}
+	for field := range ignored {
+		field = strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(field, "$."), "."), "request.")
+		if !strings.HasPrefix(field, "query.") || field == "query." {
+			continue
+		}
+		keys[strings.ToLower(strings.TrimPrefix(field, "query."))] = true
+	}
+	return keys
+}
+
+func removeIgnoredRequestQueryParams(value map[string]any, ignored map[string]bool) {
+	if len(ignoredQueryKeys(ignored)) == 0 {
+		return
+	}
+	request, ok := value["request"].(map[string]any)
+	if !ok {
+		return
+	}
+	rawURL, ok := request["url"].(string)
+	if !ok {
+		return
+	}
+	request["url"] = normalizedURLWithIgnoredQuery(rawURL, ignored)
 }
 
 func removeIgnoredFields(value any, ignored map[string]bool) {
@@ -383,6 +441,7 @@ func normalizeIgnoredFields(fields []string) map[string]bool {
 		"interaction_id":               true,
 		"sequence":                     true,
 		"fallback_tier":                true,
+		"fallback_reason":              true,
 		"latency_ms":                   true,
 		"events[*].t_ms":               true,
 		"events[*].sim_t_ms":           true,
@@ -403,6 +462,52 @@ func normalizeIgnoredFields(fields []string) map[string]bool {
 		}
 	}
 	return ignored
+}
+
+func normalizeServiceIgnoredFields(fields map[string]ServiceIgnoredFields) map[string]map[string]bool {
+	normalized := map[string]map[string]bool{}
+	for service, serviceFields := range fields {
+		service = strings.TrimSpace(service)
+		if service == "" {
+			continue
+		}
+		diffFields := make([]string, 0, len(serviceFields.RequestPaths)+len(serviceFields.ResponsePaths))
+		for _, path := range serviceFields.RequestPaths {
+			path = normalizeRelativeIgnorePath(path, "request")
+			if path != "" {
+				diffFields = append(diffFields, path)
+			}
+		}
+		for _, path := range serviceFields.ResponsePaths {
+			path = normalizeRelativeIgnorePath(path, "response")
+			if path != "" {
+				diffFields = append(diffFields, path)
+			}
+		}
+		if len(diffFields) > 0 {
+			normalized[service] = normalizeIgnoredFields(diffFields)
+		}
+	}
+	return normalized
+}
+
+func normalizeRelativeIgnorePath(path, prefix string) string {
+	path = strings.TrimSpace(path)
+	path = strings.TrimPrefix(path, "$.")
+	path = strings.TrimPrefix(path, ".")
+	if path == "" {
+		return ""
+	}
+	if strings.HasPrefix(path, prefix+".") || path == prefix {
+		return path
+	}
+	if prefix == "request" && strings.HasPrefix(path, "response.") {
+		return path
+	}
+	if prefix == "response" && strings.HasPrefix(path, "request.") {
+		return path
+	}
+	return prefix + "." + path
 }
 
 func fallbackRegressed(base, candidate recorder.FallbackTier) bool {

@@ -52,6 +52,16 @@ services:
     replay:
       mode: generic_http
       allowed_tiers: [0, 1]
+    ignore:
+      request_paths:
+        - headers.x-request-id
+        - headers.x-trace-id
+        - query.cursor
+        - body.request_id
+        - body.created_at
+      response_paths:
+        - body.generated_at
+        - body.trace_id
   - name: billing-api
     type: api
     match:

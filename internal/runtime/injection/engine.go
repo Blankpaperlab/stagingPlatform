@@ -30,14 +30,18 @@ type Match struct {
 }
 
 type Inject struct {
-	Library string
-	Status  int
-	Body    map[string]any
+	Library   string
+	Status    int
+	Error     string
+	LatencyMS int
+	Body      any
 }
 
 type ResponseOverride struct {
-	Status int            `json:"status"`
-	Body   map[string]any `json:"body,omitempty"`
+	Status    int            `json:"status,omitempty"`
+	Error     string         `json:"error,omitempty"`
+	LatencyMS int            `json:"latency_ms,omitempty"`
+	Body      map[string]any `json:"body,omitempty"`
 }
 
 type Provenance struct {
@@ -49,7 +53,9 @@ type Provenance struct {
 	AnyCall     bool     `json:"any_call,omitempty"`
 	Probability *float64 `json:"probability,omitempty"`
 	Library     string   `json:"library,omitempty"`
-	Status      int      `json:"status"`
+	Status      int      `json:"status,omitempty"`
+	Error       string   `json:"error,omitempty"`
+	LatencyMS   int      `json:"latency_ms,omitempty"`
 }
 
 type Decision struct {
@@ -126,9 +132,11 @@ func NewEngineFromConfig(cfg config.ErrorInjectionConfig, opts ...Option) (*Engi
 				Probability: rule.Match.Probability,
 			},
 			Inject: Inject{
-				Library: rule.Inject.Library,
-				Status:  rule.Inject.Status,
-				Body:    rule.Inject.Body,
+				Library:   rule.Inject.Library,
+				Status:    rule.Inject.Status,
+				Error:     rule.Inject.Error,
+				LatencyMS: rule.Inject.LatencyMS,
+				Body:      rule.Inject.Body,
 			},
 		})
 	}
@@ -177,6 +185,8 @@ func (e *Engine) Evaluate(request Request) (Decision, error) {
 				Probability: cloneProbability(rule.Match.Probability),
 				Library:     strings.TrimSpace(rule.Inject.Library),
 				Status:      override.Status,
+				Error:       override.Error,
+				LatencyMS:   override.LatencyMS,
 			},
 		}, nil
 	}
@@ -230,10 +240,27 @@ func resolveInject(inject Inject) (ResponseOverride, error) {
 		return override, nil
 	}
 
-	if inject.Status < 100 || inject.Status > 599 {
-		return ResponseOverride{}, fmt.Errorf("inject status must be between 100 and 599")
+	errorKind := strings.ToLower(strings.TrimSpace(inject.Error))
+	if errorKind != "" && errorKind != "timeout" {
+		return ResponseOverride{}, fmt.Errorf("inject error must be timeout when set")
 	}
-	body := cloneAnyMap(inject.Body)
+
+	if inject.LatencyMS < 0 {
+		return ResponseOverride{}, fmt.Errorf("inject latency_ms must be greater than or equal to 0")
+	}
+
+	if errorKind == "timeout" {
+		return ResponseOverride{
+			Error:     "timeout",
+			LatencyMS: inject.LatencyMS,
+		}, nil
+	}
+
+	if inject.Status < 100 || inject.Status > 599 {
+		return ResponseOverride{}, fmt.Errorf("inject status must be between 100 and 599 unless error is timeout")
+	}
+	body, _ := inject.Body.(map[string]any)
+	body = cloneAnyMap(body)
 	if body == nil {
 		body = map[string]any{
 			"error": map[string]any{
@@ -243,8 +270,9 @@ func resolveInject(inject Inject) (ResponseOverride, error) {
 		}
 	}
 	return ResponseOverride{
-		Status: inject.Status,
-		Body:   body,
+		Status:    inject.Status,
+		LatencyMS: inject.LatencyMS,
+		Body:      body,
 	}, nil
 }
 

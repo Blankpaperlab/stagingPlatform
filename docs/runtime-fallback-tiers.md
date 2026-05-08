@@ -64,11 +64,12 @@ It then scores:
 - query parameter similarity
 - non-sensitive header similarity
 
-Sensitive headers such as `authorization`, `cookie`, and `set-cookie` are ignored. Candidate ties are resolved by recorded sequence and then interaction ID.
+Sensitive headers such as `authorization`, `cookie`, and `set-cookie` are ignored. Mutable generic HTTP fields are also ignored for nearest scoring when they look like request IDs, trace IDs, idempotency keys, pagination cursors or tokens, and timestamp-like values. Candidate ties are resolved by recorded sequence and then interaction ID.
 
 When nearest-neighbor matching succeeds, the returned interaction has:
 
 - `fallback_tier = "nearest_neighbor"`
+- `fallback_reason` with the nearest score and why tier 1 was selected
 
 ## Tier 2: State Synthesis
 

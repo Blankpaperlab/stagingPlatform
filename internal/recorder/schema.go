@@ -133,6 +133,7 @@ type Interaction struct {
 	Protocol            Protocol          `json:"protocol"`
 	Streaming           bool              `json:"streaming"`
 	FallbackTier        FallbackTier      `json:"fallback_tier,omitempty"`
+	FallbackReason      string            `json:"fallback_reason,omitempty"`
 	Request             Request           `json:"request"`
 	Events              []Event           `json:"events"`
 	ExtractedEntities   []ExtractedEntity `json:"extracted_entities,omitempty"`

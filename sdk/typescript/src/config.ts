@@ -4,6 +4,9 @@ export type ServiceMapping = {
   name: string;
   host: string;
   pathPrefix: string;
+  allowedTiers: number[];
+  ignoreRequestPaths: string[];
+  ignoreResponsePaths: string[];
 };
 
 export function loadServiceMappings(configPath: string | undefined): ServiceMapping[] {
@@ -28,7 +31,16 @@ export function loadServiceMappings(configPath: string | undefined): ServiceMapp
           : rawPathPrefix.startsWith('/')
             ? rawPathPrefix
             : `/${rawPathPrefix}`;
-      return { name, host, pathPrefix };
+      const ignore = asRecord(service.ignore);
+      const replay = asRecord(service.replay);
+      return {
+        name,
+        host,
+        pathPrefix,
+        allowedTiers: numberArray(replay?.allowed_tiers, [0]),
+        ignoreRequestPaths: stringArray(ignore?.request_paths),
+        ignoreResponsePaths: stringArray(ignore?.response_paths),
+      };
     })
     .filter((mapping): mapping is ServiceMapping => mapping !== undefined)
     .sort((left, right) => {
@@ -65,6 +77,7 @@ function parseServices(raw: string): Array<Record<string, unknown>> {
   const services: Array<Record<string, unknown>> = [];
   let current: Record<string, unknown> | undefined;
   let section: string | undefined;
+  let listKey: string | undefined;
   let inServices = false;
 
   for (const rawLine of raw.split(/\r?\n/)) {
@@ -79,6 +92,7 @@ function parseServices(raw: string): Array<Record<string, unknown>> {
       inServices = stripped === 'services:';
       current = undefined;
       section = undefined;
+      listKey = undefined;
       continue;
     }
 
@@ -90,6 +104,7 @@ function parseServices(raw: string): Array<Record<string, unknown>> {
       current = {};
       services.push(current);
       section = undefined;
+      listKey = undefined;
       const remainder = stripped.slice(2).trim();
       if (remainder.length > 0) {
         const [key, value] = splitKeyValue(remainder);
@@ -112,9 +127,11 @@ function parseServices(raw: string): Array<Record<string, unknown>> {
       if (value === undefined) {
         section = key;
         current[section] = {};
+        listKey = undefined;
         continue;
       }
       section = undefined;
+      listKey = undefined;
       current[key] = value;
       continue;
     }
@@ -126,7 +143,27 @@ function parseServices(raw: string): Array<Record<string, unknown>> {
       }
       const [key, value] = splitKeyValue(stripped);
       if (key !== undefined) {
-        parent[key] = value;
+        if (value === undefined) {
+          parent[key] = [];
+          listKey = key;
+        } else {
+          parent[key] = value;
+          listKey = undefined;
+        }
+      }
+      continue;
+    }
+
+    if (
+      indent === 8 &&
+      section !== undefined &&
+      listKey !== undefined &&
+      stripped.startsWith('- ')
+    ) {
+      const parent = asRecord(current[section]);
+      const items = parent?.[listKey];
+      if (Array.isArray(items)) {
+        items.push(parseScalar(stripped.slice(2).trim()));
       }
     }
   }
@@ -199,4 +236,19 @@ function asString(value: unknown): string {
     return '';
   }
   return String(value);
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => String(item).trim()).filter((item) => item.length > 0);
+}
+
+function numberArray(value: unknown, fallback: number[]): number[] {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+  const numbers = value.filter((item): item is number => Number.isInteger(item));
+  return numbers.length === 0 ? fallback : Array.from(new Set(numbers));
 }

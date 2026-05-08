@@ -72,9 +72,9 @@ export function installRequestInterception({
         elapsedMs: elapsedSince(startedAt),
       });
       if (injected !== undefined) {
-        return dispatchReplayInteraction({
+        return dispatchInjectedInteraction({
           request,
-          interaction: injected,
+          injected,
           handler,
           abortSignal,
         });
@@ -102,7 +102,11 @@ export function installRequestInterception({
           }
 
           const match = replayStore.popMatch(request);
-          captureBuffer.recordReplayInteraction(match.interaction, 'exact');
+          captureBuffer.recordReplayInteraction(
+            match.interaction,
+            match.fallbackTier,
+            match.fallbackReason
+          );
           return dispatchReplayInteraction({
             request,
             interaction: match.interaction,
@@ -264,6 +268,12 @@ export function installRequestInterception({
   installed = true;
 }
 
+type InjectedInteraction = {
+  interaction: CapturedInteraction;
+  latencyMs: number;
+  timeout: boolean;
+};
+
 function injectedInteraction({
   injectionEngine,
   captureBuffer,
@@ -280,27 +290,101 @@ function injectedInteraction({
   operation: string;
   protocol: string;
   elapsedMs: number;
-}): CapturedInteraction | undefined {
+}): InjectedInteraction | undefined {
   const decision = injectionEngine.evaluate({ service, operation });
   if (decision === null) {
     return undefined;
   }
 
-  return captureBuffer.recordSuccess({
+  const latencyMs = decision.override.latency_ms ?? 0;
+  const totalElapsedMs = elapsedMs + latencyMs;
+  const metadata = { stagehand_injection: decision.provenance };
+  if (decision.override.error === 'timeout') {
+    const interaction = captureBuffer.recordFailure({
+      service,
+      operation,
+      protocol,
+      request,
+      elapsedMs: totalElapsedMs,
+      failureType: 'timeout',
+      errorClass: 'TimeoutError',
+      message: 'Injected Stagehand timeout.',
+      metadata,
+    });
+    return { interaction, latencyMs, timeout: true };
+  }
+
+  const interaction = captureBuffer.recordSuccess({
     service,
     operation,
     protocol,
     request,
-    elapsedMs,
+    elapsedMs: totalElapsedMs,
     streaming: false,
     response: {
-      statusCode: decision.override.status,
+      statusCode: decision.override.status ?? 500,
       headers: {
         'content-type': ['application/json'],
         'x-stagehand-injected': ['true'],
       },
       body: decision.override.body ?? null,
+      metadata,
     },
+  });
+  return { interaction, latencyMs, timeout: false };
+}
+
+function dispatchInjectedInteraction({
+  request,
+  injected,
+  handler,
+  abortSignal,
+}: {
+  request: CapturedRequest;
+  injected: InjectedInteraction;
+  handler: Dispatcher.DispatchHandler;
+  abortSignal?: AbortSignal;
+}): boolean {
+  const dispatch = (): void => {
+    if (injected.timeout) {
+      dispatchInjectedTimeout({ request, interaction: injected.interaction, handler, abortSignal });
+      return;
+    }
+    dispatchReplayInteraction({
+      request,
+      interaction: injected.interaction,
+      handler,
+      abortSignal,
+    });
+  };
+  if (injected.latencyMs > 0) {
+    setTimeout(dispatch, injected.latencyMs);
+    return true;
+  }
+  dispatch();
+  return true;
+}
+
+function dispatchInjectedTimeout({
+  request,
+  interaction,
+  handler,
+  abortSignal,
+}: {
+  request: CapturedRequest;
+  interaction: CapturedInteraction;
+  handler: Dispatcher.DispatchHandler;
+  abortSignal?: AbortSignal;
+}): void {
+  queueMicrotask(() => {
+    const controller = createReplayController();
+    const error = abortSignal?.aborted
+      ? abortReason(abortSignal)
+      : new DOMException('Injected Stagehand timeout.', 'TimeoutError');
+    handler.onRequestStart?.(controller, { injected: true, request, interaction });
+    handler.onConnect?.(() => controller.abort(new Error('injected request aborted')));
+    handler.onResponseError?.(controller, error);
+    handler.onError?.(error);
   });
 }
 
@@ -575,14 +659,12 @@ export function resetRequestInterceptionForTests(): void {
 
 function normalizeCapturedRequest(options: Dispatcher.DispatchOptions): CapturedRequest {
   const url = buildRequestURL(options);
+  const headers = normalizeRequestHeaders(options.headers);
   return {
     url,
     method: options.method.toUpperCase(),
-    headers: normalizeRequestHeaders(options.headers),
-    body: normalizeRequestBody(
-      options.body,
-      normalizeRequestHeaders(options.headers)['content-type']?.[0] ?? ''
-    ),
+    headers,
+    body: normalizeRequestBody(options.body, headers['content-type']?.[0] ?? '', headers),
   };
 }
 
@@ -661,7 +743,8 @@ function normalizeRawHeaderPairs(headers: Buffer[]): CapturedHeaders {
 
 function normalizeRequestBody(
   body: Dispatcher.DispatchOptions['body'],
-  contentType: string
+  contentType: string,
+  headers: CapturedHeaders
 ): unknown {
   if (body == null) {
     return null;
@@ -680,18 +763,22 @@ function normalizeRequestBody(
   }
 
   if (body instanceof Readable) {
-    return { type: 'stream' };
+    return opaqueBodySignature('stream', headers);
   }
 
   if (isWebReadableStream(body)) {
-    return { type: 'stream' };
+    return opaqueBodySignature('stream', headers);
   }
 
   if (isFormData(body)) {
-    return { type: 'form-data' };
+    return opaqueBodySignature('form-data', headers);
   }
 
-  return { type: typeof body };
+  return opaqueBodySignature(typeof body, headers);
+}
+
+function opaqueBodySignature(type: string, headers: CapturedHeaders): Record<string, unknown> {
+  return { type };
 }
 
 function normalizeResponseBody(chunks: Buffer[], contentType: string): unknown {

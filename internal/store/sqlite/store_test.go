@@ -204,6 +204,7 @@ func TestStorePersistsInteractionFallbackTier(t *testing.T) {
 
 	interaction := validInteraction(run.RunID)
 	interaction.FallbackTier = recorder.FallbackTierNearestNeighbor
+	interaction.FallbackReason = "nearest request match score=0.92; query differed only within nearest-neighbor tolerance"
 	if err := sqliteStore.WriteInteraction(context.Background(), interaction); err != nil {
 		t.Fatalf("WriteInteraction() error = %v", err)
 	}
@@ -217,6 +218,9 @@ func TestStorePersistsInteractionFallbackTier(t *testing.T) {
 	}
 	if interactions[0].FallbackTier != recorder.FallbackTierNearestNeighbor {
 		t.Fatalf("FallbackTier = %q, want %q", interactions[0].FallbackTier, recorder.FallbackTierNearestNeighbor)
+	}
+	if interactions[0].FallbackReason != interaction.FallbackReason {
+		t.Fatalf("FallbackReason = %q, want %q", interactions[0].FallbackReason, interaction.FallbackReason)
 	}
 }
 
@@ -1150,6 +1154,7 @@ func TestMigrationCountMatchesEmbeddedMigrations(t *testing.T) {
 		"0003_session_lifecycle",
 		"0004_event_queue",
 		"0005_add_run_metadata",
+		"0006_add_fallback_reason",
 	}) {
 		t.Fatalf("migration versions = %v", versions)
 	}

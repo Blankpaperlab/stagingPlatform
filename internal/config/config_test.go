@@ -72,6 +72,14 @@ services:
     replay:
       mode: generic_http
       allowed_tiers: [0, 1]
+    ignore:
+      request_paths:
+        - headers.x-request-id
+        - query.cursor
+        - body.request_id
+      response_paths:
+        - body.generated_at
+        - body.trace_id
   - name: billing-api
     type: api
     match:
@@ -99,6 +107,12 @@ services:
 	if cfg.Services[0].Replay.Mode != "generic_http" {
 		t.Fatalf("Services[0].Replay.Mode = %q, want generic_http", cfg.Services[0].Replay.Mode)
 	}
+	if got := cfg.Services[0].Ignore.RequestPaths; len(got) != 3 || got[0] != "headers.x-request-id" || got[1] != "query.cursor" || got[2] != "body.request_id" {
+		t.Fatalf("Services[0].Ignore.RequestPaths = %#v, want configured request ignore paths", got)
+	}
+	if got := cfg.Services[0].Ignore.ResponsePaths; len(got) != 2 || got[0] != "body.generated_at" || got[1] != "body.trace_id" {
+		t.Fatalf("Services[0].Ignore.ResponsePaths = %#v, want configured response ignore paths", got)
+	}
 }
 
 func TestLoadRejectsInvalidServiceMappings(t *testing.T) {
@@ -118,6 +132,11 @@ services:
     replay:
       mode: synthetic
       allowed_tiers: [1, 0, 4]
+    ignore:
+      request_paths:
+        - ""
+        - body.request_id
+        - body.request_id
 `
 
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -137,10 +156,72 @@ services:
 		"services[1].match.path_prefix",
 		"services[1].replay.mode",
 		"services[1].replay.allowed_tiers",
+		"services[1].ignore.request_paths",
 	} {
 		if !strings.Contains(errText, want) {
 			t.Fatalf("validation error %q missing from %v", want, err)
 		}
+	}
+}
+
+func TestLoadRejectsServiceIgnoreWithWhitespaceOnlyPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stagehand.yml")
+	content := `
+schema_version: v1alpha1
+services:
+  - name: internal-crm
+    type: api
+    match:
+      host: crm.internal.acme.com
+      path_prefix: /v1
+    ignore:
+      response_paths:
+        - "   "
+        - body.generated_at
+`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() expected validation failure for whitespace-only ignore path")
+	}
+
+	if !strings.Contains(err.Error(), "services[0].ignore.response_paths") {
+		t.Fatalf("validation error %q missing from %v", "services[0].ignore.response_paths", err)
+	}
+}
+
+func TestLoadAcceptsServiceMappingWithoutIgnoreSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stagehand.yml")
+	content := `
+schema_version: v1alpha1
+services:
+  - name: internal-crm
+    type: api
+    match:
+      host: crm.internal.acme.com
+      path_prefix: /v1
+`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if got := cfg.Services[0].Ignore.RequestPaths; len(got) != 0 {
+		t.Fatalf("Services[0].Ignore.RequestPaths = %#v, want empty when ignore section omitted", got)
+	}
+	if got := cfg.Services[0].Ignore.ResponsePaths; len(got) != 0 {
+		t.Fatalf("Services[0].Ignore.ResponsePaths = %#v, want empty when ignore section omitted", got)
 	}
 }
 

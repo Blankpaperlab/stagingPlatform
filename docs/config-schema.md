@@ -135,14 +135,20 @@ Canonical tier order:
 
 Service mappings give company APIs stable service aliases while keeping operation names inferred from the HTTP method and path.
 
-| Field                         | Required | Default | Validation                    |
-| ----------------------------- | -------- | ------- | ----------------------------- |
-| `services[*].name`            | yes      | none    | non-empty, unique             |
-| `services[*].type`            | yes      | none    | `api`                         |
-| `services[*].match.host`      | yes      | none    | non-empty host                |
-| `services[*].match.path_prefix` | no     | `/`     | must start with `/` when set  |
-| `services[*].replay.mode`     | no       | none    | `generic_http` when set       |
-| `services[*].replay.allowed_tiers` | no  | `[]`    | integers `0` through `3`, ascending and unique |
+| Field                               | Required | Default | Validation                                     |
+| ----------------------------------- | -------- | ------- | ---------------------------------------------- |
+| `services[*].name`                  | yes      | none    | non-empty, unique                              |
+| `services[*].type`                  | yes      | none    | `api`                                          |
+| `services[*].match.host`            | yes      | none    | non-empty host                                 |
+| `services[*].match.path_prefix`     | no       | `/`     | must start with `/` when set                   |
+| `services[*].replay.mode`           | no       | none    | `generic_http` when set                        |
+| `services[*].replay.allowed_tiers`  | no       | `[]`    | integers `0` through `3`, ascending and unique |
+| `services[*].ignore.request_paths`  | no       | `[]`    | non-empty request-relative paths               |
+| `services[*].ignore.response_paths` | no       | `[]`    | non-empty response-relative paths              |
+
+`ignore.request_paths` are applied before generic HTTP exact-replay fingerprinting for mapped services. They also feed mapped-service diff tolerance. Use request-relative paths such as `headers.x-request-id`, `headers.x-trace-id`, `query.cursor`, `body.request_id`, `body.created_at`, and `body.idempotency_key`.
+
+`ignore.response_paths` are applied during diff comparison for mapped services. Common response patterns include `body.generated_at`, `body.trace_id`, `body.next_cursor`, and `headers.x-request-id`.
 
 Example:
 
@@ -156,6 +162,15 @@ services:
     replay:
       mode: generic_http
       allowed_tiers: [0, 1]
+    ignore:
+      request_paths:
+        - headers.x-request-id
+        - query.cursor
+        - body.request_id
+        - body.created_at
+      response_paths:
+        - body.generated_at
+        - body.trace_id
 ```
 
 ## `stagehand.test.yml`
@@ -211,13 +226,15 @@ Per-rule match fields:
 
 Per-rule inject fields:
 
-| Field            | Required    | Validation                                 |
-| ---------------- | ----------- | ------------------------------------------ |
-| `inject.library` | conditional | use this for named simulator errors        |
-| `inject.status`  | conditional | required when `inject.library` is not used |
-| `inject.body`    | conditional | optional alongside `inject.status`         |
+| Field               | Required    | Validation                              |
+| ------------------- | ----------- | --------------------------------------- |
+| `inject.library`    | conditional | use this for named simulator errors     |
+| `inject.status`     | conditional | required unless `inject.error: timeout` |
+| `inject.error`      | conditional | currently supports `timeout`            |
+| `inject.latency_ms` | no          | must be `>= 0`                          |
+| `inject.body`       | conditional | optional alongside `inject.status`      |
 
-Rules cannot mix `inject.library` with explicit `status/body`.
+Rules cannot mix `inject.library` with explicit response fields.
 
 If `match.probability` is omitted, the rule is treated as deterministic once its service, operation, and call-count matcher pass.
 

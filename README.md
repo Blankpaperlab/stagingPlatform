@@ -47,6 +47,7 @@ Current status:
 - Story K1 baseline promotion implemented for complete stored runs with deterministic latest-baseline selection
 - Story K2 diff alignment implemented for added, removed, modified, ordering, and fallback-regression changes
 - Story K3 diff renderers implemented for JSON, terminal summaries, and GitHub markdown
+- Story N6 custom API docs and CI-covered CRM/billing regression demo added
 - Dashboard remains deferred in Plan A and is represented by a placeholder
 
 Primary planning docs live under `docs/`.
@@ -64,6 +65,7 @@ Current schema references:
 - runtime fallback tiers: `docs/runtime-fallback-tiers.md`
 - runtime resilience behavior: `docs/runtime-resilience.md`
 - runtime error injection: `docs/runtime-error-injection.md`
+- custom API generic HTTP: `docs/custom-api-generic-http.md`
 - assertion schema: `docs/assertion-schema.md`
 - Stripe simulator subset: `docs/stripe-simulator-subset.md`
 - local SQLite store and migrations: `docs/sqlite-local-store.md`

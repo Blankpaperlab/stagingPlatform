@@ -55,6 +55,67 @@ type namedErrorInjectionRule struct {
 	Inject config.ErrorInject `yaml:"inject"`
 }
 
+func (s *errorInjectionSection) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.SequenceNode:
+		var shortcuts []shortcutErrorInjectionRule
+		if err := value.Decode(&shortcuts); err != nil {
+			return err
+		}
+		s.Rules = make([]namedErrorInjectionRule, 0, len(shortcuts))
+		for _, shortcut := range shortcuts {
+			s.Rules = append(s.Rules, shortcut.toRule())
+		}
+		return nil
+	case yaml.MappingNode:
+		type rawSection errorInjectionSection
+		var raw rawSection
+		if err := value.Decode(&raw); err != nil {
+			return err
+		}
+		*s = errorInjectionSection(raw)
+		return nil
+	default:
+		return fmt.Errorf("error_injection must be a mapping or sequence")
+	}
+}
+
+type shortcutErrorInjectionRule struct {
+	Name        string                    `yaml:"name"`
+	Service     string                    `yaml:"service"`
+	Operation   string                    `yaml:"operation"`
+	NthCall     int                       `yaml:"nth_call"`
+	AnyCall     bool                      `yaml:"any_call"`
+	Probability *float64                  `yaml:"probability"`
+	Response    shortcutInjectionResponse `yaml:"response"`
+}
+
+type shortcutInjectionResponse struct {
+	Error     string `yaml:"error"`
+	Status    int    `yaml:"status"`
+	LatencyMS int    `yaml:"latency_ms"`
+	Body      any    `yaml:"body"`
+}
+
+func (r shortcutErrorInjectionRule) toRule() namedErrorInjectionRule {
+	return namedErrorInjectionRule{
+		Name: strings.TrimSpace(r.Name),
+		Match: config.ErrorMatch{
+			Service:     strings.TrimSpace(r.Service),
+			Operation:   strings.TrimSpace(r.Operation),
+			NthCall:     r.NthCall,
+			AnyCall:     r.AnyCall,
+			Probability: r.Probability,
+		},
+		Inject: config.ErrorInject{
+			Status:    r.Response.Status,
+			Error:     strings.TrimSpace(r.Response.Error),
+			LatencyMS: r.Response.LatencyMS,
+			Body:      r.Response.Body,
+		},
+	}
+}
+
 type sdkErrorInjectionBundle struct {
 	SchemaVersion string                  `json:"schema_version"`
 	Rules         []sdkErrorInjectionRule `json:"rules"`
@@ -75,9 +136,11 @@ type sdkErrorMatch struct {
 }
 
 type sdkErrorInject struct {
-	Library string         `json:"library,omitempty"`
-	Status  int            `json:"status"`
-	Body    map[string]any `json:"body,omitempty"`
+	Library   string `json:"library,omitempty"`
+	Status    int    `json:"status,omitempty"`
+	Error     string `json:"error,omitempty"`
+	LatencyMS int    `json:"latency_ms,omitempty"`
+	Body      any    `json:"body,omitempty"`
 }
 
 type interactionBundle struct {
@@ -418,9 +481,11 @@ func loadSDKErrorInjectionBundle(path string) (sdkErrorInjectionBundle, error) {
 	sdkRules := make([]sdkErrorInjectionRule, 0, len(file.ErrorInjection.Rules))
 	for _, rule := range file.ErrorInjection.Rules {
 		inject := sdkErrorInject{
-			Library: strings.TrimSpace(rule.Inject.Library),
-			Status:  rule.Inject.Status,
-			Body:    cloneAnyMap(rule.Inject.Body),
+			Library:   strings.TrimSpace(rule.Inject.Library),
+			Status:    rule.Inject.Status,
+			Error:     strings.TrimSpace(rule.Inject.Error),
+			LatencyMS: rule.Inject.LatencyMS,
+			Body:      cloneAnyValue(rule.Inject.Body),
 		}
 		if inject.Library != "" {
 			override, ok := injection.NamedLibrary(inject.Library)
@@ -428,7 +493,7 @@ func loadSDKErrorInjectionBundle(path string) (sdkErrorInjectionBundle, error) {
 				return sdkErrorInjectionBundle{}, fmt.Errorf("validate error injection file %q: unknown named error library entry %q", resolvedPath, inject.Library)
 			}
 			inject.Status = override.Status
-			inject.Body = cloneAnyMap(override.Body)
+			inject.Body = cloneAnyValue(override.Body)
 		}
 
 		sdkRules = append(sdkRules, sdkErrorInjectionRule{
