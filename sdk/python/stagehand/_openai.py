@@ -143,6 +143,7 @@ class OpenAIReplayStore:
 
                 if matches:
                     interaction = matches.popleft()
+                    self._used_interaction_ids.add(interaction.interaction_id)
                     return ExactReplayMatch(interaction=interaction)
 
             if mapping is not None and 1 in mapping.allowed_tiers and request is not None:

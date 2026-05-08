@@ -801,6 +801,99 @@ test(
 );
 
 test(
+  'configured service nearest-neighbor replay does not reuse an exact consumed interaction',
+  withCleanRuntime(async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-nearest-consume-'));
+    const configPath = path.join(tempDir, 'stagehand.yml');
+    let hitCount = 0;
+    const { close, url } = await createTestServer((_request, response) => {
+      hitCount += 1;
+      response.writeHead(202, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ id: 'cus_internal_123' }));
+    });
+    const host = new URL(url).hostname;
+    try {
+      fs.writeFileSync(
+        configPath,
+        [
+          'schema_version: v1alpha1',
+          'services:',
+          '  - name: internal-crm',
+          '    type: api',
+          '    match:',
+          `      host: ${host}`,
+          '      path_prefix: /v1',
+          '    replay:',
+          '      mode: generic_http',
+          '      allowed_tiers: [0, 1]',
+          '',
+        ].join('\n'),
+        'utf8'
+      );
+
+      const recordRuntime = init({
+        session: 'ts-nearest-consume-record',
+        mode: 'record',
+        configPath,
+      });
+      const recorded = await fetch(`${url}/v1/customers/search?cursor=record`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-request-id': 'req-record' },
+        body: JSON.stringify({
+          filters: { email: 'jane.doe@example.com', active: true },
+          limit: 25,
+          request_id: 'record-run',
+        }),
+      });
+      assert.equal(recorded.status, 202);
+      await recorded.text();
+      const recordedInteractions = recordRuntime.snapshotCapturedInteractions();
+      const hitsBeforeReplay = hitCount;
+
+      _resetForTests();
+      const replayRuntime = init({
+        session: 'ts-nearest-consume-replay',
+        mode: 'replay',
+        configPath,
+      });
+      seedReplayInteractions(recordedInteractions);
+
+      const exact = await fetch(`${url}/v1/customers/search?cursor=record`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-request-id': 'req-record' },
+        body: JSON.stringify({
+          filters: { active: true, email: 'jane.doe@example.com' },
+          limit: 25,
+          request_id: 'record-run',
+        }),
+      });
+      assert.equal(exact.status, 202);
+      await exact.text();
+
+      await assertFetchRejectsWithCause(
+        fetch(`${url}/v1/customers/search?cursor=variant`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-request-id': 'req-variant' },
+          body: JSON.stringify({
+            filters: { active: true, email: 'jane.doe@example.com' },
+            limit: 50,
+            request_id: 'variant-replay',
+          }),
+        }),
+        ReplayMissError
+      );
+      assert.equal(hitCount, hitsBeforeReplay);
+      const [capturedReplay] = replayRuntime.snapshotCapturedInteractions();
+      assert.equal(capturedReplay?.fallback_tier, 'exact');
+    } finally {
+      _resetForTests();
+      await close();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  })
+);
+
+test(
   'service ignore paths do not leak into URLs outside the mapping',
   withCleanRuntime(async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-ignore-isolation-'));

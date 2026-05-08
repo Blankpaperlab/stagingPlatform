@@ -231,6 +231,83 @@ services:
     assert replayed_interaction.service == "internal-crm"
 
 
+def test_generic_http_nearest_neighbor_does_not_reuse_exactly_consumed_interaction(
+    tmp_path: Any,
+) -> None:
+    with simulated_internal_crm() as crm:
+        config_path = tmp_path / "stagehand.yml"
+        config_path.write_text(
+            f"""
+schema_version: v1alpha1
+services:
+  - name: internal-crm
+    type: api
+    match:
+      host: {crm.host}
+      path_prefix: /v1
+    replay:
+      mode: generic_http
+      allowed_tiers: [0, 1]
+""",
+            encoding="utf-8",
+        )
+        record_runtime = stagehand.init(
+            session="generic-http-consume-record",
+            mode="record",
+            config_path=config_path,
+        )
+        recorded_response = search_customers(
+            crm.base_url,
+            query="cursor=record",
+            body={
+                "filters": {"email": "jane.doe@example.com", "active": True},
+                "limit": 25,
+                "request_id": "record-run",
+            },
+            request_id="req-record",
+        )
+
+        assert recorded_response.status_code == 202
+        recorded_interactions = record_runtime.captured_interactions()
+        assert crm.request_count == 1
+
+    _reset_for_tests()
+
+    replay_runtime = stagehand.init(
+        session="generic-http-consume-replay",
+        mode="replay",
+        config_path=config_path,
+    )
+    assert stagehand.seed_replay_interactions(recorded_interactions) == 1
+
+    exact_response = search_customers(
+        crm.base_url,
+        query="cursor=record",
+        body={
+            "filters": {"email": "jane.doe@example.com", "active": True},
+            "limit": 25,
+            "request_id": "record-run",
+        },
+        request_id="req-record",
+    )
+
+    assert exact_response.status_code == 202
+    with pytest.raises(stagehand.ReplayMissError, match="/v1/customers/search"):
+        search_customers(
+            crm.base_url,
+            query="cursor=variant",
+            body={
+                "filters": {"email": "jane.doe@example.com", "active": True},
+                "limit": 50,
+                "request_id": "variant-replay",
+            },
+            request_id="req-variant",
+        )
+
+    [replayed_interaction] = replay_runtime.captured_interactions()
+    assert replayed_interaction.fallback_tier == "exact"
+
+
 def test_generic_http_error_injection_timeout_status_latency_and_provenance(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,

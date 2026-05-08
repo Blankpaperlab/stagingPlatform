@@ -97,6 +97,7 @@ export class ExactReplayStore {
 
       const interaction = queue.shift();
       if (interaction !== undefined) {
+        this.usedInteractionIds.add(interaction.interaction_id);
         if (queue.length === 0) {
           this.entries.delete(key);
         }
