@@ -1,0 +1,20 @@
+schema_version: v1alpha1
+assertions:
+  - id: lookup-before-private-refund
+    type: ordering
+    before:
+      tool: lookup_customer
+    after:
+      service: internal-billing
+      operation: POST /api/refunds
+
+  - id: lookup-result-used-for-refund
+    type: cross-service
+    left:
+      tool: lookup_customer
+      path: response.result.id
+    right:
+      service: internal-billing
+      operation: POST /api/refunds
+      path: request.body.customer_id
+    relationship: equals

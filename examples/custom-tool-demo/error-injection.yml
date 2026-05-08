@@ -1,0 +1,9 @@
+schema_version: v1alpha1
+error_injection:
+  - name: lookup failure on second call
+    tool: lookup_customer
+    nth_call: 2
+    error:
+      type: not_found
+      message: customer missing
+      class_name: CustomerNotFoundError

@@ -1139,12 +1139,14 @@ error_injection:
 
 - Outcome: the main demo proves Stagehand handles real private business workflows, not only provider demos.
 - To do:
-  - [ ] build a flow that calls OpenAI, a custom `lookup_customer` tool, an internal billing API, Stripe, and a support-ticket API
-  - [ ] record the workflow once
-  - [ ] replay it offline
-  - [ ] diff a changed behavior
-  - [ ] fail an assertion on unsafe tool/API ordering
-  - [ ] inject a custom tool failure and verify recovery behavior
+  - [x] build a flow that calls OpenAI, a custom `lookup_customer` tool, an internal billing API, Stripe, and a support-ticket API
+  - [x] record the workflow once
+  - [x] replay it offline
+  - [x] diff a changed behavior
+  - [x] fail an assertion on unsafe tool/API ordering
+  - [x] inject a custom tool failure and verify recovery behavior
+
+Y6 adds `examples/custom-tool-demo`, a CI-covered private workflow demo with OpenAI, `lookup_customer`, internal billing, Stripe, and support-ticket interactions. The demo persists record/replay/candidate/unsafe/injected runs, reports a behavior diff for changed support-ticket priority, demonstrates a failing tool-before-billing assertion, and records typed tool error-injection provenance for a recovered lookup failure.
 
 ### Epic Y completion checklist
 
@@ -1153,7 +1155,7 @@ error_injection:
 - [x] tool calls appear in inspect and diff timelines
 - [x] assertions can target tool calls
 - [x] error injection can target tool calls
-- [ ] a custom tool demo exists
+- [x] a custom tool demo exists
 
 ### Explicit non-goals for Epic Y
 
