@@ -1029,6 +1029,7 @@ N6 adds `docs/custom-api-generic-http.md` to explain mapped custom API behavior,
 - Estimate: `8d`
 - Goal: support non-HTTP agent tools such as local functions, internal SDK wrappers, database helper functions, MCP-style tools, shell wrappers, filesystem helpers, queue publishers, and business-specific tool calls.
 - Depends on: `B`, `D`, `G`, `E`, `J`, `K`, `N`
+- Test plan: [Epic Y Test Plan](epic-y-test-plan.md)
 
 ### Story Y1: Python tool wrapper
 

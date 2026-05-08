@@ -23,6 +23,10 @@ Included here:
 - concrete test cases to add
 - regression-gate commands
 
+Related focused plans:
+
+- [Epic Y Test Plan](epic-y-test-plan.md) for custom tool capture, replay, assertions, injection, and demo hardening
+
 Excluded here:
 
 - findings already fixed in the current tree
