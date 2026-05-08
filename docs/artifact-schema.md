@@ -120,6 +120,21 @@ Supported protocol values in `v1alpha1`:
 - `sse`
 - `websocket`
 - `postgres`
+- `tool`
+
+Tool-call interactions use the canonical service `stagehand.tool`, protocol `tool`, request method `CALL`, and a `stagehand://tool/<tool-name>` URL. The interaction `operation` is the tool name. The request body records:
+
+- `name`
+- `arguments`
+- `side_effect`
+- `replay`
+
+The terminal event records either:
+
+- `response_received` with `data.result`, `data.side_effect`, and `data.replay`
+- `error` with `data.error_class`, `data.message`, `data.side_effect`, and `data.replay`
+
+Nested tools or tools called from model tool-call handlers use `parent_interaction_id` and parent event `nested_interaction_id` links, so their sequence order stays in the same timeline as model and HTTP interactions.
 
 ## `Request`
 

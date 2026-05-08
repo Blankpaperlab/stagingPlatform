@@ -308,6 +308,137 @@ func TestRunInspectShowsMappedGenericHTTPServiceLabels(t *testing.T) {
 	}
 }
 
+func TestRunInspectRendersToolInteractions(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	runRecord, err := newRunRecordForMode("tool-inspect", minimalConfig(), recorder.RunModeRecord)
+	if err != nil {
+		t.Fatalf("newRunRecordForMode() error = %v", err)
+	}
+	runRecord.RunID = "run_inspect_tool"
+	runRecord.StartedAt = time.Date(2026, time.May, 8, 9, 0, 0, 0, time.UTC)
+	endedAt := runRecord.StartedAt.Add(2 * time.Second)
+	runRecord.EndedAt = &endedAt
+	runRecord.Status = store.RunLifecycleStatusComplete
+	if err := sqliteStore.CreateRun(context.Background(), runRecord); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+
+	parentID := "int_tool_lookup"
+	parent := recorder.Interaction{
+		RunID:         runRecord.RunID,
+		InteractionID: parentID,
+		Sequence:      1,
+		Service:       "stagehand.tool",
+		Operation:     "lookup_customer",
+		Protocol:      recorder.ProtocolTool,
+		Request: recorder.Request{
+			URL:    "stagehand://tool/lookup_customer",
+			Method: "CALL",
+			Body: map[string]any{
+				"name":        "lookup_customer",
+				"arguments":   map[string]any{"email": "user_scrubbed@scrub.local"},
+				"side_effect": "read",
+				"replay":      "recorded",
+			},
+		},
+		Events: []recorder.Event{
+			{Sequence: 1, TMS: 0, SimTMS: 0, Type: recorder.EventTypeRequestSent},
+			{
+				Sequence: 2,
+				TMS:      6,
+				SimTMS:   6,
+				Type:     recorder.EventTypeResponseReceived,
+				Data: map[string]any{
+					"result":      map[string]any{"id": "cus_123"},
+					"side_effect": "read",
+					"replay":      "recorded",
+				},
+			},
+		},
+		ScrubReport: recorder.ScrubReport{
+			ScrubPolicyVersion: "v1",
+			SessionSaltID:      "salt_inspect",
+		},
+		LatencyMS: 6,
+	}
+	child := recorder.Interaction{
+		RunID:               runRecord.RunID,
+		InteractionID:       "int_tool_normalize",
+		ParentInteractionID: parentID,
+		Sequence:            2,
+		Service:             "stagehand.tool",
+		Operation:           "normalize_customer",
+		Protocol:            recorder.ProtocolTool,
+		Request: recorder.Request{
+			URL:    "stagehand://tool/normalize_customer",
+			Method: "CALL",
+			Body: map[string]any{
+				"name":        "normalize_customer",
+				"arguments":   map[string]any{"id": "cus_123"},
+				"side_effect": "read",
+				"replay":      "recorded",
+			},
+		},
+		Events: []recorder.Event{
+			{Sequence: 1, TMS: 7, SimTMS: 7, Type: recorder.EventTypeRequestSent},
+			{
+				Sequence: 2,
+				TMS:      9,
+				SimTMS:   9,
+				Type:     recorder.EventTypeError,
+				Data: map[string]any{
+					"error_class": "ValueError",
+					"message":     "bad customer",
+					"side_effect": "read",
+					"replay":      "recorded",
+				},
+			},
+		},
+		ScrubReport: recorder.ScrubReport{
+			ScrubPolicyVersion: "v1",
+			SessionSaltID:      "salt_inspect",
+		},
+		LatencyMS: 2,
+	}
+	for _, interaction := range []recorder.Interaction{parent, child} {
+		if err := sqliteStore.WriteInteraction(context.Background(), interaction); err != nil {
+			t.Fatalf("WriteInteraction(%q) error = %v", interaction.InteractionID, err)
+		}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"inspect", "--run-id", runRecord.RunID, "--config", configPath, "--show-bodies"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(inspect --show-bodies) error = %v", err)
+	}
+
+	output := stdout.String()
+	for _, expected := range []string{
+		"- [1] tool lookup_customer protocol=tool side_effect=read latency=6ms fallback=none",
+		"tool args:",
+		"\"email\": \"user_scrubbed@scrub.local\"",
+		"tool result:",
+		"\"id\": \"cus_123\"",
+		"  - [2] tool normalize_customer protocol=tool side_effect=read latency=2ms fallback=none",
+		"tool error:",
+		"\"error_class\": \"ValueError\"",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("inspect tool output missing %q\noutput:\n%s", expected, output)
+		}
+	}
+}
+
 func seedInspectableRun(
 	t *testing.T,
 	artifactStore store.ArtifactStore,

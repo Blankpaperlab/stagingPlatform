@@ -232,6 +232,10 @@ func renderInspectNode(
 	visited[node.interaction.InteractionID] = true
 	defer delete(visited, node.interaction.InteractionID)
 
+	if isToolInteraction(node.interaction) {
+		return renderToolInspectNode(w, node, depth, showBodies, visited)
+	}
+
 	if _, err := fmt.Fprintf(
 		w,
 		"%s- [%d] %s %s protocol=%s latency=%s fallback=%s\n",
@@ -307,6 +311,153 @@ func renderInspectNode(
 	}
 
 	return nil
+}
+
+func renderToolInspectNode(
+	w io.Writer,
+	node *inspectNode,
+	depth int,
+	showBodies bool,
+	visited map[string]bool,
+) error {
+	tool := toolInspectData(node.interaction)
+	prefix := strings.Repeat("  ", depth)
+	if _, err := fmt.Fprintf(
+		w,
+		"%s- [%d] tool %s protocol=%s side_effect=%s latency=%s fallback=%s\n",
+		prefix,
+		node.interaction.Sequence,
+		emptyFallback(tool.name, "<unknown-tool>"),
+		emptyFallback(string(node.interaction.Protocol), "unknown"),
+		emptyFallback(tool.sideEffect, "unknown"),
+		formatLatency(node.interaction.LatencyMS),
+		formatFallback(node.interaction.FallbackTier),
+	); err != nil {
+		return err
+	}
+	if tool.replay != "" {
+		if _, err := fmt.Fprintf(w, "%s  replay: %s\n", prefix, tool.replay); err != nil {
+			return err
+		}
+	}
+	if showBodies {
+		if tool.arguments != nil {
+			if _, err := fmt.Fprintf(
+				w,
+				"%s  tool args:\n%s\n",
+				prefix,
+				indentBlock(prettyJSON(tool.arguments), prefix+"    "),
+			); err != nil {
+				return err
+			}
+		}
+		if tool.result != nil {
+			if _, err := fmt.Fprintf(
+				w,
+				"%s  tool result:\n%s\n",
+				prefix,
+				indentBlock(prettyJSON(tool.result), prefix+"    "),
+			); err != nil {
+				return err
+			}
+		}
+		if tool.err != nil {
+			if _, err := fmt.Fprintf(
+				w,
+				"%s  tool error:\n%s\n",
+				prefix,
+				indentBlock(prettyJSON(tool.err), prefix+"    "),
+			); err != nil {
+				return err
+			}
+		}
+	}
+
+	if _, err := fmt.Fprintf(w, "%s  events:\n", prefix); err != nil {
+		return err
+	}
+	for _, event := range node.interaction.Events {
+		nested := ""
+		if event.NestedInteractionID != "" {
+			nested = fmt.Sprintf(" nested=%s", event.NestedInteractionID)
+		}
+		if _, err := fmt.Fprintf(
+			w,
+			"%s    - #%d %s t=%dms sim=%dms%s\n",
+			prefix,
+			event.Sequence,
+			event.Type,
+			event.TMS,
+			event.SimTMS,
+			nested,
+		); err != nil {
+			return err
+		}
+	}
+
+	for _, child := range node.children {
+		if err := renderInspectNode(w, child, depth+1, showBodies, visited); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type toolInspect struct {
+	name       string
+	sideEffect string
+	replay     string
+	arguments  any
+	result     any
+	err        any
+}
+
+func isToolInteraction(interaction recorder.Interaction) bool {
+	return interaction.Protocol == recorder.ProtocolTool || interaction.Service == "stagehand.tool"
+}
+
+func toolInspectData(interaction recorder.Interaction) toolInspect {
+	info := toolInspect{name: interaction.Operation}
+	if body, ok := interaction.Request.Body.(map[string]any); ok {
+		info.name = stringFromMap(body, "name", info.name)
+		info.sideEffect = stringFromMap(body, "side_effect", info.sideEffect)
+		info.replay = stringFromMap(body, "replay", info.replay)
+		info.arguments = body["arguments"]
+	}
+	for _, event := range interaction.Events {
+		if event.Data == nil {
+			continue
+		}
+		info.sideEffect = stringFromMap(event.Data, "side_effect", info.sideEffect)
+		info.replay = stringFromMap(event.Data, "replay", info.replay)
+		switch event.Type {
+		case recorder.EventTypeResponseReceived:
+			if result, ok := event.Data["result"]; ok {
+				info.result = result
+			}
+		case recorder.EventTypeError:
+			info.err = map[string]any{}
+			for _, key := range []string{"error_class", "message", "side_effect", "replay"} {
+				if value, ok := event.Data[key]; ok {
+					info.err.(map[string]any)[key] = value
+				}
+			}
+		}
+	}
+	return info
+}
+
+func stringFromMap(values map[string]any, key string, fallback string) string {
+	value, ok := values[key]
+	if !ok {
+		return fallback
+	}
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return fallback
+	}
+	return text
 }
 
 func prettyJSON(value any) string {

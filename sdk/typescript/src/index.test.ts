@@ -2059,6 +2059,7 @@ test(
     const [recorded] = recordRuntime.snapshotCapturedInteractions();
     assert.equal(recorded?.service, 'stagehand.tool');
     assert.equal(recorded?.operation, 'lookup_customer');
+    assert.equal(recorded?.protocol, 'tool');
     assert.equal(recorded?.request.method, 'CALL');
     assert.deepEqual(recorded?.request.body, {
       name: 'lookup_customer',

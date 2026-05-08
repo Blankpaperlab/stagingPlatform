@@ -659,6 +659,30 @@ func TestCompareDetectsModifiedInteractionWhenFieldsAreNotIgnored(t *testing.T) 
 	assertChangeTypes(t, result.Changes, []ChangeType{ChangeModified})
 }
 
+func TestCompareAlignsToolInteractions(t *testing.T) {
+	t.Parallel()
+
+	baseInteraction := toolInteractionFixture("run_base", "base_tool", 1, "lookup_customer", map[string]any{"email": "user_scrubbed@scrub.local"}, map[string]any{"id": "cus_123"})
+	candidateInteraction := toolInteractionFixture("run_candidate", "candidate_tool", 1, "lookup_customer", map[string]any{"email": "user_scrubbed@scrub.local"}, map[string]any{"id": "cus_456"})
+
+	result, err := Compare(
+		runFixture("run_base", "session-a", []recorder.Interaction{baseInteraction}),
+		runFixture("run_candidate", "session-a", []recorder.Interaction{candidateInteraction}),
+		Options{IgnoredFields: []string{"run_id", "interaction_id"}},
+	)
+	if err != nil {
+		t.Fatalf("Compare() error = %v", err)
+	}
+
+	assertChangeTypes(t, result.Changes, []ChangeType{ChangeModified})
+	if result.Changes[0].BaseInteractionID == "" || result.Changes[0].CandidateInteractionID == "" {
+		t.Fatalf("tool interaction should align as a modification, not add/remove: %#v", result.Changes[0])
+	}
+	if result.Changes[0].Service != "stagehand.tool" || result.Changes[0].Operation != "lookup_customer" {
+		t.Fatalf("unexpected tool change identity: service=%q operation=%q", result.Changes[0].Service, result.Changes[0].Operation)
+	}
+}
+
 func TestModifiedChangeDetailsListRemainingDiffPaths(t *testing.T) {
 	t.Parallel()
 
@@ -759,6 +783,53 @@ func interactionFixture(
 		Events: []recorder.Event{
 			{Sequence: 1, TMS: 0, SimTMS: 0, Type: recorder.EventTypeRequestSent},
 			{Sequence: 2, TMS: 1, SimTMS: 1, Type: recorder.EventTypeResponseReceived},
+		},
+		ScrubReport: recorder.ScrubReport{
+			ScrubPolicyVersion: "v1",
+			SessionSaltID:      "salt_test",
+		},
+		LatencyMS: 1,
+	}
+}
+
+func toolInteractionFixture(
+	runID string,
+	interactionID string,
+	sequence int,
+	name string,
+	arguments map[string]any,
+	result map[string]any,
+) recorder.Interaction {
+	return recorder.Interaction{
+		RunID:         runID,
+		InteractionID: interactionID,
+		Sequence:      sequence,
+		Service:       "stagehand.tool",
+		Operation:     name,
+		Protocol:      recorder.ProtocolTool,
+		Request: recorder.Request{
+			URL:    "stagehand://tool/" + name,
+			Method: "CALL",
+			Body: map[string]any{
+				"name":        name,
+				"arguments":   arguments,
+				"side_effect": "read",
+				"replay":      "recorded",
+			},
+		},
+		Events: []recorder.Event{
+			{Sequence: 1, TMS: 0, SimTMS: 0, Type: recorder.EventTypeRequestSent},
+			{
+				Sequence: 2,
+				TMS:      1,
+				SimTMS:   1,
+				Type:     recorder.EventTypeResponseReceived,
+				Data: map[string]any{
+					"result":      result,
+					"side_effect": "read",
+					"replay":      "recorded",
+				},
+			},
 		},
 		ScrubReport: recorder.ScrubReport{
 			ScrubPolicyVersion: "v1",

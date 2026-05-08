@@ -24,7 +24,7 @@ from ._openai import ReplayMissError
 F = TypeVar("F", bound=Callable[..., Any])
 
 _TOOL_SERVICE = "stagehand.tool"
-_TOOL_PROTOCOL = "https"
+_TOOL_PROTOCOL = "tool"
 _TOOL_METHOD = "CALL"
 _EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _CARD_PATTERN = re.compile(r"\b(?:\d[ -]*?){13,19}\b")

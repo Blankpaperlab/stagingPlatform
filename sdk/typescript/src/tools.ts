@@ -10,7 +10,7 @@ import { ReplayMissError } from './replay.js';
 import { getRuntime, type StagehandRuntime } from './runtime.js';
 
 const TOOL_SERVICE = 'stagehand.tool';
-const TOOL_PROTOCOL = 'https';
+const TOOL_PROTOCOL = 'tool';
 const TOOL_METHOD = 'CALL';
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const CARD_PATTERN = /\b(?:\d[ -]*?){13,19}\b/g;

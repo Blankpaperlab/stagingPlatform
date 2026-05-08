@@ -38,6 +38,7 @@ const (
 	ProtocolSSE       Protocol = "sse"
 	ProtocolWebSocket Protocol = "websocket"
 	ProtocolPostgres  Protocol = "postgres"
+	ProtocolTool      Protocol = "tool"
 )
 
 type FallbackTier string
@@ -89,6 +90,7 @@ var (
 		ProtocolSSE,
 		ProtocolWebSocket,
 		ProtocolPostgres,
+		ProtocolTool,
 	}
 	validFallbackTiers = []FallbackTier{
 		FallbackTierExact,
@@ -381,7 +383,7 @@ func (i Interaction) validate(expectedRunID, expectedScrubPolicyVersion string) 
 	}
 
 	if !slices.Contains(validProtocols, i.Protocol) {
-		verr.add("protocol must be one of %q, %q, %q, %q, %q", ProtocolHTTP, ProtocolHTTPS, ProtocolSSE, ProtocolWebSocket, ProtocolPostgres)
+		verr.add("protocol must be one of %q, %q, %q, %q, %q, %q", ProtocolHTTP, ProtocolHTTPS, ProtocolSSE, ProtocolWebSocket, ProtocolPostgres, ProtocolTool)
 	}
 
 	if i.FallbackTier != "" && !slices.Contains(validFallbackTiers, i.FallbackTier) {

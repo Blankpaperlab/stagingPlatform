@@ -24,6 +24,7 @@ def test_tool_records_success_and_replays_recorded_result_without_calling_real_f
     [recorded] = record_runtime.captured_interactions()
     assert recorded.service == "stagehand.tool"
     assert recorded.operation == "lookup_customer"
+    assert recorded.protocol == "tool"
     assert recorded.request.method == "CALL"
     assert recorded.request.body == {
         "name": "lookup_customer",

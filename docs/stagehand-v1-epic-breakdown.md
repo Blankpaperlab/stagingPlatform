@@ -1079,11 +1079,13 @@ const lookupCustomer = stagehand.tool(
 
 - Outcome: tool calls appear in the same timeline as model and HTTP interactions.
 - To do:
-  - [ ] define canonical tool-call interaction fields
-  - [ ] preserve ordering relative to model and HTTP calls
-  - [ ] support parent/child interaction links for tools called from model tool-call handlers
-  - [ ] show tool name, side-effect type, timing, args, result, and error in `inspect`
-  - [ ] include tool interactions in diff alignment
+  - [x] define canonical tool-call interaction fields
+  - [x] preserve ordering relative to model and HTTP calls
+  - [x] support parent/child interaction links for tools called from model tool-call handlers
+  - [x] show tool name, side-effect type, timing, args, result, and error in `inspect`
+  - [x] include tool interactions in diff alignment
+
+Y3 makes tool calls a first-class artifact protocol (`protocol: tool`) with canonical `stagehand.tool` service, `CALL` method, `stagehand://tool/<name>` URL, request arguments, result/error payloads, side-effect metadata, replay policy, timing, and parent/child links. `stagehand inspect --show-bodies` now renders tool-specific args, result, and error sections, and diff alignment treats matching tool calls as modified interactions rather than remove/add pairs.
 
 ### Story Y4: Tool assertions
 
@@ -1144,7 +1146,7 @@ error_injection:
 
 - [x] Python tool wrapper records and replays local tools
 - [x] TypeScript tool wrapper records and replays local tools
-- [ ] tool calls appear in inspect and diff timelines
+- [x] tool calls appear in inspect and diff timelines
 - [ ] assertions can target tool calls
 - [ ] error injection can target tool calls
 - [ ] a custom tool demo exists
