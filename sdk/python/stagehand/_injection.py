@@ -22,6 +22,7 @@ class Provenance:
     operation: str
     call_number: int
     status: int
+    tool: str = ""
     name: str = ""
     nth_call: int = 0
     any_call: bool = False
@@ -37,6 +38,8 @@ class Provenance:
             "operation": self.operation,
             "call_number": self.call_number,
         }
+        if self.tool:
+            data["tool"] = self.tool
         if self.status:
             data["status"] = self.status
         if self.name:
@@ -67,6 +70,7 @@ class _Rule:
     name: str
     service: str
     operation: str
+    tool: str
     nth_call: int
     any_call: bool
     probability: float | None
@@ -85,14 +89,28 @@ class InjectionEngine:
         self._rng = random.Random(1)
 
     def evaluate(self, *, service: str, operation: str) -> Decision | None:
+        return self.evaluate_tool(tool="", service=service, operation=operation)
+
+    def evaluate_tool(
+        self, *, tool: str, service: str = "", operation: str = ""
+    ) -> Decision | None:
+        tool = tool.strip()
         service = service.strip()
         operation = operation.strip()
+        if tool:
+            service = "stagehand.tool"
+            operation = tool
         key = (service, operation)
         call_number = self._counts.get(key, 0) + 1
         self._counts[key] = call_number
 
         for idx, rule in enumerate(self._rules):
-            if rule.service != service or rule.operation != operation:
+            rule_service = rule.service
+            rule_operation = rule.operation
+            if rule.tool:
+                rule_service = "stagehand.tool"
+                rule_operation = rule.tool
+            if rule_service != service or rule_operation != operation:
                 continue
             if rule.nth_call > 0 and rule.nth_call != call_number:
                 continue
@@ -107,6 +125,7 @@ class InjectionEngine:
                 service=service,
                 operation=operation,
                 call_number=call_number,
+                tool=rule.tool,
                 name=rule.name,
                 nth_call=rule.nth_call,
                 any_call=rule.any_call,
@@ -149,6 +168,7 @@ def load_engine(path: str | Path | None) -> InjectionEngine:
                 name=str(raw_rule.get("name", "")).strip(),
                 service=str(match.get("service", "")).strip(),
                 operation=str(match.get("operation", "")).strip(),
+                tool=str(match.get("tool", "")).strip(),
                 nth_call=int(match.get("nth_call", 0) or 0),
                 any_call=bool(match.get("any_call", False)),
                 probability=inject_probability(match.get("probability")),

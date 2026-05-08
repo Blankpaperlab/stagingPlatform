@@ -81,14 +81,59 @@ export function tool<Args, Result>(
 
   return ((args: Args): Result | Promise<Result> => {
     const runtime = getRuntime();
-    if (runtime.mode === 'replay' && replay === 'recorded') {
-      return replayToolCall(runtime, name, args) as Result;
-    }
     if (runtime.mode === 'passthrough') {
       return implementation(args);
     }
+    const injected = injectedToolError(runtime, name, args, { name, sideEffect, replay });
+    if (injected !== undefined) {
+      throw injected;
+    }
+    if (runtime.mode === 'replay' && replay === 'recorded') {
+      return replayToolCall(runtime, name, args) as Result;
+    }
     return recordToolCall(runtime, implementation, args, { name, sideEffect, replay });
   }) as ToolFunction<Args, Result>;
+}
+
+function injectedToolError(
+  runtime: StagehandRuntime,
+  name: string,
+  args: unknown,
+  options: Required<ToolOptions>
+): Error | undefined {
+  const decision = runtime.toolInjectionEngine().evaluate({
+    service: TOOL_SERVICE,
+    operation: name,
+    tool: name,
+  });
+  if (decision === null) {
+    return undefined;
+  }
+  const captureBuffer = runtime.toolCaptureBuffer();
+  const { sequence, interactionId } = captureBuffer.reserveInteraction();
+  const latencyMs = decision.override.latency_ms ?? 0;
+  const errorKind = decision.override.error ?? 'injected_tool_error';
+  const body = isRecord(decision.override.body) ? decision.override.body : {};
+  const error = recordedError(
+    injectedErrorClass(errorKind, body),
+    injectedErrorMessage(errorKind, body)
+  );
+  captureBuffer.appendReservedInteraction(
+    toolErrorInteraction({
+      runtime,
+      captureBuffer,
+      sequence,
+      interactionId,
+      parentInteractionId: parentInteractionStorage.getStore(),
+      options,
+      args,
+      elapsedMs: latencyMs,
+      error,
+      errorClass: error.name,
+      metadata: { stagehand_injection: decision.provenance },
+    })
+  );
+  return error;
 }
 
 function recordToolCall<Args, Result>(
@@ -227,6 +272,8 @@ function toolErrorInteraction({
   args,
   elapsedMs,
   error,
+  errorClass,
+  metadata,
 }: {
   runtime: StagehandRuntime;
   captureBuffer: CaptureBuffer;
@@ -237,6 +284,8 @@ function toolErrorInteraction({
   args: unknown;
   elapsedMs: number;
   error: unknown;
+  errorClass?: string;
+  metadata?: Record<string, unknown>;
 }): CapturedInteraction {
   const scrubbedMessage = scrubValue(errorMessage(error), 'events[1].data.message');
   return toolInteraction({
@@ -257,10 +306,11 @@ function toolErrorInteraction({
         sim_t_ms: elapsedMs,
         type: 'error',
         data: {
-          error_class: errorClass(error),
+          error_class: errorClass ?? errorClassForValue(error),
           message: scrubbedMessage.value,
           side_effect: options.sideEffect,
           replay: options.replay,
+          ...(metadata ?? {}),
         },
       },
     ],
@@ -424,6 +474,23 @@ function recordedError(name: string, message: string): Error {
   }
 }
 
+function injectedErrorClass(errorKind: string, body: Record<string, unknown>): string {
+  const explicit = stringValue(body.error_class).trim();
+  if (explicit !== '') {
+    return explicit;
+  }
+  const parts = errorKind.split(/[^A-Za-z0-9]+/).filter((part) => part.length > 0);
+  return `${parts.map((part) => part[0]?.toUpperCase() + part.slice(1)).join('')}Error`;
+}
+
+function injectedErrorMessage(errorKind: string, body: Record<string, unknown>): string {
+  const explicit = stringValue(body.message).trim();
+  if (explicit !== '') {
+    return explicit;
+  }
+  return `Injected Stagehand tool error: ${errorKind}.`;
+}
+
 function requestSentEvent(): CapturedEvent {
   return { sequence: 1, t_ms: 0, sim_t_ms: 0, type: 'request_sent' };
 }
@@ -432,12 +499,19 @@ function elapsedMs(started: number): number {
   return Math.max(0, Math.floor(performance.now() - started));
 }
 
-function errorClass(error: unknown): string {
+function errorClassForValue(error: unknown): string {
   return error instanceof Error ? error.name : 'Error';
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function stringValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value);
 }
 
 function isPromiseLike(value: unknown): value is Promise<unknown> {

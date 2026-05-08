@@ -53,11 +53,12 @@ Supported match fields:
 
 - `service`
 - `operation`
+- `tool`
 - `nth_call`
 - `any_call`
 - `probability`
 
-The engine keeps per-`service`/`operation` call counters. `nth_call: 3` means the third matching call for that service and operation is injected deterministically.
+The engine keeps per-`service`/`operation` call counters. `tool: lookup_customer` is a shortcut for `service: stagehand.tool` plus `operation: lookup_customer`. `nth_call: 3` means the third matching call for that service and operation is injected deterministically.
 
 If `probability` is omitted, the rule is deterministic once the service, operation, and call-count matcher pass. If `probability` is present, it must be between `0` and `1`.
 
@@ -92,6 +93,21 @@ error_injection:
       latency_ms: 250
 ```
 
+The CLI also accepts a shortcut shape for tool rules:
+
+```yaml
+error_injection:
+  - name: lookup failure on second call
+    tool: lookup_customer
+    nth_call: 2
+    error:
+      type: not_found
+      message: customer missing
+      class_name: CustomerNotFoundError
+```
+
+Tool injection records a normal `protocol: tool` interaction with a terminal `error` event. The event includes `error_class`, `message`, and `stagehand_injection` provenance, then the SDK raises the typed recorded-style error without calling the wrapped function.
+
 ## Named Error Library
 
 Current named entries:
@@ -110,6 +126,7 @@ The Stripe entries return Stripe-shaped error response bodies with realistic sta
 Each applied injection returns `Provenance`:
 
 - `rule_index`
+- `tool`
 - `service`
 - `operation`
 - `call_number`
@@ -131,12 +148,12 @@ Each applied injection returns `Provenance`:
 }
 ```
 
-The Stripe simulator records applied injection provenance in memory and exposes it as run metadata through `ErrorInjectionMetadata`. Python and TypeScript SDK interception also attach applied provenance to the capture-bundle metadata. Generic HTTP injected response and timeout interactions include `stagehand_injection` provenance in the terminal event data, so inspect output, diffs, and assertion evidence can point at the concrete injected interaction. The CLI preserves capture-bundle metadata on the persisted run record, and SQLite persists top-level run metadata through `runs.metadata_json`. `stagehand inspect` renders run-level error-injection metadata when present.
+The Stripe simulator records applied injection provenance in memory and exposes it as run metadata through `ErrorInjectionMetadata`. Python and TypeScript SDK interception also attach applied provenance to the capture-bundle metadata. Generic HTTP injected response/timeout interactions and tool injected errors include `stagehand_injection` provenance in the terminal event data, so inspect output, diffs, and assertion evidence can point at the concrete injected interaction. The CLI preserves capture-bundle metadata on the persisted run record, and SQLite persists top-level run metadata through `runs.metadata_json`. `stagehand inspect` renders run-level error-injection metadata when present.
 
 ## Current Limits
 
 - The Stripe simulator core calls the engine before supported operations and returns injected Stripe-shaped errors without mutating session state.
-- Python and TypeScript SDK adapters call the engine before live dispatch in record mode and before exact replay dispatch in replay mode.
+- Python and TypeScript SDK adapters call the engine before live dispatch in record mode and before exact replay dispatch in replay mode. Tool wrappers do the same before calling or replaying the wrapped function.
 - Other future service adapters still need to call the engine before dispatching simulator operations.
 - Probability uses an injectable random source for deterministic tests.
 - Response overrides are JSON-like Go maps; the Stripe simulator maps them to typed Stripe errors, but no generic HTTP wire-format renderer is attached yet.

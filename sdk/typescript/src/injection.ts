@@ -10,6 +10,7 @@ export type ResponseOverride = {
 export type InjectionProvenance = {
   rule_index: number;
   name?: string;
+  tool?: string;
   service: string;
   operation: string;
   call_number: number;
@@ -36,6 +37,7 @@ type RawRule = {
   match?: {
     service?: unknown;
     operation?: unknown;
+    tool?: unknown;
     nth_call?: unknown;
     any_call?: unknown;
     probability?: unknown;
@@ -53,6 +55,7 @@ type Rule = {
   name?: string;
   service: string;
   operation: string;
+  tool?: string;
   nthCall: number;
   anyCall: boolean;
   probability?: number;
@@ -76,18 +79,23 @@ export class InjectionEngine {
   evaluate({
     service,
     operation,
+    tool,
   }: {
     service: string;
     operation: string;
+    tool?: string;
   }): InjectionDecision | null {
-    const normalizedService = service.trim();
-    const normalizedOperation = operation.trim();
+    const normalizedTool = tool?.trim() ?? '';
+    const normalizedService = normalizedTool === '' ? service.trim() : 'stagehand.tool';
+    const normalizedOperation = normalizedTool === '' ? operation.trim() : normalizedTool;
     const key = `${normalizedService}\0${normalizedOperation}`;
     const callNumber = (this.counts.get(key) ?? 0) + 1;
     this.counts.set(key, callNumber);
 
     for (const [index, rule] of this.rules.entries()) {
-      if (rule.service !== normalizedService || rule.operation !== normalizedOperation) {
+      const ruleService = rule.tool === undefined ? rule.service : 'stagehand.tool';
+      const ruleOperation = rule.tool === undefined ? rule.operation : rule.tool;
+      if (ruleService !== normalizedService || ruleOperation !== normalizedOperation) {
         continue;
       }
       if (rule.nthCall > 0 && rule.nthCall !== callNumber) {
@@ -107,6 +115,7 @@ export class InjectionEngine {
       const provenance: InjectionProvenance = {
         rule_index: index,
         ...(rule.name === undefined ? {} : { name: rule.name }),
+        ...(rule.tool === undefined ? {} : { tool: rule.tool }),
         service: normalizedService,
         operation: normalizedOperation,
         call_number: callNumber,
@@ -167,6 +176,7 @@ function normalizeRule(raw: RawRule): Rule {
     name: optionalString(raw.name),
     service: stringValue(match.service).trim(),
     operation: stringValue(match.operation).trim(),
+    tool: optionalString(match.tool),
     nthCall: integerValue(match.nth_call),
     anyCall: Boolean(match.any_call),
     probability: optionalNumber(match.probability),

@@ -127,6 +127,50 @@ func TestEngineSupportsProbabilityAndExplicitResponseOverride(t *testing.T) {
 	}
 }
 
+func TestEngineMatchesToolErrorInjection(t *testing.T) {
+	t.Parallel()
+
+	engine, err := NewEngine([]Rule{
+		{
+			Match: Match{
+				Tool:    "lookup_customer",
+				NthCall: 2,
+			},
+			Inject: Inject{
+				Error: "not_found",
+				Body: map[string]any{
+					"message":     "customer missing",
+					"error_class": "CustomerNotFoundError",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewEngine() error = %v", err)
+	}
+
+	first, err := engine.Evaluate(Request{Tool: "lookup_customer"})
+	if err != nil {
+		t.Fatalf("Evaluate(first) error = %v", err)
+	}
+	if first.Matched {
+		t.Fatalf("Evaluate(first) matched unexpectedly: %#v", first)
+	}
+	second, err := engine.Evaluate(Request{Tool: "lookup_customer"})
+	if err != nil {
+		t.Fatalf("Evaluate(second) error = %v", err)
+	}
+	if !second.Matched {
+		t.Fatal("Evaluate(second) did not match")
+	}
+	if second.Provenance.Tool != "lookup_customer" || second.Provenance.Service != "stagehand.tool" || second.Provenance.Operation != "lookup_customer" {
+		t.Fatalf("Provenance = %#v, want tool lookup_customer", second.Provenance)
+	}
+	if second.Override.Error != "not_found" || second.Override.Body["message"] != "customer missing" {
+		t.Fatalf("Override = %#v, want not_found customer missing", second.Override)
+	}
+}
+
 func TestNamedLibraryEntriesDeepCloneNestedBodies(t *testing.T) {
 	t.Parallel()
 

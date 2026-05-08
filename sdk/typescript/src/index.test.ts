@@ -2190,6 +2190,88 @@ test(
   })
 );
 
+test(
+  'tool wrapper error injection records typed error and provenance',
+  withCleanRuntime(() => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-tool-injection-'));
+    const injectionPath = path.join(tempDir, 'injection.json');
+    try {
+      fs.writeFileSync(
+        injectionPath,
+        JSON.stringify({
+          schema_version: 'v1alpha1',
+          rules: [
+            {
+              name: 'lookup failure on second call',
+              match: {
+                tool: 'lookup_customer',
+                nth_call: 2,
+                probability: 1.0,
+              },
+              inject: {
+                error: 'not_found',
+                body: {
+                  message: 'customer missing',
+                  error_class: 'CustomerNotFoundError',
+                },
+              },
+            },
+          ],
+        })
+      );
+      process.env[ENV_ERROR_INJECTION_INPUT] = injectionPath;
+
+      let calls = 0;
+      const lookupCustomer = tool({ name: 'lookup_customer' }, ({ email }: { email: string }) => {
+        calls += 1;
+        return { email };
+      });
+      const runtime = init({ session: 'ts-tool-injection-record', mode: 'record' });
+
+      assert.deepEqual(lookupCustomer({ email: 'jane@example.com' }), {
+        email: 'jane@example.com',
+      });
+      assert.throws(
+        () => lookupCustomer({ email: 'jane@example.com' }),
+        (error: unknown) => {
+          return (
+            error instanceof Error &&
+            error.name === 'CustomerNotFoundError' &&
+            error.message === 'customer missing'
+          );
+        }
+      );
+
+      assert.equal(calls, 1);
+      const [, injected] = runtime.snapshotCapturedInteractions();
+      assert.equal(injected?.events.at(-1)?.type, 'error');
+      assert.deepEqual(injected?.events.at(-1)?.data, {
+        error_class: 'CustomerNotFoundError',
+        message: 'customer missing',
+        side_effect: 'read',
+        replay: 'recorded',
+        stagehand_injection: {
+          rule_index: 0,
+          name: 'lookup failure on second call',
+          tool: 'lookup_customer',
+          service: 'stagehand.tool',
+          operation: 'lookup_customer',
+          call_number: 2,
+          nth_call: 2,
+          probability: 1.0,
+          error: 'not_found',
+        },
+      });
+      const metadata = runtime.recorderMetadata().error_injection as {
+        applied?: Array<{ tool?: string }>;
+      };
+      assert.equal(metadata.applied?.[0]?.tool, 'lookup_customer');
+    } finally {
+      delete process.env[ENV_ERROR_INJECTION_INPUT];
+    }
+  })
+);
+
 function escapeForRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

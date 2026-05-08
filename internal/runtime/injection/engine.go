@@ -14,6 +14,7 @@ const MetadataKey = "error_injection"
 type Request struct {
 	Service   string
 	Operation string
+	Tool      string
 }
 
 type Rule struct {
@@ -24,6 +25,7 @@ type Rule struct {
 type Match struct {
 	Service     string
 	Operation   string
+	Tool        string
 	NthCall     int
 	AnyCall     bool
 	Probability *float64
@@ -46,6 +48,7 @@ type ResponseOverride struct {
 
 type Provenance struct {
 	RuleIndex   int      `json:"rule_index"`
+	Tool        string   `json:"tool,omitempty"`
 	Service     string   `json:"service"`
 	Operation   string   `json:"operation"`
 	CallNumber  int      `json:"call_number"`
@@ -93,10 +96,14 @@ func NewEngine(rules []Rule, opts ...Option) (*Engine, error) {
 	}
 
 	for idx, rule := range engine.rules {
-		if strings.TrimSpace(rule.Match.Service) == "" {
+		tool := strings.TrimSpace(rule.Match.Tool)
+		if tool != "" && (strings.TrimSpace(rule.Match.Service) != "" || strings.TrimSpace(rule.Match.Operation) != "") {
+			return nil, fmt.Errorf("error injection rule %d match tool cannot be combined with service or operation", idx)
+		}
+		if tool == "" && strings.TrimSpace(rule.Match.Service) == "" {
 			return nil, fmt.Errorf("error injection rule %d match service is required", idx)
 		}
-		if strings.TrimSpace(rule.Match.Operation) == "" {
+		if tool == "" && strings.TrimSpace(rule.Match.Operation) == "" {
 			return nil, fmt.Errorf("error injection rule %d match operation is required", idx)
 		}
 		if rule.Match.NthCall < 0 {
@@ -108,7 +115,7 @@ func NewEngine(rules []Rule, opts ...Option) (*Engine, error) {
 		if rule.Match.Probability != nil && (*rule.Match.Probability < 0 || *rule.Match.Probability > 1) {
 			return nil, fmt.Errorf("error injection rule %d probability must be between 0 and 1", idx)
 		}
-		if _, err := resolveInject(rule.Inject); err != nil {
+		if _, err := resolveInject(rule.Inject, tool != ""); err != nil {
 			return nil, fmt.Errorf("error injection rule %d: %w", idx, err)
 		}
 	}
@@ -127,6 +134,7 @@ func NewEngineFromConfig(cfg config.ErrorInjectionConfig, opts ...Option) (*Engi
 			Match: Match{
 				Service:     rule.Match.Service,
 				Operation:   rule.Match.Operation,
+				Tool:        rule.Match.Tool,
 				NthCall:     rule.Match.NthCall,
 				AnyCall:     rule.Match.AnyCall,
 				Probability: rule.Match.Probability,
@@ -151,6 +159,11 @@ func (e *Engine) Evaluate(request Request) (Decision, error) {
 
 	service := strings.TrimSpace(request.Service)
 	operation := strings.TrimSpace(request.Operation)
+	tool := strings.TrimSpace(request.Tool)
+	if tool != "" {
+		service = "stagehand.tool"
+		operation = tool
+	}
 	if service == "" || operation == "" {
 		return Decision{}, fmt.Errorf("error injection request service and operation are required")
 	}
@@ -167,7 +180,7 @@ func (e *Engine) Evaluate(request Request) (Decision, error) {
 			continue
 		}
 
-		override, err := resolveInject(rule.Inject)
+		override, err := resolveInject(rule.Inject, strings.TrimSpace(rule.Match.Tool) != "")
 		if err != nil {
 			return Decision{}, fmt.Errorf("resolve error injection rule %d: %w", idx, err)
 		}
@@ -177,6 +190,7 @@ func (e *Engine) Evaluate(request Request) (Decision, error) {
 			Override: override,
 			Provenance: Provenance{
 				RuleIndex:   idx,
+				Tool:        strings.TrimSpace(rule.Match.Tool),
 				Service:     service,
 				Operation:   operation,
 				CallNumber:  callNumber,
@@ -211,7 +225,13 @@ func AppendProvenance(metadata map[string]any, provenance Provenance) map[string
 }
 
 func (r Rule) matches(service string, operation string, callNumber int, rng *rand.Rand) bool {
-	if strings.TrimSpace(r.Match.Service) != service || strings.TrimSpace(r.Match.Operation) != operation {
+	matchService := strings.TrimSpace(r.Match.Service)
+	matchOperation := strings.TrimSpace(r.Match.Operation)
+	if tool := strings.TrimSpace(r.Match.Tool); tool != "" {
+		matchService = "stagehand.tool"
+		matchOperation = tool
+	}
+	if matchService != service || matchOperation != operation {
 		return false
 	}
 	if r.Match.NthCall > 0 && callNumber != r.Match.NthCall {
@@ -230,7 +250,7 @@ func (r Rule) matches(service string, operation string, callNumber int, rng *ran
 	return rng.Float64() < probability
 }
 
-func resolveInject(inject Inject) (ResponseOverride, error) {
+func resolveInject(inject Inject, allowToolError bool) (ResponseOverride, error) {
 	library := strings.TrimSpace(inject.Library)
 	if library != "" {
 		override, ok := NamedLibrary(library)
@@ -241,7 +261,7 @@ func resolveInject(inject Inject) (ResponseOverride, error) {
 	}
 
 	errorKind := strings.ToLower(strings.TrimSpace(inject.Error))
-	if errorKind != "" && errorKind != "timeout" {
+	if errorKind != "" && errorKind != "timeout" && !allowToolError {
 		return ResponseOverride{}, fmt.Errorf("inject error must be timeout when set")
 	}
 
@@ -253,6 +273,18 @@ func resolveInject(inject Inject) (ResponseOverride, error) {
 		return ResponseOverride{
 			Error:     "timeout",
 			LatencyMS: inject.LatencyMS,
+		}, nil
+	}
+
+	if allowToolError {
+		if errorKind == "" {
+			return ResponseOverride{}, fmt.Errorf("inject error is required for tool error injection")
+		}
+		body, _ := inject.Body.(map[string]any)
+		return ResponseOverride{
+			Error:     errorKind,
+			LatencyMS: inject.LatencyMS,
+			Body:      cloneAnyMap(body),
 		}, nil
 	}
 

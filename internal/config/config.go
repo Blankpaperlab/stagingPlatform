@@ -215,6 +215,7 @@ type ErrorInjectionRule struct {
 type ErrorMatch struct {
 	Service     string   `yaml:"service"`
 	Operation   string   `yaml:"operation"`
+	Tool        string   `yaml:"tool"`
 	NthCall     int      `yaml:"nth_call"`
 	AnyCall     bool     `yaml:"any_call"`
 	Probability *float64 `yaml:"probability"`
@@ -701,11 +702,16 @@ func validateTierSet(field string, tiers []FallbackTier, verr *ValidationError) 
 func validateErrorRule(index int, rule ErrorInjectionRule, verr *ValidationError) {
 	prefix := fmt.Sprintf("error_injection.rules[%d]", index)
 
-	if strings.TrimSpace(rule.Match.Service) == "" {
+	tool := strings.TrimSpace(rule.Match.Tool)
+	if tool != "" && (strings.TrimSpace(rule.Match.Service) != "" || strings.TrimSpace(rule.Match.Operation) != "") {
+		verr.add("%s.match.tool cannot be combined with service or operation", prefix)
+	}
+
+	if tool == "" && strings.TrimSpace(rule.Match.Service) == "" {
 		verr.add("%s.match.service is required", prefix)
 	}
 
-	if strings.TrimSpace(rule.Match.Operation) == "" {
+	if tool == "" && strings.TrimSpace(rule.Match.Operation) == "" {
 		verr.add("%s.match.operation is required", prefix)
 	}
 
@@ -731,7 +737,10 @@ func validateErrorRule(index int, rule ErrorInjectionRule, verr *ValidationError
 
 	if strings.TrimSpace(rule.Inject.Library) == "" {
 		injectsTimeout := strings.EqualFold(strings.TrimSpace(rule.Inject.Error), "timeout")
-		if !injectsTimeout && (rule.Inject.Status < 100 || rule.Inject.Status > 599) {
+		if tool != "" && strings.TrimSpace(rule.Inject.Error) == "" {
+			verr.add("%s.inject.error is required for tool error injection", prefix)
+		}
+		if tool == "" && !injectsTimeout && (rule.Inject.Status < 100 || rule.Inject.Status > 599) {
 			verr.add("%s.inject.status must be between 100 and 599 unless inject.error is timeout", prefix)
 		}
 	}

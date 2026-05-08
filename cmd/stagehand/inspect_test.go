@@ -401,6 +401,10 @@ func TestRunInspectRendersToolInteractions(t *testing.T) {
 					"message":     "bad customer",
 					"side_effect": "read",
 					"replay":      "recorded",
+					"stagehand_injection": map[string]any{
+						"name": "normalize failure",
+						"tool": "normalize_customer",
+					},
 				},
 			},
 		},
@@ -432,6 +436,8 @@ func TestRunInspectRendersToolInteractions(t *testing.T) {
 		"  - [2] tool normalize_customer protocol=tool side_effect=read latency=2ms fallback=none",
 		"tool error:",
 		"\"error_class\": \"ValueError\"",
+		"\"stagehand_injection\":",
+		"\"name\": \"normalize failure\"",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("inspect tool output missing %q\noutput:\n%s", expected, output)

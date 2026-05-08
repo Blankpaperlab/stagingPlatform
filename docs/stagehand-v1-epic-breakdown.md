@@ -1116,11 +1116,13 @@ assertions:
 
 - Outcome: users can test agent recovery when custom tools fail.
 - To do:
-  - [ ] inject recorded-style tool errors
-  - [ ] inject typed tool errors by tool name
-  - [ ] match by tool, nth call, and probability
-  - [ ] persist provenance metadata for injected tool failures
-  - [ ] expose injected tool failures in inspect, diff, and assertion evidence
+  - [x] inject recorded-style tool errors
+  - [x] inject typed tool errors by tool name
+  - [x] match by tool, nth call, and probability
+  - [x] persist provenance metadata for injected tool failures
+  - [x] expose injected tool failures in inspect, diff, and assertion evidence
+
+Y5 extends the shared error-injection contract with `tool: <name>` matching. Python and TypeScript tool wrappers evaluate injection rules before record-mode execution and before replay-mode recorded results, record injected failures as normal `protocol: tool` error interactions, raise typed recorded-style errors, attach `stagehand_injection` provenance to terminal event data, and preserve run-level `error_injection.applied` metadata for inspect, diff, and assertions.
 
 Example config shape:
 
@@ -1150,7 +1152,7 @@ error_injection:
 - [x] TypeScript tool wrapper records and replays local tools
 - [x] tool calls appear in inspect and diff timelines
 - [x] assertions can target tool calls
-- [ ] error injection can target tool calls
+- [x] error injection can target tool calls
 - [ ] a custom tool demo exists
 
 ### Explicit non-goals for Epic Y

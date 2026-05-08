@@ -218,25 +218,26 @@ Per-rule match fields:
 
 | Field               | Required | Validation                              |
 | ------------------- | -------- | --------------------------------------- |
-| `match.service`     | yes      | non-empty                               |
-| `match.operation`   | yes      | non-empty                               |
+| `match.service`     | yes      | non-empty unless `match.tool` is set    |
+| `match.operation`   | yes      | non-empty unless `match.tool` is set    |
+| `match.tool`        | no       | cannot combine with service/operation   |
 | `match.nth_call`    | no       | must be `>= 0`                          |
 | `match.any_call`    | no       | cannot be combined with `nth_call > 0`  |
 | `match.probability` | no       | if present, must be between `0` and `1` |
 
 Per-rule inject fields:
 
-| Field               | Required    | Validation                              |
-| ------------------- | ----------- | --------------------------------------- |
-| `inject.library`    | conditional | use this for named simulator errors     |
-| `inject.status`     | conditional | required unless `inject.error: timeout` |
-| `inject.error`      | conditional | currently supports `timeout`            |
-| `inject.latency_ms` | no          | must be `>= 0`                          |
-| `inject.body`       | conditional | optional alongside `inject.status`      |
+| Field               | Required    | Validation                               |
+| ------------------- | ----------- | ---------------------------------------- |
+| `inject.library`    | conditional | use this for named simulator errors      |
+| `inject.status`     | conditional | required unless timeout or tool error    |
+| `inject.error`      | conditional | `timeout` for HTTP, typed value for tool |
+| `inject.latency_ms` | no          | must be `>= 0`                           |
+| `inject.body`       | conditional | optional alongside `inject.status`       |
 
 Rules cannot mix `inject.library` with explicit response fields.
 
-If `match.probability` is omitted, the rule is treated as deterministic once its service, operation, and call-count matcher pass.
+If `match.probability` is omitted, the rule is treated as deterministic once its service, operation or tool, and call-count matcher pass.
 
 Current named library entries:
 

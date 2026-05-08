@@ -438,7 +438,7 @@ func toolInspectData(interaction recorder.Interaction) toolInspect {
 			}
 		case recorder.EventTypeError:
 			info.err = map[string]any{}
-			for _, key := range []string{"error_class", "message", "side_effect", "replay"} {
+			for _, key := range []string{"error_class", "message", "side_effect", "replay", "stagehand_injection"} {
 				if value, ok := event.Data[key]; ok {
 					info.err.(map[string]any)[key] = value
 				}

@@ -84,10 +84,12 @@ type shortcutErrorInjectionRule struct {
 	Name        string                    `yaml:"name"`
 	Service     string                    `yaml:"service"`
 	Operation   string                    `yaml:"operation"`
+	Tool        string                    `yaml:"tool"`
 	NthCall     int                       `yaml:"nth_call"`
 	AnyCall     bool                      `yaml:"any_call"`
 	Probability *float64                  `yaml:"probability"`
 	Response    shortcutInjectionResponse `yaml:"response"`
+	Error       shortcutInjectionError    `yaml:"error"`
 }
 
 type shortcutInjectionResponse struct {
@@ -97,21 +99,37 @@ type shortcutInjectionResponse struct {
 	Body      any    `yaml:"body"`
 }
 
+type shortcutInjectionError struct {
+	Type      string `yaml:"type"`
+	Message   string `yaml:"message"`
+	ClassName string `yaml:"class_name"`
+}
+
 func (r shortcutErrorInjectionRule) toRule() namedErrorInjectionRule {
+	errorType := strings.TrimSpace(r.Response.Error)
+	body := r.Response.Body
+	if strings.TrimSpace(r.Tool) != "" && strings.TrimSpace(r.Error.Type) != "" {
+		errorType = strings.TrimSpace(r.Error.Type)
+		body = map[string]any{
+			"message":     strings.TrimSpace(r.Error.Message),
+			"error_class": strings.TrimSpace(r.Error.ClassName),
+		}
+	}
 	return namedErrorInjectionRule{
 		Name: strings.TrimSpace(r.Name),
 		Match: config.ErrorMatch{
 			Service:     strings.TrimSpace(r.Service),
 			Operation:   strings.TrimSpace(r.Operation),
+			Tool:        strings.TrimSpace(r.Tool),
 			NthCall:     r.NthCall,
 			AnyCall:     r.AnyCall,
 			Probability: r.Probability,
 		},
 		Inject: config.ErrorInject{
 			Status:    r.Response.Status,
-			Error:     strings.TrimSpace(r.Response.Error),
+			Error:     errorType,
 			LatencyMS: r.Response.LatencyMS,
-			Body:      r.Response.Body,
+			Body:      body,
 		},
 	}
 }
@@ -130,6 +148,7 @@ type sdkErrorInjectionRule struct {
 type sdkErrorMatch struct {
 	Service     string   `json:"service"`
 	Operation   string   `json:"operation"`
+	Tool        string   `json:"tool,omitempty"`
 	NthCall     int      `json:"nth_call,omitempty"`
 	AnyCall     bool     `json:"any_call,omitempty"`
 	Probability *float64 `json:"probability,omitempty"`
@@ -501,6 +520,7 @@ func loadSDKErrorInjectionBundle(path string) (sdkErrorInjectionBundle, error) {
 			Match: sdkErrorMatch{
 				Service:     strings.TrimSpace(rule.Match.Service),
 				Operation:   strings.TrimSpace(rule.Match.Operation),
+				Tool:        strings.TrimSpace(rule.Match.Tool),
 				NthCall:     rule.Match.NthCall,
 				AnyCall:     rule.Match.AnyCall,
 				Probability: cloneFloat64(rule.Match.Probability),

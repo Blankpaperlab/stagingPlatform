@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import asyncio
 import functools
 import inspect
 import json
@@ -97,10 +98,19 @@ def tool(
 
                 runtime = get_runtime()
                 arguments = _bound_arguments(signature, args, kwargs)
-                if runtime.mode == "replay" and replay_value == "recorded":
-                    return _replay_tool_call(runtime, name=tool_name, arguments=arguments)
                 if runtime.mode == "passthrough":
                     return await target(*args, **kwargs)
+                injected = await _injected_async_tool_error(
+                    runtime,
+                    name=tool_name,
+                    arguments=arguments,
+                    side_effect=side_effect_value,
+                    replay=replay_value,
+                )
+                if injected is not None:
+                    raise injected
+                if runtime.mode == "replay" and replay_value == "recorded":
+                    return _replay_tool_call(runtime, name=tool_name, arguments=arguments)
                 return await _record_async_tool_call(
                     runtime,
                     target,
@@ -120,10 +130,19 @@ def tool(
 
             runtime = get_runtime()
             arguments = _bound_arguments(signature, args, kwargs)
-            if runtime.mode == "replay" and replay_value == "recorded":
-                return _replay_tool_call(runtime, name=tool_name, arguments=arguments)
             if runtime.mode == "passthrough":
                 return target(*args, **kwargs)
+            injected = _injected_sync_tool_error(
+                runtime,
+                name=tool_name,
+                arguments=arguments,
+                side_effect=side_effect_value,
+                replay=replay_value,
+            )
+            if injected is not None:
+                raise injected
+            if runtime.mode == "replay" and replay_value == "recorded":
+                return _replay_tool_call(runtime, name=tool_name, arguments=arguments)
             return _record_sync_tool_call(
                 runtime,
                 target,
@@ -140,6 +159,94 @@ def tool(
     if func is not None:
         return decorate(func)
     return decorate
+
+
+def _injected_sync_tool_error(
+    runtime: Any,
+    *,
+    name: str,
+    arguments: dict[str, Any],
+    side_effect: str,
+    replay: str,
+) -> Exception | None:
+    decision = runtime._injection_engine.evaluate_tool(tool=name)
+    if decision is None:
+        return None
+    if decision.override.latency_ms > 0:
+        time.sleep(decision.override.latency_ms / 1000)
+    return _record_injected_tool_error(
+        runtime,
+        name=name,
+        arguments=arguments,
+        side_effect=side_effect,
+        replay=replay,
+        elapsed_ms=decision.override.latency_ms,
+        error_kind=decision.override.error or "injected_tool_error",
+        body=decision.override.body,
+        provenance=decision.provenance.to_dict(),
+    )
+
+
+async def _injected_async_tool_error(
+    runtime: Any,
+    *,
+    name: str,
+    arguments: dict[str, Any],
+    side_effect: str,
+    replay: str,
+) -> Exception | None:
+    decision = runtime._injection_engine.evaluate_tool(tool=name)
+    if decision is None:
+        return None
+    if decision.override.latency_ms > 0:
+        await asyncio.sleep(decision.override.latency_ms / 1000)
+    return _record_injected_tool_error(
+        runtime,
+        name=name,
+        arguments=arguments,
+        side_effect=side_effect,
+        replay=replay,
+        elapsed_ms=decision.override.latency_ms,
+        error_kind=decision.override.error or "injected_tool_error",
+        body=decision.override.body,
+        provenance=decision.provenance.to_dict(),
+    )
+
+
+def _record_injected_tool_error(
+    runtime: Any,
+    *,
+    name: str,
+    arguments: dict[str, Any],
+    side_effect: str,
+    replay: str,
+    elapsed_ms: int,
+    error_kind: str,
+    body: Any,
+    provenance: dict[str, Any],
+) -> Exception:
+    sequence, interaction_id = runtime._capture_buffer.reserve_interaction()
+    parent_id = _current_tool_interaction_id.get()
+    error_class = _injected_error_class(error_kind, body)
+    message = _injected_error_message(error_kind, body)
+    error = _recorded_error(error_class, message)
+    runtime._capture_buffer.append_reserved_interaction(
+        _tool_error_interaction(
+            runtime,
+            sequence=sequence,
+            interaction_id=interaction_id,
+            parent_id=parent_id,
+            name=name,
+            arguments=arguments,
+            side_effect=side_effect,
+            replay=replay,
+            elapsed_ms=elapsed_ms,
+            error=error,
+            error_class=error_class,
+            metadata={"stagehand_injection": provenance},
+        )
+    )
+    return error
 
 
 def _record_sync_tool_call(
@@ -327,14 +434,18 @@ def _tool_error_interaction(
     replay: str,
     elapsed_ms: int,
     error: Exception,
+    error_class: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> CapturedInteraction:
     scrubbed_message, message_paths = _scrub_value(str(error), "events[1].data.message")
     error_data = {
-        "error_class": error.__class__.__name__,
+        "error_class": error_class or error.__class__.__name__,
         "message": scrubbed_message,
         "side_effect": side_effect,
         "replay": replay,
     }
+    if metadata:
+        error_data.update(metadata)
     return _tool_interaction(
         runtime,
         sequence=sequence,
@@ -357,6 +468,25 @@ def _tool_error_interaction(
         ),
         redacted_event_paths=message_paths,
     )
+
+
+def _injected_error_class(error_kind: str, body: Any) -> str:
+    if isinstance(body, Mapping):
+        class_name = str(body.get("error_class", "")).strip()
+        if class_name:
+            return class_name
+    return (
+        "".join(part.capitalize() for part in re.split(r"[^A-Za-z0-9]+", error_kind) if part)
+        + "Error"
+    )
+
+
+def _injected_error_message(error_kind: str, body: Any) -> str:
+    if isinstance(body, Mapping):
+        message = str(body.get("message", "")).strip()
+        if message:
+            return message
+    return f"Injected Stagehand tool error: {error_kind}."
 
 
 def _tool_interaction(
@@ -484,7 +614,8 @@ def _recorded_error(error_class: str, message: str) -> Exception:
     candidate = getattr(builtins, error_class, None)
     if isinstance(candidate, type) and issubclass(candidate, Exception):
         return candidate(message)
-    return RuntimeError(f"{error_class}: {message}")
+    dynamic_error = type(error_class, (RuntimeError,), {})
+    return dynamic_error(message)
 
 
 def _elapsed_ms(started: float) -> int:

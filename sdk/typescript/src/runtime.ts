@@ -149,6 +149,10 @@ export class StagehandRuntime {
   toolReplayStore(): ToolReplayStore {
     return this.toolStore;
   }
+
+  toolInjectionEngine(): InjectionEngine {
+    return this.injectionEngine;
+  }
 }
 
 let currentRuntime: StagehandRuntime | undefined;

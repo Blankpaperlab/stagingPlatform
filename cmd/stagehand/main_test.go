@@ -262,6 +262,41 @@ error_injection:
 	}
 }
 
+func TestLoadSDKErrorInjectionBundleAcceptsToolShortcutShape(t *testing.T) {
+	workdir := t.TempDir()
+	injectionPath := filepath.Join(workdir, "error-injection.yml")
+	writeFile(t, injectionPath, `schema_version: v1alpha1
+error_injection:
+  - name: lookup failure on second call
+    tool: lookup_customer
+    nth_call: 2
+    probability: 1.0
+    error:
+      type: not_found
+      message: customer missing
+      class_name: CustomerNotFoundError
+`)
+
+	bundle, err := loadSDKErrorInjectionBundle(injectionPath)
+	if err != nil {
+		t.Fatalf("loadSDKErrorInjectionBundle() error = %v", err)
+	}
+	if len(bundle.Rules) != 1 {
+		t.Fatalf("len(bundle.Rules) = %d, want 1", len(bundle.Rules))
+	}
+	rule := bundle.Rules[0]
+	if rule.Match.Tool != "lookup_customer" || rule.Match.NthCall != 2 {
+		t.Fatalf("tool match = %#v, want lookup_customer nth 2", rule.Match)
+	}
+	body, ok := rule.Inject.Body.(map[string]any)
+	if !ok {
+		t.Fatalf("inject body = %#v, want map", rule.Inject.Body)
+	}
+	if rule.Inject.Error != "not_found" || body["message"] != "customer missing" || body["error_class"] != "CustomerNotFoundError" {
+		t.Fatalf("tool inject = %#v body=%#v, want typed not_found", rule.Inject, body)
+	}
+}
+
 func TestRunRecordTreatsEmptyCaptureBundleAsCompleteEmptyRun(t *testing.T) {
 	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
 	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))

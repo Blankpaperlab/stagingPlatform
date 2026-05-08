@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
@@ -151,6 +152,73 @@ def test_tool_replay_fails_closed_on_missing_recorded_call() -> None:
 
     with pytest.raises(stagehand.ReplayMissError, match="lookup_customer"):
         lookup_customer("cus_456")
+
+
+def test_tool_error_injection_records_typed_error_and_provenance(tmp_path, monkeypatch) -> None:
+    injection_path = tmp_path / "injection.json"
+    injection_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1alpha1",
+                "rules": [
+                    {
+                        "name": "lookup failure on second call",
+                        "match": {
+                            "tool": "lookup_customer",
+                            "nth_call": 2,
+                            "probability": 1.0,
+                        },
+                        "inject": {
+                            "error": "not_found",
+                            "body": {
+                                "message": "customer missing",
+                                "error_class": "CustomerNotFoundError",
+                            },
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STAGEHAND_ERROR_INJECTION_INPUT", str(injection_path))
+    calls = 0
+
+    @stagehand.tool(name="lookup_customer")
+    def lookup_customer(email: str) -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return {"email": email}
+
+    runtime = stagehand.init(session="tool-injection-record", mode="record")
+
+    assert lookup_customer("jane@example.com") == {"email": "jane@example.com"}
+    with pytest.raises(RuntimeError, match="customer missing"):
+        lookup_customer("jane@example.com")
+
+    assert calls == 1
+    first, injected = runtime.captured_interactions()
+    assert first.events[-1].type == "response_received"
+    assert injected.events[-1].type == "error"
+    assert injected.events[-1].data == {
+        "error_class": "CustomerNotFoundError",
+        "message": "customer missing",
+        "side_effect": "read",
+        "replay": "recorded",
+        "stagehand_injection": {
+            "rule_index": 0,
+            "service": "stagehand.tool",
+            "operation": "lookup_customer",
+            "call_number": 2,
+            "tool": "lookup_customer",
+            "name": "lookup failure on second call",
+            "nth_call": 2,
+            "probability": 1.0,
+            "error": "not_found",
+        },
+    }
+    applied = runtime.capture_bundle_dict()["metadata"]["error_injection"]["applied"]
+    assert applied[0]["tool"] == "lookup_customer"
 
 
 def test_tool_can_be_used_without_parentheses() -> None:
