@@ -4,6 +4,7 @@ import asyncio
 import json
 from typing import Any
 
+import httpx
 import pytest
 
 import stagehand
@@ -115,6 +116,66 @@ def test_tool_async_function_records_and_replays() -> None:
 
     asyncio.run(scenario())
     assert calls == 1
+
+
+def test_tool_replay_is_deterministic_back_to_back() -> None:
+    # Catches: replay serving different captured payloads or sequence metadata across identical replays.
+    calls = 0
+
+    @stagehand.tool(name="lookup_customer")
+    def lookup_customer(customer_id: str) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {"customer_id": customer_id, "live_call": calls}
+
+    record_runtime = stagehand.init(session="tool-determinism-record", mode="record")
+    lookup_customer("cus_001")
+    recorded = record_runtime.captured_interactions()
+
+    replays: list[tuple[dict[str, Any], ...]] = []
+    for index in range(2):
+        _reset_for_tests()
+        replay_runtime = stagehand.init(session=f"tool-determinism-replay-{index}", mode="replay")
+        assert stagehand.seed_replay_interactions(recorded) == 1
+        assert lookup_customer("cus_001") == {"customer_id": "cus_001", "live_call": 1}
+        replays.append(
+            tuple(
+                _canonical_tool_interaction(item) for item in replay_runtime.captured_interactions()
+            )
+        )
+
+    assert replays[0] == replays[1]
+    assert calls == 1
+
+
+def test_tool_replay_does_not_call_live_function_that_would_hit_network() -> None:
+    # Catches: replay falling through to the wrapped implementation and making live network calls.
+    attempts = 0
+    should_attempt_network = False
+
+    def blocked_transport(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise AssertionError(f"network blocked: attempted live request to {request.url}")
+
+    @stagehand.tool(name="lookup_customer")
+    def lookup_customer(customer_id: str) -> dict[str, str]:
+        if should_attempt_network:
+            with httpx.Client(transport=httpx.MockTransport(blocked_transport)) as client:
+                client.get("https://crm.internal.test/customers/" + customer_id)
+        return {"customer_id": customer_id, "source": "live"}
+
+    record_runtime = stagehand.init(session="tool-offline-record", mode="record")
+    lookup_customer("cus_001")
+    recorded = record_runtime.captured_interactions()
+
+    _reset_for_tests()
+
+    should_attempt_network = True
+    stagehand.init(session="tool-offline-replay", mode="replay")
+    assert stagehand.seed_replay_interactions(recorded) == 1
+    assert lookup_customer("cus_001") == {"customer_id": "cus_001", "source": "live"}
+    assert attempts == 0
 
 
 def test_tool_nested_calls_preserve_call_order_and_parent_link() -> None:
@@ -385,4 +446,19 @@ def test_tool_can_be_used_without_parentheses() -> None:
         "result": 42,
         "side_effect": "read",
         "replay": "recorded",
+    }
+
+
+def _canonical_tool_interaction(interaction: Any) -> dict[str, Any]:
+    terminal = interaction.events[-1]
+    return {
+        "sequence": interaction.sequence,
+        "service": interaction.service,
+        "operation": interaction.operation,
+        "protocol": interaction.protocol,
+        "request": interaction.request.body,
+        "terminal_type": terminal.type,
+        "terminal_data": terminal.data,
+        "fallback_tier": interaction.fallback_tier,
+        "fallback_reason": interaction.fallback_reason,
     }

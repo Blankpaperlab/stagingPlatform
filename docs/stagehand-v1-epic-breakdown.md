@@ -1029,7 +1029,9 @@ N6 adds `docs/custom-api-generic-http.md` to explain mapped custom API behavior,
 - Estimate: `8d`
 - Goal: support non-HTTP agent tools such as local functions, internal SDK wrappers, database helper functions, MCP-style tools, shell wrappers, filesystem helpers, queue publishers, and business-specific tool calls.
 - Depends on: `B`, `D`, `G`, `E`, `J`, `K`, `N`
-- Test plan: [Epic Y Test Plan](epic-y-test-plan.md)
+- Test coverage: [Epic Y Test Coverage](stagehand-v1-epic-y-test-coverage.md)
+
+Test coverage summary: Python and TypeScript wrapper tests cover replay determinism, replay isolation from live implementations, async tools, recorded returns/errors, fail-closed misses, scrubbing, same-tool call ordering, nested calls, and tool error injection. Go tests cover tool assertion semantics, inspect rendering, diff alignment, and the custom tool demo's persisted fixture shape.
 
 ### Story Y1: Python tool wrapper
 

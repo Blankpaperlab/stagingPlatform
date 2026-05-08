@@ -115,10 +115,10 @@ func TestCustomToolDemoUnsafeOrderingAssertionFails(t *testing.T) {
 	}
 }
 
-func TestCustomToolDemoReplayIsDeterministic(t *testing.T) {
+func TestCustomToolDemoReplayFixtureShapeIsStable(t *testing.T) {
 	t.Parallel()
 
-	// Catches: replay fixtures changing payload or sequence nondeterministically across runs.
+	// Fixture-shape guard: this does not exercise SDK replay, it keeps the demo's persisted replay walkthrough stable.
 	replayA := canonicalDemoInteractions(replayRun().Interactions)
 	replayB := canonicalDemoInteractions(replayRun().Interactions)
 	if !reflect.DeepEqual(replayA, replayB) {
@@ -126,10 +126,10 @@ func TestCustomToolDemoReplayIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestCustomToolDemoInteractionSequenceAcrossBoundaries(t *testing.T) {
+func TestCustomToolDemoFixtureSequenceAcrossBoundaries(t *testing.T) {
 	t.Parallel()
 
-	// Catches: sequence assignment drift across model, tool, internal API, Stripe, and support APIs.
+	// Fixture-shape guard: this verifies the inspect/diff walkthrough timeline encoded by the demo constructors.
 	run := recordRun()
 	want := []struct {
 		sequence  int

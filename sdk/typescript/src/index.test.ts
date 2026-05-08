@@ -2093,6 +2093,104 @@ test(
 );
 
 test(
+  'tool wrapper records and replays an async function',
+  withCleanRuntime(async () => {
+    // Catches: Promise-returning tools losing capture or replay boundaries.
+    let calls = 0;
+    const asyncLookup = tool({ name: 'async_lookup' }, async ({ id }: { id: string }) => {
+      calls += 1;
+      await Promise.resolve();
+      return { id, status: 'active' };
+    });
+
+    const recordRuntime = init({ session: 'ts-tool-async-record', mode: 'record' });
+    assert.deepEqual(await asyncLookup({ id: 'cus_async_123' }), {
+      id: 'cus_async_123',
+      status: 'active',
+    });
+    const recorded = recordRuntime.snapshotCapturedInteractions();
+
+    _resetForTests();
+
+    init({ session: 'ts-tool-async-replay', mode: 'replay' });
+    assert.equal(seedReplayInteractions(recorded), 1);
+    assert.deepEqual(await asyncLookup({ id: 'cus_async_123' }), {
+      id: 'cus_async_123',
+      status: 'active',
+    });
+    assert.equal(calls, 1);
+  })
+);
+
+test(
+  'tool wrapper replay is deterministic back to back',
+  withCleanRuntime(() => {
+    // Catches: replay serving different captured payloads or sequence metadata across identical replays.
+    let calls = 0;
+    const lookupCustomer = tool({ name: 'lookup_customer' }, ({ id }: { id: string }) => {
+      calls += 1;
+      return { id, liveCall: calls };
+    });
+
+    const recordRuntime = init({ session: 'ts-tool-determinism-record', mode: 'record' });
+    lookupCustomer({ id: 'cus_001' });
+    const recorded = recordRuntime.snapshotCapturedInteractions();
+
+    const replays: Array<Array<Record<string, unknown>>> = [];
+    for (let index = 0; index < 2; index += 1) {
+      _resetForTests();
+      const replayRuntime = init({
+        session: `ts-tool-determinism-replay-${index}`,
+        mode: 'replay',
+      });
+      assert.equal(seedReplayInteractions(recorded), 1);
+      assert.deepEqual(lookupCustomer({ id: 'cus_001' }), { id: 'cus_001', liveCall: 1 });
+      replays.push(replayRuntime.snapshotCapturedInteractions().map(canonicalToolInteraction));
+    }
+
+    assert.deepEqual(replays[0], replays[1]);
+    assert.equal(calls, 1);
+  })
+);
+
+test(
+  'tool wrapper replay does not call live function that would hit network',
+  withCleanRuntime(async () => {
+    // Catches: replay falling through to the wrapped implementation and attempting live I/O.
+    let attempts = 0;
+    let shouldAttemptNetwork = false;
+    const lookupCustomer = tool({ name: 'lookup_customer' }, async ({ id }: { id: string }) => {
+      if (shouldAttemptNetwork) {
+        attempts += 1;
+        await undiciFetch(`https://crm.internal.test/customers/${id}`);
+      }
+      return { id, source: 'live' };
+    });
+
+    const recordRuntime = init({ session: 'ts-tool-offline-record', mode: 'record' });
+    await lookupCustomer({ id: 'cus_001' });
+    const recorded = recordRuntime.snapshotCapturedInteractions();
+
+    _resetForTests();
+
+    const previousDispatcher = getGlobalDispatcher();
+    const blockingDispatcher = new MockAgent();
+    blockingDispatcher.disableNetConnect();
+    shouldAttemptNetwork = true;
+    setGlobalDispatcher(blockingDispatcher);
+    try {
+      init({ session: 'ts-tool-offline-replay', mode: 'replay' });
+      assert.equal(seedReplayInteractions(recorded), 1);
+      assert.deepEqual(await lookupCustomer({ id: 'cus_001' }), { id: 'cus_001', source: 'live' });
+      assert.equal(attempts, 0);
+    } finally {
+      setGlobalDispatcher(previousDispatcher);
+      await blockingDispatcher.close();
+    }
+  })
+);
+
+test(
   'tool wrapper records and replays errors without calling implementation',
   withCleanRuntime(() => {
     let calls = 0;
@@ -2442,6 +2540,21 @@ test(
 
 function escapeForRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function canonicalToolInteraction(interaction: CapturedInteraction): Record<string, unknown> {
+  const terminal = interaction.events.at(-1);
+  return {
+    sequence: interaction.sequence,
+    service: interaction.service,
+    operation: interaction.operation,
+    protocol: interaction.protocol,
+    request: interaction.request.body,
+    terminalType: terminal?.type,
+    terminalData: terminal?.data,
+    fallbackTier: interaction.fallback_tier,
+    fallbackReason: interaction.fallback_reason,
+  };
 }
 
 type ParityFixture = {
