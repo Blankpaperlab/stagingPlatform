@@ -12,6 +12,7 @@ import { loadServiceMappings } from './config.js';
 import { ExactReplayStore } from './replay.js';
 import { installRequestInterception, resetRequestInterceptionForTests } from './interception.js';
 import { InjectionEngine, loadInjectionEngine } from './injection.js';
+import { ToolReplayStore } from './tools.js';
 import { ARTIFACT_VERSION, SDK_VERSION } from './version.js';
 
 export { ENV_OPENAI_HOSTS } from './providers.js';
@@ -71,17 +72,20 @@ export class StagehandRuntime {
   readonly metadata: RuntimeMetadata;
   private readonly captureBuffer: CaptureBuffer;
   private readonly replayStore: ExactReplayStore;
+  private readonly toolStore: ToolReplayStore;
   private readonly injectionEngine: InjectionEngine;
 
   constructor(
     metadata: RuntimeMetadata,
     captureBuffer: CaptureBuffer,
     replayStore: ExactReplayStore,
+    toolStore: ToolReplayStore,
     injectionEngine: InjectionEngine
   ) {
     this.metadata = metadata;
     this.captureBuffer = captureBuffer;
     this.replayStore = replayStore;
+    this.toolStore = toolStore;
     this.injectionEngine = injectionEngine;
   }
 
@@ -129,7 +133,21 @@ export class StagehandRuntime {
     for (const interaction of interactions) {
       normalized.push(structuredClone(interaction as CapturedInteraction));
     }
-    return this.replayStore.seed(normalized);
+    const toolInteractions = normalized.filter(
+      (interaction) => interaction.service === 'stagehand.tool'
+    );
+    const transportInteractions = normalized.filter(
+      (interaction) => interaction.service !== 'stagehand.tool'
+    );
+    return this.replayStore.seed(transportInteractions) + this.toolStore.seed(toolInteractions);
+  }
+
+  toolCaptureBuffer(): CaptureBuffer {
+    return this.captureBuffer;
+  }
+
+  toolReplayStore(): ToolReplayStore {
+    return this.toolStore;
   }
 }
 
@@ -153,6 +171,7 @@ export function init(options: InitOptions): StagehandRuntime {
     sessionSaltId: DEFAULT_SESSION_SALT_ID,
   });
   const replayStore = new ExactReplayStore({ serviceMappings });
+  const toolStore = new ToolReplayStore();
   const injectionEngine = loadInjectionEngine(process.env[ENV_ERROR_INJECTION_INPUT]);
 
   const runtime = new StagehandRuntime(
@@ -167,6 +186,7 @@ export function init(options: InitOptions): StagehandRuntime {
     },
     captureBuffer,
     replayStore,
+    toolStore,
     injectionEngine
   );
 

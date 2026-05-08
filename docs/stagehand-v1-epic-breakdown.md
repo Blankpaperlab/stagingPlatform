@@ -1056,13 +1056,15 @@ def lookup_customer(email: str):
 
 - Outcome: TypeScript users can wrap local async or sync tools with the same record/replay behavior as Python.
 - To do:
-  - [ ] add `stagehand.tool(...)`
-  - [ ] record tool name, arguments, result, error, timing, side-effect type, and call order
-  - [ ] scrub arguments, results, and errors before persistence
-  - [ ] replay recorded results in `replay` mode
-  - [ ] throw recorded errors in `replay` mode
-  - [ ] fail closed on missing recorded tool call
-  - [ ] add tests for successful calls, errors, async functions, nested tool calls, and scrubbed values
+  - [x] add `stagehand.tool(...)`
+  - [x] record tool name, arguments, result, error, timing, side-effect type, and call order
+  - [x] scrub arguments, results, and errors before persistence
+  - [x] replay recorded results in `replay` mode
+  - [x] throw recorded errors in `replay` mode
+  - [x] fail closed on missing recorded tool call
+  - [x] add tests for successful calls, errors, async functions, nested tool calls, and scrubbed values
+
+Y2 adds a TypeScript `stagehand.tool(...)` wrapper for sync and async local functions. Record mode captures tool interactions under the `stagehand.tool` service with arguments, result or error, timing, side-effect metadata, replay policy, call order, parent/child links for nested calls, and scrubbed payloads. Replay mode returns recorded results, throws recorded errors, and fails closed on missing tool calls without invoking the wrapped implementation.
 
 Example API:
 
@@ -1141,7 +1143,7 @@ error_injection:
 ### Epic Y completion checklist
 
 - [x] Python tool wrapper records and replays local tools
-- [ ] TypeScript tool wrapper records and replays local tools
+- [x] TypeScript tool wrapper records and replays local tools
 - [ ] tool calls appear in inspect and diff timelines
 - [ ] assertions can target tool calls
 - [ ] error injection can target tool calls

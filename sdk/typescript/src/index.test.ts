@@ -31,6 +31,7 @@ import {
   initFromEnv,
   isInitialized,
   seedReplayInteractions,
+  tool,
   VALID_MODES,
 } from './index.js';
 import { isOpenAIHost, openAIOperationFromURL } from './providers.js';
@@ -2034,6 +2035,157 @@ test(
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  })
+);
+
+test(
+  'tool wrapper records success and replays recorded result without calling implementation',
+  withCleanRuntime(async () => {
+    const calls: string[] = [];
+    const lookupCustomer = tool(
+      { name: 'lookup_customer', sideEffect: 'read', replay: 'recorded' },
+      async ({ email }: { email: string }) => {
+        calls.push(email);
+        return { id: 'cus_123', email };
+      }
+    );
+
+    const recordRuntime = init({ session: 'ts-tool-success-record', mode: 'record' });
+    assert.deepEqual(await lookupCustomer({ email: 'jane@example.com' }), {
+      id: 'cus_123',
+      email: 'jane@example.com',
+    });
+
+    const [recorded] = recordRuntime.snapshotCapturedInteractions();
+    assert.equal(recorded?.service, 'stagehand.tool');
+    assert.equal(recorded?.operation, 'lookup_customer');
+    assert.equal(recorded?.request.method, 'CALL');
+    assert.deepEqual(recorded?.request.body, {
+      name: 'lookup_customer',
+      arguments: { email: 'user_scrubbed@scrub.local' },
+      side_effect: 'read',
+      replay: 'recorded',
+    });
+    assert.deepEqual(recorded?.events.at(-1)?.data, {
+      result: { id: 'cus_123', email: 'user_scrubbed@scrub.local' },
+      side_effect: 'read',
+      replay: 'recorded',
+    });
+    assert.deepEqual(recorded?.scrub_report.redacted_paths, [
+      'request.body.arguments.email',
+      'events[1].data.result.email',
+    ]);
+
+    _resetForTests();
+
+    const replayRuntime = init({ session: 'ts-tool-success-replay', mode: 'replay' });
+    assert.equal(seedReplayInteractions(recordRuntime.snapshotCapturedInteractions()), 1);
+    assert.deepEqual(await lookupCustomer({ email: 'jane@example.com' }), {
+      id: 'cus_123',
+      email: 'user_scrubbed@scrub.local',
+    });
+    assert.deepEqual(calls, ['jane@example.com']);
+    const [replayed] = replayRuntime.snapshotCapturedInteractions();
+    assert.equal(replayed?.fallback_tier, 'exact');
+    assert.equal(replayed?.fallback_reason, 'recorded tool call');
+  })
+);
+
+test(
+  'tool wrapper records and replays errors without calling implementation',
+  withCleanRuntime(() => {
+    let calls = 0;
+    const chargeCard = tool(
+      { name: 'charge_card', sideEffect: 'write', replay: 'recorded' },
+      ({ cardNumber }: { cardNumber: string }) => {
+        calls += 1;
+        throw new TypeError(`declined card ${cardNumber}`);
+      }
+    );
+
+    const recordRuntime = init({ session: 'ts-tool-error-record', mode: 'record' });
+    assert.throws(() => chargeCard({ cardNumber: '4242 4242 4242 4242' }), /declined card/);
+
+    const [recorded] = recordRuntime.snapshotCapturedInteractions();
+    assert.equal(recorded?.events.at(-1)?.type, 'error');
+    assert.deepEqual(recorded?.events.at(-1)?.data, {
+      error_class: 'TypeError',
+      message: 'declined card card_scrubbed',
+      side_effect: 'write',
+      replay: 'recorded',
+    });
+    assert.deepEqual(recorded?.scrub_report.redacted_paths, [
+      'request.body.arguments.cardNumber',
+      'events[1].data.message',
+    ]);
+
+    _resetForTests();
+
+    init({ session: 'ts-tool-error-replay', mode: 'replay' });
+    assert.equal(seedReplayInteractions(recordRuntime.snapshotCapturedInteractions()), 1);
+    assert.throws(() => chargeCard({ cardNumber: '4242 4242 4242 4242' }), TypeError);
+    assert.equal(calls, 1);
+  })
+);
+
+test(
+  'tool wrapper supports sync functions',
+  withCleanRuntime(() => {
+    const calculate = tool({ name: 'calculate' }, ({ value }: { value: number }) => value * 2);
+
+    const runtime = init({ session: 'ts-tool-sync-record', mode: 'record' });
+    assert.equal(calculate({ value: 21 }), 42);
+
+    const [interaction] = runtime.snapshotCapturedInteractions();
+    assert.equal(interaction?.operation, 'calculate');
+    assert.deepEqual(interaction?.events.at(-1)?.data, {
+      result: 42,
+      side_effect: 'read',
+      replay: 'recorded',
+    });
+  })
+);
+
+test(
+  'tool wrapper preserves nested call order and parent link',
+  withCleanRuntime(() => {
+    const innerTool = tool({ name: 'inner_tool' }, ({ value }: { value: string }) =>
+      value.toUpperCase()
+    );
+    const outerTool = tool({ name: 'outer_tool' }, ({ value }: { value: string }) => {
+      return `outer:${innerTool({ value })}`;
+    });
+
+    const runtime = init({ session: 'ts-tool-nested-record', mode: 'record' });
+    assert.equal(outerTool({ value: 'abc' }), 'outer:ABC');
+
+    const [outer, inner] = runtime.snapshotCapturedInteractions();
+    assert.equal(outer?.operation, 'outer_tool');
+    assert.equal(inner?.operation, 'inner_tool');
+    assert.ok((outer?.sequence ?? 0) < (inner?.sequence ?? 0));
+    assert.equal(inner?.parent_interaction_id, outer?.interaction_id);
+  })
+);
+
+test(
+  'tool wrapper replay fails closed on missing recorded call',
+  withCleanRuntime(() => {
+    const lookupCustomer = tool(
+      { name: 'lookup_customer' },
+      ({ customerId }: { customerId: string }) => {
+        return { customerId };
+      }
+    );
+
+    const recordRuntime = init({ session: 'ts-tool-miss-record', mode: 'record' });
+    lookupCustomer({ customerId: 'cus_123' });
+    const recorded = recordRuntime.snapshotCapturedInteractions();
+
+    _resetForTests();
+
+    init({ session: 'ts-tool-miss-replay', mode: 'replay' });
+    seedReplayInteractions(recorded);
+    assert.throws(() => lookupCustomer({ customerId: 'cus_456' }), ReplayMissError);
   })
 );
 

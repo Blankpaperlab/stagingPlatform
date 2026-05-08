@@ -34,11 +34,13 @@ export type CapturedEvent = {
 export type CapturedScrubReport = {
   scrub_policy_version: string;
   session_salt_id: string;
+  redacted_paths?: string[];
 };
 
 export type CapturedInteraction = {
   run_id: string;
   interaction_id: string;
+  parent_interaction_id?: string;
   sequence: number;
   service: string;
   operation: string;
@@ -142,6 +144,32 @@ export class CaptureBuffer {
       fallbackTier,
       fallbackReason,
     });
+  }
+
+  reserveInteraction(): { sequence: number; interactionId: string } {
+    const sequence = this.nextSequence;
+    this.nextSequence += 1;
+    return {
+      sequence,
+      interactionId: `int_${randomUUID().replaceAll('-', '').slice(0, 12)}`,
+    };
+  }
+
+  appendReservedInteraction(interaction: CapturedInteraction): CapturedInteraction {
+    this.interactions.push(structuredClone(interaction));
+    return structuredClone(interaction);
+  }
+
+  scrubReport(redactedPaths: string[] = []): CapturedScrubReport {
+    return {
+      scrub_policy_version: this.scrubPolicyVersion,
+      session_salt_id: this.sessionSaltId,
+      ...(redactedPaths.length === 0 ? {} : { redacted_paths: Array.from(new Set(redactedPaths)) }),
+    };
+  }
+
+  get currentRunId(): string {
+    return this.runId;
   }
 
   recordSuccess(input: SuccessCaptureInput): CapturedInteraction {

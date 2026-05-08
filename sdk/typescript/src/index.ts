@@ -21,6 +21,7 @@ export {
   seedReplayInteractions,
 } from './runtime.js';
 export { ExactReplayStore, ReplayFailureError, ReplayMissError } from './replay.js';
+export { tool } from './tools.js';
 
 export type {
   CapturedEvent,
@@ -30,3 +31,4 @@ export type {
   CapturedRequest,
 } from './capture.js';
 export type { InitOptions, RecorderMetadata, RuntimeMetadata, StagehandMode } from './runtime.js';
+export type { ToolFunction, ToolOptions } from './tools.js';
