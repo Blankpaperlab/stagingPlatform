@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"stagehand/internal/recorder"
+	sqlitestore "stagehand/internal/store/sqlite"
 )
 
 func TestCustomAPIRegressionDemoPasses(t *testing.T) {
@@ -51,10 +55,68 @@ func TestCustomAPIRegressionDemoIgnoresDynamicOnlyChanges(t *testing.T) {
 	}
 }
 
+func TestCustomAPIRegressionDemoPersistsInspectableRuns(t *testing.T) {
+	ctx := context.Background()
+	storagePath := filepath.Join(t.TempDir(), "runs")
+
+	artifacts, err := PersistCustomAPIDemoRuns(ctx, storagePath)
+	if err != nil {
+		t.Fatalf("PersistCustomAPIDemoRuns() error = %v", err)
+	}
+
+	if !artifacts.Persisted {
+		t.Fatal("Persisted = false, want true")
+	}
+	if artifacts.BaseRunID != "run_custom_api_base" || artifacts.CandidateRunID != "run_custom_api_candidate" {
+		t.Fatalf("artifact run ids = %q/%q, want demo base/candidate ids", artifacts.BaseRunID, artifacts.CandidateRunID)
+	}
+	if !strings.Contains(artifacts.InspectCommand, "inspect --run-id run_custom_api_base --show-bodies") {
+		t.Fatalf("InspectCommand = %q, want runnable base inspect command", artifacts.InspectCommand)
+	}
+	if !strings.Contains(artifacts.DiffCommand, "diff --candidate-run-id run_custom_api_candidate --base-run-id run_custom_api_base") {
+		t.Fatalf("DiffCommand = %q, want runnable base/candidate diff command", artifacts.DiffCommand)
+	}
+
+	sqliteStore, err := sqlitestore.OpenStore(ctx, sqliteDatabasePath(storagePath))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	base, err := sqliteStore.GetRun(ctx, artifacts.BaseRunID)
+	if err != nil {
+		t.Fatalf("GetRun(base) error = %v", err)
+	}
+	candidate, err := sqliteStore.GetRun(ctx, artifacts.CandidateRunID)
+	if err != nil {
+		t.Fatalf("GetRun(candidate) error = %v", err)
+	}
+	latest, err := sqliteStore.GetLatestRunRecord(ctx, demoSessionName)
+	if err != nil {
+		t.Fatalf("GetLatestRunRecord() error = %v", err)
+	}
+	if latest.RunID != artifacts.CandidateRunID {
+		t.Fatalf("latest run id = %q, want candidate %q", latest.RunID, artifacts.CandidateRunID)
+	}
+
+	if base.Interactions[0].FallbackTier != recorder.FallbackTierExact {
+		t.Fatalf("base fallback tier = %q, want exact", base.Interactions[0].FallbackTier)
+	}
+	regression, err := compareCustomAPIRegression(base, candidate)
+	if err != nil {
+		t.Fatalf("compareCustomAPIRegression(persisted runs) error = %v", err)
+	}
+	if regression.FailingChanges != 1 || regression.FirstService != "internal-billing" {
+		t.Fatalf("persisted regression = %#v, want one internal-billing failing change", regression)
+	}
+}
+
 func dynamicOnlyCandidateRun() recorder.Run {
 	run := baselineRun()
 	run.RunID = "run_custom_api_dynamic_only"
 	run.Mode = recorder.RunModeReplay
+	run.StartedAt = time.Unix(3, 0).UTC()
+	run.EndedAt = timePtr(time.Unix(4, 0).UTC())
 	run.Interactions = []recorder.Interaction{
 		customAPIInteraction(
 			run.RunID,

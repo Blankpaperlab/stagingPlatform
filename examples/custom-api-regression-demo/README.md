@@ -15,6 +15,19 @@ Run it:
 go run ./examples/custom-api-regression-demo
 ```
 
+The demo persists two inspectable runs into the local Stagehand SQLite store:
+
+- `run_custom_api_base`
+- `run_custom_api_candidate`
+
+After running the demo, inspect and diff the persisted artifacts with:
+
+```sh
+go run ./cmd/stagehand inspect --run-id run_custom_api_base --show-bodies
+go run ./cmd/stagehand inspect --session custom-api-regression-demo --show-bodies
+go run ./cmd/stagehand diff --candidate-run-id run_custom_api_candidate --base-run-id run_custom_api_base
+```
+
 CI covers it through:
 
 ```sh

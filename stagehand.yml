@@ -66,6 +66,20 @@ services:
     type: api
     match:
       host: billing.internal.acme.com
+  - name: internal-billing
+    type: api
+    match:
+      host: billing.internal.test
+      path_prefix: /api
+    replay:
+      mode: generic_http
+      allowed_tiers: [0, 1]
+    ignore:
+      request_paths:
+        - headers.idempotency-key
+        - body.idempotency_key
+      response_paths:
+        - body.trace_id
   - name: admin-api
     type: api
     match:

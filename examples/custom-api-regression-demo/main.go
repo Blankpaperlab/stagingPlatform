@@ -3,25 +3,31 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	analysisdiff "stagehand/internal/analysis/diff"
 	"stagehand/internal/recorder"
+	"stagehand/internal/store"
+	sqlitestore "stagehand/internal/store/sqlite"
 	"stagehand/internal/version"
 )
 
 const demoSessionName = "custom-api-regression-demo"
+const demoStoragePath = ".stagehand/runs"
 
 type DemoSummary struct {
 	SessionName string            `json:"session_name"`
 	CRM         ReplaySummary     `json:"crm"`
 	Billing     ReplaySummary     `json:"billing"`
 	Regression  RegressionSummary `json:"regression"`
+	Artifacts   *ArtifactSummary  `json:"artifacts,omitempty"`
 }
 
 type ReplaySummary struct {
@@ -40,6 +46,17 @@ type RegressionSummary struct {
 	FirstOperation string `json:"first_operation,omitempty"`
 }
 
+type ArtifactSummary struct {
+	Persisted         bool   `json:"persisted"`
+	StoragePath       string `json:"storage_path"`
+	DatabasePath      string `json:"database_path"`
+	BaseRunID         string `json:"base_run_id"`
+	CandidateRunID    string `json:"candidate_run_id"`
+	InspectCommand    string `json:"inspect_command"`
+	DiffCommand       string `json:"diff_command"`
+	SessionInspectCmd string `json:"session_inspect_command"`
+}
+
 type replayRequest struct {
 	Service   string
 	Operation string
@@ -53,6 +70,11 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	artifacts, err := PersistCustomAPIDemoRuns(context.Background(), demoStoragePath)
+	if err != nil {
+		fatal(err)
+	}
+	summary.Artifacts = &artifacts
 
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
@@ -110,6 +132,56 @@ func RunCustomAPIDemo(ctx context.Context) (DemoSummary, error) {
 		Billing:     billingReplay,
 		Regression:  regression,
 	}, nil
+}
+
+func PersistCustomAPIDemoRuns(ctx context.Context, storagePath string) (ArtifactSummary, error) {
+	storagePath = strings.TrimSpace(storagePath)
+	if storagePath == "" {
+		storagePath = demoStoragePath
+	}
+	dbPath := sqliteDatabasePath(storagePath)
+
+	sqliteStore, err := sqlitestore.OpenStore(ctx, dbPath)
+	if err != nil {
+		return ArtifactSummary{}, fmt.Errorf("open local store %q: %w", dbPath, err)
+	}
+	defer sqliteStore.Close()
+
+	if err := sqliteStore.DeleteSession(ctx, demoSessionName); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return ArtifactSummary{}, fmt.Errorf("clear existing demo session %q: %w", demoSessionName, err)
+	}
+
+	base := baselineRun()
+	candidate := regressedCandidateRun()
+	for _, run := range []recorder.Run{base, candidate} {
+		if err := persistDemoRun(ctx, sqliteStore, run); err != nil {
+			return ArtifactSummary{}, err
+		}
+	}
+
+	return ArtifactSummary{
+		Persisted:         true,
+		StoragePath:       storagePath,
+		DatabasePath:      dbPath,
+		BaseRunID:         base.RunID,
+		CandidateRunID:    candidate.RunID,
+		InspectCommand:    "go run ./cmd/stagehand inspect --run-id " + base.RunID + " --show-bodies",
+		DiffCommand:       "go run ./cmd/stagehand diff --candidate-run-id " + candidate.RunID + " --base-run-id " + base.RunID,
+		SessionInspectCmd: "go run ./cmd/stagehand inspect --session " + demoSessionName + " --show-bodies",
+	}, nil
+}
+
+func persistDemoRun(ctx context.Context, artifactStore store.ArtifactStore, run recorder.Run) error {
+	runRecord := store.RunRecordFromRun(run)
+	if err := artifactStore.CreateRun(ctx, runRecord); err != nil {
+		return fmt.Errorf("create demo run %q: %w", run.RunID, err)
+	}
+	for _, interaction := range run.Interactions {
+		if err := artifactStore.WriteInteraction(ctx, interaction); err != nil {
+			return fmt.Errorf("write demo interaction %q: %w", interaction.InteractionID, err)
+		}
+	}
+	return nil
 }
 
 func replayExactGenericHTTP(recorded []recorder.Interaction, request replayRequest) (ReplaySummary, error) {
@@ -231,6 +303,8 @@ func regressedCandidateRun() recorder.Run {
 	run := baselineRun()
 	run.RunID = "run_custom_api_candidate"
 	run.Mode = recorder.RunModeReplay
+	run.StartedAt = time.Unix(3, 0).UTC()
+	run.EndedAt = timePtr(time.Unix(4, 0).UTC())
 	run.Interactions = []recorder.Interaction{
 		customAPIInteraction(
 			run.RunID,
@@ -283,6 +357,7 @@ func customAPIInteraction(runID, interactionID string, sequence int, service, op
 		Operation:     operation,
 		Protocol:      recorder.ProtocolHTTPS,
 		Streaming:     false,
+		FallbackTier:  recorder.FallbackTierExact,
 		Request: recorder.Request{
 			URL:    rawURL,
 			Method: "POST",
@@ -445,6 +520,15 @@ func numberAsInt(value any) (int, bool) {
 
 func timePtr(value time.Time) *time.Time {
 	return &value
+}
+
+func sqliteDatabasePath(storagePath string) string {
+	cleaned := filepath.Clean(storagePath)
+	if strings.EqualFold(filepath.Ext(cleaned), ".db") || strings.EqualFold(filepath.Ext(cleaned), ".sqlite") || strings.EqualFold(filepath.Ext(cleaned), ".sqlite3") {
+		return cleaned
+	}
+
+	return filepath.Join(cleaned, "stagehand.db")
 }
 
 func fatal(err error) {
