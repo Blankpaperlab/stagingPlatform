@@ -245,6 +245,25 @@ class CaptureBuffer:
             )
         )
 
+    def reserve_interaction(self) -> tuple[int, str]:
+        with self._lock:
+            sequence = self._next_sequence
+            self._next_sequence += 1
+            return sequence, f"int_{uuid4().hex[:12]}"
+
+    def append_reserved_interaction(self, interaction: CapturedInteraction) -> CapturedInteraction:
+        with self._lock:
+            self._interactions.append(interaction)
+            return interaction
+
+    @property
+    def scrub_report(self) -> CapturedScrubReport:
+        return self._scrub_report
+
+    @property
+    def run_id(self) -> str:
+        return self._run_id
+
     def record_httpx_response(
         self,
         request: Any,

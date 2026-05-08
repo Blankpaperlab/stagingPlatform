@@ -1,6 +1,7 @@
 """Stagehand Python SDK package."""
 
 from ._openai import ReplayFailureError, ReplayMissError
+from ._tools import tool
 from ._version import ARTIFACT_VERSION, __version__
 from ._runtime import (
     AlreadyInitializedError,
@@ -34,4 +35,5 @@ __all__ = [
     "init_from_env",
     "is_initialized",
     "seed_replay_interactions",
+    "tool",
 ]

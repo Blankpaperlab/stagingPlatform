@@ -19,6 +19,7 @@ from ._injection import InjectionEngine, load_engine
 from ._openai import OpenAIReplayStore
 from ._providers import ENV_OPENAI_HOSTS as _PROVIDER_ENV_OPENAI_HOSTS
 from ._stripe import install_stripe_interception, uninstall_stripe_interception
+from ._tools import ToolReplayStore
 from ._version import ARTIFACT_VERSION, __version__
 
 DEFAULT_CONFIG_FILENAME: Final[str] = "stagehand.yml"
@@ -79,6 +80,7 @@ class StagehandRuntime:
     metadata: RuntimeMetadata
     _capture_buffer: CaptureBuffer
     _openai_replay_store: OpenAIReplayStore
+    _tool_replay_store: ToolReplayStore
     _injection_engine: InjectionEngine
 
     @property
@@ -128,7 +130,15 @@ class StagehandRuntime:
                 normalized.append(interaction)
             else:
                 normalized.append(CapturedInteraction.from_dict(interaction))
-        return self._openai_replay_store.seed(normalized)
+        tool_interactions = [
+            interaction for interaction in normalized if interaction.service == "stagehand.tool"
+        ]
+        transport_interactions = [
+            interaction for interaction in normalized if interaction.service != "stagehand.tool"
+        ]
+        return self._openai_replay_store.seed(
+            transport_interactions
+        ) + self._tool_replay_store.seed(tool_interactions)
 
 
 _runtime_lock = Lock()
@@ -165,6 +175,7 @@ def init(session: str, mode: str, config_path: str | Path | None = None) -> Stag
                 service_mappings=service_mappings,
             ),
             _openai_replay_store=OpenAIReplayStore(service_mappings=service_mappings),
+            _tool_replay_store=ToolReplayStore(),
             _injection_engine=load_engine(os.environ.get(ENV_ERROR_INJECTION_INPUT)),
         )
         install_httpx_interception(
