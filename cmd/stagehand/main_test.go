@@ -51,6 +51,132 @@ func TestRunWritesRootHelpWithNoArgs(t *testing.T) {
 	if !strings.Contains(stdout.String(), "baseline") {
 		t.Fatalf("stdout = %q, want baseline command in help", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "init") {
+		t.Fatalf("stdout = %q, want init command in help", stdout.String())
+	}
+}
+
+func TestRunInitCreatesScaffoldDetectsProjectAndPrintsNextCommand(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	writeFile(t, filepath.Join(workdir, "package.json"), `{
+  "scripts": {
+    "agent": "tsx src/agent.ts",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "openai": "^1.0.0",
+    "undici": "^6.0.0"
+  }
+}
+`)
+	writeFile(t, filepath.Join(workdir, "pyproject.toml"), "[project]\ndependencies = [\"httpx\", \"stripe\"]\n")
+	writeFile(t, filepath.Join(workdir, "agent.py"), "import httpx\n")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"init"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(init) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	for _, path := range []string{
+		"stagehand.yml",
+		filepath.Join(".stagehand", "runs"),
+		filepath.Join(".stagehand", "reports"),
+		filepath.Join(".stagehand", "generated"),
+		"assertions.yml",
+		"error-injection.yml",
+	} {
+		if _, err := os.Stat(filepath.Join(workdir, path)); err != nil {
+			t.Fatalf("expected scaffold path %q: %v", path, err)
+		}
+	}
+	if _, err := config.Load(filepath.Join(workdir, "stagehand.yml")); err != nil {
+		t.Fatalf("generated stagehand.yml did not validate: %v", err)
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Stagehand initialized",
+		"project: typescript, node, python",
+		"integrations:",
+		"openai",
+		"undici",
+		"httpx",
+		"stripe",
+		"candidate commands: npm run agent",
+		"stagehand record-baseline -- npm run agent",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+}
+
+func TestRunInitRefusesExistingConfigUnlessForce(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	writeFile(t, filepath.Join(workdir, "stagehand.yml"), "existing: true\n")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := run([]string{"init"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(init) expected overwrite error")
+	}
+	if !strings.Contains(err.Error(), "refusing to overwrite existing config") {
+		t.Fatalf("run(init) error = %v", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(workdir, "stagehand.yml"))
+	if readErr != nil {
+		t.Fatalf("read stagehand.yml: %v", readErr)
+	}
+	if string(data) != "existing: true\n" {
+		t.Fatalf("stagehand.yml = %q, want original content", string(data))
+	}
+
+	stdout.Reset()
+	if err := run([]string{"init", "--force", "--starter-files=false"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(init --force) error = %v", err)
+	}
+	if _, err := config.Load(filepath.Join(workdir, "stagehand.yml")); err != nil {
+		t.Fatalf("forced stagehand.yml did not validate: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "assertions.yml")); !os.IsNotExist(err) {
+		t.Fatalf("assertions.yml exists after --starter-files=false, err=%v", err)
+	}
+}
+
+func TestRunInitDetectsPythonEntrypointWhenNoNodeScriptExists(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	writeFile(t, filepath.Join(workdir, "pyproject.toml"), `[project]
+dependencies = ["openai", "httpx"]
+
+[project.scripts]
+support-agent = "support.agent:main"
+`)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"init", "--starter-files=false"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(init) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"project: python",
+		"integrations: openai, httpx",
+		"candidate commands: support-agent",
+		"stagehand record-baseline -- support-agent",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "assertions.yml")); !os.IsNotExist(err) {
+		t.Fatalf("assertions.yml exists after --starter-files=false, err=%v", err)
+	}
 }
 
 func TestRunRecordRequiresSession(t *testing.T) {

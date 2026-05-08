@@ -1188,14 +1188,16 @@ The underlying model remains the same: `record`, `replay`, `inspect`, `baseline`
 
 - Outcome: a new project gets a usable Stagehand scaffold and exact next command without reading the full schema docs.
 - To do:
-  - [ ] detect Python and TypeScript project files
-  - [ ] detect likely agent commands from package scripts, Python entrypoints, examples, and common test commands
-  - [ ] detect installed or referenced integrations such as OpenAI, Stripe, `httpx`, `fetch`, `undici`, and custom HTTP clients where possible
-  - [ ] write a minimal `stagehand.yml`
-  - [ ] create `.stagehand/` directories for runs, reports, and generated files
-  - [ ] optionally write starter `assertions.yml` and `error-injection.yml`
-  - [ ] print the recommended `stagehand record-baseline -- <command>` invocation
-  - [ ] avoid overwriting existing config unless `--force` is provided
+  - [x] detect Python and TypeScript project files
+  - [x] detect likely agent commands from package scripts, Python entrypoints, examples, and common test commands
+  - [x] detect installed or referenced integrations such as OpenAI, Stripe, `httpx`, `fetch`, `undici`, and custom HTTP clients where possible
+  - [x] write a minimal `stagehand.yml`
+  - [x] create `.stagehand/` directories for runs, reports, and generated files
+  - [x] optionally write starter `assertions.yml` and `error-injection.yml`
+  - [x] print the recommended `stagehand record-baseline -- <command>` invocation
+  - [x] avoid overwriting existing config unless `--force` is provided
+
+AA1 adds `stagehand init`, which scaffolds a valid `stagehand.yml`, creates `.stagehand/runs`, `.stagehand/reports`, and `.stagehand/generated`, writes starter `assertions.yml` and `error-injection.yml` unless `--starter-files=false` is passed, detects Python/TypeScript/Node project shape, candidate agent commands, and common integrations, and prints the recommended `stagehand record-baseline -- <command>` next step. Existing configs are left untouched unless `--force` is supplied.
 
 ### Story AA2: `stagehand doctor`
 

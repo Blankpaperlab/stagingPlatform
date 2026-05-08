@@ -44,6 +44,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 	case "-h", "--help", "help":
 		writeRootHelp(stdout)
 		return nil
+	case "init":
+		return runInit(args[1:], stdout, stderr)
 	case "record":
 		return runRecord(args[1:], stdout, stderr)
 	case "replay":
@@ -952,6 +954,7 @@ Usage:
   stagehand <command> [flags]
 
 Commands:
+  init     Create Stagehand config and first-run scaffolding
   record   Run a command and persist captured interactions
   replay   Replay a stored run against a command
   inspect  Inspect a stored run in the terminal
