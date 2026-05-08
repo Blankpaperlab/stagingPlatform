@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -111,4 +113,79 @@ func TestCustomToolDemoUnsafeOrderingAssertionFails(t *testing.T) {
 	if !strings.Contains(summary.Message, "no before/after match pair") {
 		t.Fatalf("Message = %q, want no before/after match pair", summary.Message)
 	}
+}
+
+func TestCustomToolDemoReplayIsDeterministic(t *testing.T) {
+	t.Parallel()
+
+	// Catches: replay fixtures changing payload or sequence nondeterministically across runs.
+	replayA := canonicalDemoInteractions(replayRun().Interactions)
+	replayB := canonicalDemoInteractions(replayRun().Interactions)
+	if !reflect.DeepEqual(replayA, replayB) {
+		t.Fatalf("canonical replay interactions differ\nA=%#v\nB=%#v", replayA, replayB)
+	}
+}
+
+func TestCustomToolDemoInteractionSequenceAcrossBoundaries(t *testing.T) {
+	t.Parallel()
+
+	// Catches: sequence assignment drift across model, tool, internal API, Stripe, and support APIs.
+	run := recordRun()
+	want := []struct {
+		sequence  int
+		protocol  recorder.Protocol
+		service   string
+		operation string
+	}{
+		{1, recorder.ProtocolHTTPS, "openai", "chat.completions.create"},
+		{2, recorder.ProtocolTool, "stagehand.tool", "lookup_customer"},
+		{3, recorder.ProtocolHTTPS, "internal-billing", "POST /api/refunds"},
+		{4, recorder.ProtocolHTTPS, "stripe", "refunds.create"},
+		{5, recorder.ProtocolHTTPS, "support-ticket-api", "POST /tickets"},
+	}
+	if len(run.Interactions) != len(want) {
+		t.Fatalf("interaction count = %d, want %d", len(run.Interactions), len(want))
+	}
+	seen := map[int]bool{}
+	for idx, expected := range want {
+		got := run.Interactions[idx]
+		if seen[got.Sequence] {
+			t.Fatalf("duplicate sequence %d in interactions: %#v", got.Sequence, run.Interactions)
+		}
+		seen[got.Sequence] = true
+		if got.Sequence != expected.sequence || got.Protocol != expected.protocol || got.Service != expected.service || got.Operation != expected.operation {
+			t.Fatalf("interaction %d = seq=%d protocol=%s service=%s operation=%s, want %#v", idx, got.Sequence, got.Protocol, got.Service, got.Operation, expected)
+		}
+	}
+}
+
+func canonicalDemoInteractions(interactions []recorder.Interaction) []map[string]any {
+	canonical := make([]map[string]any, 0, len(interactions))
+	for _, interaction := range interactions {
+		canonical = append(canonical, map[string]any{
+			"sequence":      interaction.Sequence,
+			"service":       interaction.Service,
+			"operation":     interaction.Operation,
+			"protocol":      interaction.Protocol,
+			"request_body":  canonicalJSON(interaction.Request.Body),
+			"terminal_type": terminalEventType(interaction),
+			"terminal_data": canonicalJSON(terminalEventData(interaction)),
+		})
+	}
+	return canonical
+}
+
+func canonicalJSON(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func terminalEventType(interaction recorder.Interaction) recorder.EventType {
+	if len(interaction.Events) == 0 {
+		return ""
+	}
+	return interaction.Events[len(interaction.Events)-1].Type
 }

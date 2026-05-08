@@ -2272,6 +2272,174 @@ test(
   })
 );
 
+test(
+  'tool wrapper error injection is deterministic across repeated runs',
+  withCleanRuntime(() => {
+    // Catches: deterministic nth_call tool injection behaving probabilistically across identical runs.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-tool-injection-repeat-'));
+    const injectionPath = path.join(tempDir, 'injection.json');
+    fs.writeFileSync(
+      injectionPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'lookup failure on second call',
+            match: { tool: 'lookup_customer', nth_call: 2, probability: 1.0 },
+            inject: {
+              error: 'not_found',
+              body: {
+                message: 'customer missing',
+                error_class: 'CustomerNotFoundError',
+              },
+            },
+          },
+        ],
+      })
+    );
+
+    for (let index = 0; index < 5; index += 1) {
+      _resetForTests();
+      process.env[ENV_ERROR_INJECTION_INPUT] = injectionPath;
+      let calls = 0;
+      const lookupCustomer = tool({ name: 'lookup_customer' }, ({ id }: { id: string }) => {
+        calls += 1;
+        return { id };
+      });
+      const runtime = init({ session: `ts-tool-injection-repeat-${index}`, mode: 'record' });
+
+      const outcomes = ['cus_001', 'cus_002', 'cus_003'].map((id) => {
+        try {
+          lookupCustomer({ id });
+          return 'success';
+        } catch (error) {
+          assert.ok(error instanceof Error);
+          return `${error.name}:${error.message}`;
+        }
+      });
+
+      assert.deepEqual(outcomes, ['success', 'CustomerNotFoundError:customer missing', 'success']);
+      assert.equal(calls, 2);
+      assert.deepEqual(
+        runtime
+          .snapshotCapturedInteractions()
+          .map((interaction) => interaction.events.at(-1)?.type),
+        ['response_received', 'error', 'response_received']
+      );
+      assert.equal(
+        (
+          runtime.snapshotCapturedInteractions()[1]?.events.at(-1)?.data?.stagehand_injection as {
+            call_number?: number;
+          }
+        )?.call_number,
+        2
+      );
+    }
+  })
+);
+
+test(
+  'tool wrapper error injection control case does not fire for unmatched tool',
+  withCleanRuntime(() => {
+    // Catches: tool injection firing even when the configured tool selector does not match.
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stagehand-ts-tool-injection-control-'));
+    const injectionPath = path.join(tempDir, 'injection.json');
+    fs.writeFileSync(
+      injectionPath,
+      JSON.stringify({
+        rules: [
+          {
+            name: 'different tool failure',
+            match: { tool: 'delete_customer', nth_call: 1 },
+            inject: { error: 'not_found', body: { message: 'should not fire' } },
+          },
+        ],
+      })
+    );
+    process.env[ENV_ERROR_INJECTION_INPUT] = injectionPath;
+    let calls = 0;
+    const lookupCustomer = tool({ name: 'lookup_customer' }, ({ id }: { id: string }) => {
+      calls += 1;
+      return { id };
+    });
+    const runtime = init({ session: 'ts-tool-injection-control', mode: 'record' });
+
+    assert.deepEqual(lookupCustomer({ id: 'cus_001' }), { id: 'cus_001' });
+    assert.deepEqual(lookupCustomer({ id: 'cus_002' }), { id: 'cus_002' });
+    assert.equal(calls, 2);
+    assert.equal(runtime.recorderMetadata().error_injection, undefined);
+    assert.deepEqual(
+      runtime.snapshotCapturedInteractions().map((interaction) => interaction.events.at(-1)?.type),
+      ['response_received', 'response_received']
+    );
+  })
+);
+
+test(
+  'tool wrapper scrubs arguments and results before persistence',
+  withCleanRuntime(() => {
+    // Catches: scrub evidence being present while captured tool payloads still contain plaintext secrets.
+    const sensitiveEmail = 'real.user@example-corp.com';
+    const sensitiveCard = '4242 4242 4242 4242';
+    const sensitiveToken = 'secret-live-token';
+    const lookupCustomer = tool(
+      { name: 'lookup_customer' },
+      ({ email, cardNumber, token }: { email: string; cardNumber: string; token: string }) => {
+        return { email, cardNumber, token };
+      }
+    );
+    const runtime = init({ session: 'ts-tool-scrub-record', mode: 'record' });
+
+    lookupCustomer({ email: sensitiveEmail, cardNumber: sensitiveCard, token: sensitiveToken });
+    const [interaction] = runtime.snapshotCapturedInteractions();
+    const capturedText = JSON.stringify(runtime.snapshotCapturedInteractions());
+
+    assert.equal(capturedText.includes(sensitiveEmail), false);
+    assert.equal(capturedText.includes(sensitiveCard), false);
+    assert.equal(capturedText.includes(sensitiveToken), false);
+    assert.deepEqual(
+      new Set(interaction?.scrub_report.redacted_paths),
+      new Set([
+        'request.body.arguments.email',
+        'request.body.arguments.cardNumber',
+        'request.body.arguments.token',
+        'events[1].data.result.email',
+        'events[1].data.result.cardNumber',
+        'events[1].data.result.token',
+      ])
+    );
+  })
+);
+
+test(
+  'tool wrapper replay preserves distinguishable call order',
+  withCleanRuntime(() => {
+    // Catches: replay store serving same-name tool calls in the wrong occurrence order.
+    const calls: string[] = [];
+    const lookupCustomer = tool({ name: 'lookup_customer' }, ({ id }: { id: string }) => {
+      calls.push(id);
+      return { id, ordinal: String(calls.length) };
+    });
+    const recordRuntime = init({ session: 'ts-tool-order-record', mode: 'record' });
+    lookupCustomer({ id: 'cus_001' });
+    lookupCustomer({ id: 'cus_002' });
+    lookupCustomer({ id: 'cus_003' });
+    const recorded = recordRuntime.snapshotCapturedInteractions();
+
+    _resetForTests();
+
+    init({ session: 'ts-tool-order-replay', mode: 'replay' });
+    assert.equal(seedReplayInteractions(recorded), 3);
+    const replayed = ['cus_001', 'cus_002', 'cus_003'].map((id) => lookupCustomer({ id }));
+
+    assert.deepEqual(replayed, [
+      { id: 'cus_001', ordinal: '1' },
+      { id: 'cus_002', ordinal: '2' },
+      { id: 'cus_003', ordinal: '3' },
+    ]);
+    assert.deepEqual(calls, ['cus_001', 'cus_002', 'cus_003']);
+  })
+);
+
 function escapeForRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

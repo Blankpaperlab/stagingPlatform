@@ -556,6 +556,85 @@ assertions:
 	}
 }
 
+func TestEvaluateToolCrossServiceAssertionEvidenceWhenIDsMatch(t *testing.T) {
+	t.Parallel()
+
+	// Catches: cross-service assertions passing without proving semantic equality.
+	file, err := Parse([]byte(`
+schema_version: v1alpha1
+assertions:
+  - id: lookup-result-used-for-refund
+    type: cross-service
+    left:
+      tool: lookup_customer
+      path: response.result.id
+    right:
+      service: stripe
+      operation: refunds.create
+      path: request.body.customer
+    relationship: equals
+`))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	results, err := Evaluate(toolAssertionRunWithIDs("cus_test_42", "cus_test_42"), file)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	result := resultByID(t, results, "lookup-result-used-for-refund")
+	if result.Status != ResultStatusPassed {
+		t.Fatalf("Status = %q, want passed: %#v", result.Status, result)
+	}
+	if len(result.Evidence.LinkedEntities) != 1 {
+		t.Fatalf("linked entities = %d, want 1: %#v", len(result.Evidence.LinkedEntities), result.Evidence)
+	}
+	if result.Evidence.LinkedEntities[0].Left.Value != "cus_test_42" || result.Evidence.LinkedEntities[0].Right.Value != "cus_test_42" {
+		t.Fatalf("linked evidence = %#v, want cus_test_42 on both sides", result.Evidence.LinkedEntities[0])
+	}
+}
+
+func TestEvaluateToolCrossServiceAssertionFailsWhenIDsDiffer(t *testing.T) {
+	t.Parallel()
+
+	// Catches: cross-service assertions passing when a tool result and downstream API argument differ.
+	file, err := Parse([]byte(`
+schema_version: v1alpha1
+assertions:
+  - id: lookup-result-used-for-refund
+    type: cross-service
+    left:
+      tool: lookup_customer
+      path: response.result.id
+    right:
+      service: stripe
+      operation: refunds.create
+      path: request.body.customer
+    relationship: equals
+`))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+
+	results, err := Evaluate(toolAssertionRunWithIDs("cus_test_42", "cus_test_99"), file)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	result := resultByID(t, results, "lookup-result-used-for-refund")
+	if result.Status != ResultStatusFailed {
+		t.Fatalf("Status = %q, want failed for mismatched IDs: %#v", result.Status, result)
+	}
+	if len(result.Evidence.LinkedEntities) != 0 {
+		t.Fatalf("linked entities = %d, want 0 for mismatched IDs", len(result.Evidence.LinkedEntities))
+	}
+	if len(result.Evidence.LeftEntities) != 1 || result.Evidence.LeftEntities[0].Value != "cus_test_42" {
+		t.Fatalf("left evidence = %#v, want cus_test_42", result.Evidence.LeftEntities)
+	}
+	if len(result.Evidence.RightEntities) != 1 || result.Evidence.RightEntities[0].Value != "cus_test_99" {
+		t.Fatalf("right evidence = %#v, want cus_test_99", result.Evidence.RightEntities)
+	}
+}
+
 func resultByID(t *testing.T, results []Result, id string) Result {
 	t.Helper()
 
@@ -566,6 +645,22 @@ func resultByID(t *testing.T, results []Result, id string) Result {
 	}
 	t.Fatalf("missing result %q in %#v", id, results)
 	return Result{}
+}
+
+func toolAssertionRunWithIDs(lookupID string, billingID string) recorder.Run {
+	run := toolAssertionRun()
+	run.Interactions[0] = toolInteraction("int_lookup_customer", 1, "lookup_customer", map[string]any{
+		"email": "customer@example.com",
+	}, map[string]any{
+		"id": lookupID,
+	})
+	run.Interactions[1] = sampleServiceInteraction("int_refund", 2, "stripe", "refunds.create", recorder.ProtocolHTTPS, map[string]any{
+		"customer": billingID,
+		"amount":   500,
+	}, map[string]any{
+		"id": "rf_123",
+	})
+	return run
 }
 
 func toolAssertionRun() recorder.Run {

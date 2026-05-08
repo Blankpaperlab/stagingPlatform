@@ -221,6 +221,156 @@ def test_tool_error_injection_records_typed_error_and_provenance(tmp_path, monke
     assert applied[0]["tool"] == "lookup_customer"
 
 
+def test_tool_error_injection_is_deterministic_across_repeated_runs(tmp_path, monkeypatch) -> None:
+    # Catches: deterministic nth_call injection behaving probabilistically or resetting counters incorrectly.
+    injection_path = tmp_path / "injection.json"
+    injection_path.write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "name": "lookup failure on second call",
+                        "match": {"tool": "lookup_customer", "nth_call": 2, "probability": 1.0},
+                        "inject": {
+                            "error": "not_found",
+                            "body": {
+                                "message": "customer missing",
+                                "error_class": "CustomerNotFoundError",
+                            },
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    for index in range(5):
+        _reset_for_tests()
+        monkeypatch.setenv("STAGEHAND_ERROR_INJECTION_INPUT", str(injection_path))
+        calls = 0
+
+        @stagehand.tool(name="lookup_customer")
+        def lookup_customer(customer_id: str) -> dict[str, str]:
+            nonlocal calls
+            calls += 1
+            return {"customer_id": customer_id}
+
+        runtime = stagehand.init(session=f"tool-injection-repeat-{index}", mode="record")
+        outcomes: list[str] = []
+        for customer_id in ("cus_001", "cus_002", "cus_003"):
+            try:
+                lookup_customer(customer_id)
+                outcomes.append("success")
+            except RuntimeError as exc:
+                outcomes.append(f"{exc.__class__.__name__}:{exc}")
+
+        assert outcomes == ["success", "CustomerNotFoundError:customer missing", "success"]
+        assert calls == 2
+        interactions = runtime.captured_interactions()
+        assert [interaction.events[-1].type for interaction in interactions] == [
+            "response_received",
+            "error",
+            "response_received",
+        ]
+        assert interactions[1].events[-1].data["stagehand_injection"]["call_number"] == 2
+
+
+def test_tool_error_injection_control_case_does_not_fire_for_unmatched_tool(
+    tmp_path, monkeypatch
+) -> None:
+    # Catches: injection firing even when the configured tool name does not match.
+    injection_path = tmp_path / "injection.json"
+    injection_path.write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "name": "different tool failure",
+                        "match": {"tool": "delete_customer", "nth_call": 1},
+                        "inject": {"error": "not_found", "body": {"message": "should not fire"}},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STAGEHAND_ERROR_INJECTION_INPUT", str(injection_path))
+    calls = 0
+
+    @stagehand.tool(name="lookup_customer")
+    def lookup_customer(customer_id: str) -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return {"customer_id": customer_id}
+
+    runtime = stagehand.init(session="tool-injection-control", mode="record")
+    assert lookup_customer("cus_001") == {"customer_id": "cus_001"}
+    assert lookup_customer("cus_002") == {"customer_id": "cus_002"}
+    assert calls == 2
+    assert "error_injection" not in runtime.capture_bundle_dict()["metadata"]
+    assert [interaction.events[-1].type for interaction in runtime.captured_interactions()] == [
+        "response_received",
+        "response_received",
+    ]
+
+
+def test_tool_argument_and_result_scrubbing_remove_plaintext_from_capture_bundle() -> None:
+    # Catches: scrub metadata being present while persisted tool args/results still contain plaintext secrets.
+    sensitive_email = "real.user@example-corp.com"
+    sensitive_card = "4242 4242 4242 4242"
+    sensitive_token = "secret-live-token"
+
+    @stagehand.tool(name="lookup_customer")
+    def lookup_customer(email: str, card_number: str, token: str) -> dict[str, str]:
+        return {"email": email, "card_number": card_number, "token": token}
+
+    runtime = stagehand.init(session="tool-scrub-record", mode="record")
+    lookup_customer(sensitive_email, sensitive_card, sensitive_token)
+    [interaction] = runtime.captured_interactions()
+    bundle_text = json.dumps(runtime.capture_bundle_dict(), sort_keys=True)
+
+    assert sensitive_email not in bundle_text
+    assert sensitive_card not in bundle_text
+    assert sensitive_token not in bundle_text
+    assert set(interaction.scrub_report.redacted_paths) >= {
+        "request.body.arguments.email",
+        "request.body.arguments.card_number",
+        "request.body.arguments.token",
+        "events[1].data.result.email",
+        "events[1].data.result.card_number",
+        "events[1].data.result.token",
+    }
+
+
+def test_tool_replay_preserves_distinguishable_call_order() -> None:
+    # Catches: replay store serving same-name tool calls in the wrong occurrence order.
+    calls: list[str] = []
+
+    @stagehand.tool(name="lookup_customer")
+    def lookup_customer(customer_id: str) -> dict[str, str]:
+        calls.append(customer_id)
+        return {"customer_id": customer_id, "ordinal": str(len(calls))}
+
+    record_runtime = stagehand.init(session="tool-order-record", mode="record")
+    for customer_id in ("cus_001", "cus_002", "cus_003"):
+        lookup_customer(customer_id)
+    recorded = record_runtime.captured_interactions()
+
+    _reset_for_tests()
+
+    stagehand.init(session="tool-order-replay", mode="replay")
+    assert stagehand.seed_replay_interactions(recorded) == 3
+    replayed = [lookup_customer(customer_id) for customer_id in ("cus_001", "cus_002", "cus_003")]
+
+    assert replayed == [
+        {"customer_id": "cus_001", "ordinal": "1"},
+        {"customer_id": "cus_002", "ordinal": "2"},
+        {"customer_id": "cus_003", "ordinal": "3"},
+    ]
+    assert calls == ["cus_001", "cus_002", "cus_003"]
+
+
 def test_tool_can_be_used_without_parentheses() -> None:
     @stagehand.tool
     def calculate(value: int) -> int:
