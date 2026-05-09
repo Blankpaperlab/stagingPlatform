@@ -60,6 +60,9 @@ func TestRunWritesRootHelpWithNoArgs(t *testing.T) {
 	if !strings.Contains(stdout.String(), "record-baseline") {
 		t.Fatalf("stdout = %q, want record-baseline command in help", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "ci") {
+		t.Fatalf("stdout = %q, want ci command in help", stdout.String())
+	}
 }
 
 func TestRunInitCreatesScaffoldDetectsProjectAndPrintsNextCommand(t *testing.T) {
@@ -266,6 +269,103 @@ func TestRunDoctorWarnsForUnsupportedNetworkLibraries(t *testing.T) {
 	build := findDoctorCheck(t, report, "typescript-build")
 	if build.Status != doctorStatusWarn || !strings.Contains(build.Repair, "tsc --noEmit") {
 		t.Fatalf("typescript build check = %#v, want no build script warning", build)
+	}
+}
+
+func TestRunCISetupDryRunPrintsLocalWorkflow(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := run([]string{
+		"ci", "setup",
+		"--dry-run",
+		"--command", "python agent.py",
+		"--session", "onboarding-flow",
+		"--artifact-name", "stagehand-onboarding",
+		"--comment-id", "onboarding-main",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run(ci setup --dry-run) error = %v\nstderr=%s", err, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"stagehand record-baseline --session onboarding-flow -- python agent.py",
+		"uses: ./",
+		"go build -o bin/stagehand ./cmd/stagehand",
+		"command: python agent.py",
+		"sessions: onboarding-flow",
+		"upload-artifact: 'true'",
+		"artifact-name: stagehand-onboarding",
+		"post-pr-comment: 'true'",
+		"comment-id: onboarding-main",
+		"OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}",
+		"STRIPE_API_KEY: ${{ secrets.STRIPE_API_KEY }}",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(workdir, ".github", "workflows", "stagehand.yml")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run wrote workflow unexpectedly, stat err=%v", err)
+	}
+}
+
+func TestRunCISetupWritesWorkflowAndRefusesOverwrite(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	writeFile(t, filepath.Join(workdir, "package.json"), `{"scripts":{"agent":"tsx agent.ts"}}`)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"ci", "setup"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(ci setup) error = %v\nstderr=%s", err, stderr.String())
+	}
+	workflowPath := filepath.Join(workdir, ".github", "workflows", "stagehand.yml")
+	data, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", workflowPath, err)
+	}
+	workflow := string(data)
+	if !strings.Contains(workflow, "command: npm run agent") || !strings.Contains(workflow, "stagehand record-baseline --session "+defaultRecordBaselineSession()+" -- npm run agent") {
+		t.Fatalf("workflow = %q, want detected npm command and baseline guidance", workflow)
+	}
+	if !strings.Contains(stdout.String(), "Before enabling PR enforcement") {
+		t.Fatalf("stdout = %q, want baseline promotion guidance", stdout.String())
+	}
+
+	stdout.Reset()
+	err = run([]string{"ci", "setup"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(ci setup) expected overwrite refusal")
+	}
+	if !strings.Contains(err.Error(), "refusing to overwrite existing workflow") {
+		t.Fatalf("run(ci setup) error = %v", err)
+	}
+}
+
+func TestRunCISetupPublishedActionReference(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{
+		"ci", "setup",
+		"--dry-run",
+		"--published",
+		"--command", "npm run agent",
+		"--session", "agent-flow",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(ci setup --published) error = %v\nstderr=%s", err, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "uses: stagehand/stagehand-action@v0") {
+		t.Fatalf("stdout = %q, want published action reference", output)
+	}
+	if strings.Contains(output, "go build -o bin/stagehand") {
+		t.Fatalf("stdout = %q, published workflow should not build local CLI", output)
 	}
 }
 

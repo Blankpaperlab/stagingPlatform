@@ -52,6 +52,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runRecordBaseline(args[1:], stdout, stderr)
 	case "test":
 		return runTest(args[1:], stdout, stderr)
+	case "ci":
+		return runCI(args[1:], stdout, stderr)
 	case "record":
 		return runRecord(args[1:], stdout, stderr)
 	case "replay":
@@ -964,6 +966,7 @@ Commands:
   doctor   Check local Stagehand readiness
   record-baseline Record a command and promote it as a baseline
   test     Replay a baseline, diff behavior, and run assertions
+  ci       Generate CI workflow scaffolding
   record   Run a command and persist captured interactions
   replay   Replay a stored run against a command
   inspect  Inspect a stored run in the terminal

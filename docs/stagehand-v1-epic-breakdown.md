@@ -1248,13 +1248,15 @@ AA4 adds `stagehand test`, which resolves the latest baseline for a session, rep
 
 - Outcome: a user can add Stagehand to GitHub Actions without hand-writing the action wiring.
 - To do:
-  - [ ] add `stagehand ci setup`
-  - [ ] generate a GitHub Actions workflow using the shipped action inputs
-  - [ ] include artifact upload and PR comment settings
-  - [ ] include placeholders for required provider secrets
-  - [ ] support local action reference before publish and published action reference after release
-  - [ ] document how to promote a baseline before enabling PR enforcement
-  - [ ] support a dry-run mode that only prints the workflow
+  - [x] add `stagehand ci setup`
+  - [x] generate a GitHub Actions workflow using the shipped action inputs
+  - [x] include artifact upload and PR comment settings
+  - [x] include placeholders for required provider secrets
+  - [x] support local action reference before publish and published action reference after release
+  - [x] document how to promote a baseline before enabling PR enforcement
+  - [x] support a dry-run mode that only prints the workflow
+
+AA5 adds `stagehand ci setup`, which generates `.github/workflows/stagehand.yml` using the repository action inputs for command, sessions, config, baseline selection, fail conditions, assertions, artifact upload, PR comments, and GitHub token. The workflow includes OpenAI, Stripe, and internal credential placeholders, defaults to the local unpublished action reference (`uses: ./`), supports `--published` or `--action-ref` for released actions, refuses to overwrite without `--force`, and supports `--dry-run` for review.
 
 ### Story AA6: Guided templates and first-run report
 
