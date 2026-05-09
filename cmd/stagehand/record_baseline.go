@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -26,6 +27,7 @@ type recordBaselineResult struct {
 	Status           string                `json:"status"`
 	InteractionCount int                   `json:"interaction_count"`
 	StoragePath      string                `json:"storage_path"`
+	FirstRunReport   string                `json:"first_run_report"`
 	Command          []string              `json:"command"`
 	NextCommand      string                `json:"next_command"`
 	CaptureSummary   []captureSummaryEntry `json:"capture_summary"`
@@ -125,6 +127,7 @@ func runRecordBaseline(args []string, stdout io.Writer, stderr io.Writer) error 
 		warnings = append(warnings, "current git SHA could not be resolved; baseline git_sha was recorded as unknown")
 	}
 	nextCommand := fmt.Sprintf("stagehand test --session %s -- %s", run.SessionName, strings.Join(commandArgs, " "))
+	firstRunReportPath := firstRunReportPath(cfg.Record.StoragePath, run.SessionName, run.RunID)
 	result := recordBaselineResult{
 		Mode:             "record_baseline",
 		RunID:            run.RunID,
@@ -133,10 +136,14 @@ func runRecordBaseline(args []string, stdout io.Writer, stderr io.Writer) error 
 		Status:           string(store.RunLifecycleStatusComplete),
 		InteractionCount: len(run.Interactions),
 		StoragePath:      dbPath,
+		FirstRunReport:   firstRunReportPath,
 		Command:          append([]string(nil), commandArgs...),
 		NextCommand:      nextCommand,
 		CaptureSummary:   summarizeCapturedInteractions(run.Interactions),
 		Warnings:         warnings,
+	}
+	if err := writeFirstRunReport(result); err != nil {
+		return err
 	}
 	if *jsonOutput {
 		return emitJSON(stdout, result)
@@ -182,6 +189,7 @@ func renderRecordBaselineTerminal(w io.Writer, result recordBaselineResult) erro
 	fmt.Fprintf(&b, "Run ID: %s\n", result.RunID)
 	fmt.Fprintf(&b, "Baseline ID: %s\n", result.BaselineID)
 	fmt.Fprintf(&b, "Storage: %s\n", filepath.ToSlash(result.StoragePath))
+	fmt.Fprintf(&b, "First-run report: %s\n", filepath.ToSlash(result.FirstRunReport))
 	fmt.Fprintf(&b, "Captured: %d interactions\n", result.InteractionCount)
 	if len(result.CaptureSummary) > 0 {
 		fmt.Fprintf(&b, "\nCapture summary:\n")
@@ -195,6 +203,47 @@ func renderRecordBaselineTerminal(w io.Writer, result recordBaselineResult) erro
 	fmt.Fprintf(&b, "\nNext command:\n  %s\n", result.NextCommand)
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+func firstRunReportPath(storagePath, sessionName, runID string) string {
+	cleaned := filepath.Clean(storagePath)
+	stagehandDir := filepath.Dir(cleaned)
+	if strings.EqualFold(filepath.Ext(cleaned), ".db") || strings.EqualFold(filepath.Ext(cleaned), ".sqlite") || strings.EqualFold(filepath.Ext(cleaned), ".sqlite3") {
+		stagehandDir = filepath.Dir(filepath.Dir(cleaned))
+	}
+	return filepath.Join(stagehandDir, "reports", safeReportSlug(sessionName+"-"+runID+"-first-run")+".md")
+}
+
+func writeFirstRunReport(result recordBaselineResult) error {
+	if err := os.MkdirAll(filepath.Dir(result.FirstRunReport), 0o755); err != nil {
+		return fmt.Errorf("create first-run report directory: %w", err)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Stagehand First Run\n\n")
+	fmt.Fprintf(&b, "Baseline recorded for session `%s`.\n\n", result.SessionName)
+	fmt.Fprintf(&b, "## Artifacts\n\n")
+	fmt.Fprintf(&b, "- Run ID: `%s`\n", result.RunID)
+	fmt.Fprintf(&b, "- Baseline ID: `%s`\n", result.BaselineID)
+	fmt.Fprintf(&b, "- Storage: `%s`\n", filepath.ToSlash(result.StoragePath))
+	fmt.Fprintf(&b, "- Report: `%s`\n\n", filepath.ToSlash(result.FirstRunReport))
+	fmt.Fprintf(&b, "## Capture Summary\n\n")
+	if len(result.CaptureSummary) == 0 {
+		fmt.Fprintf(&b, "- No interactions captured\n")
+	} else {
+		for _, entry := range result.CaptureSummary {
+			fmt.Fprintf(&b, "- `%s` `%s`: %d\n", entry.Service, entry.Operation, entry.Count)
+		}
+	}
+	fmt.Fprintf(&b, "\n## Useful Commands\n\n")
+	fmt.Fprintf(&b, "```bash\n")
+	fmt.Fprintf(&b, "stagehand inspect --run-id %s --show-bodies\n", result.RunID)
+	fmt.Fprintf(&b, "%s\n", result.NextCommand)
+	fmt.Fprintf(&b, "stagehand ci setup --session %s --command \"%s\"\n", result.SessionName, strings.Join(result.Command, " "))
+	fmt.Fprintf(&b, "```\n")
+	if err := os.WriteFile(result.FirstRunReport, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write first-run report %q: %w", result.FirstRunReport, err)
+	}
+	return nil
 }
 
 func actionableRecordBaselineError(err error) error {

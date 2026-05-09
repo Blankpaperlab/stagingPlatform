@@ -103,6 +103,49 @@ func TestRunInitCreatesScaffoldDetectsProjectAndPrintsNextCommand(t *testing.T) 
 	if _, err := config.Load(filepath.Join(workdir, "stagehand.yml")); err != nil {
 		t.Fatalf("generated stagehand.yml did not validate: %v", err)
 	}
+	configText, err := os.ReadFile(filepath.Join(workdir, "stagehand.yml"))
+	if err != nil {
+		t.Fatalf("read generated stagehand.yml: %v", err)
+	}
+	assertionsText, err := os.ReadFile(filepath.Join(workdir, "assertions.yml"))
+	if err != nil {
+		t.Fatalf("read generated assertions.yml: %v", err)
+	}
+	injectionText, err := os.ReadFile(filepath.Join(workdir, "error-injection.yml"))
+	if err != nil {
+		t.Fatalf("read generated error-injection.yml: %v", err)
+	}
+	for _, want := range []string{
+		"name: internal-crm",
+		"body.request_id",
+		"body.generated_at",
+	} {
+		if !strings.Contains(string(configText), want) {
+			t.Fatalf("stagehand.yml = %q, want %q", string(configText), want)
+		}
+	}
+	for _, want := range []string{
+		"type: count",
+		"type: ordering",
+		"type: forbidden-operation",
+		"type: payload-field",
+		"type: fallback-prohibition",
+		"examples that do not match your workflow",
+	} {
+		if !strings.Contains(string(assertionsText), want) {
+			t.Fatalf("assertions.yml = %q, want %q", string(assertionsText), want)
+		}
+	}
+	for _, want := range []string{
+		"error: timeout",
+		"status: 500",
+		"tool: lookup_customer",
+		"Set enabled: true",
+	} {
+		if !strings.Contains(string(injectionText), want) {
+			t.Fatalf("error-injection.yml = %q, want %q", string(injectionText), want)
+		}
+	}
 
 	output := stdout.String()
 	for _, want := range []string{
@@ -417,6 +460,9 @@ func TestRunRecordBaselineRecordsPromotesAndEmitsJSON(t *testing.T) {
 	if result.InteractionCount != 1 {
 		t.Fatalf("result.InteractionCount = %d, want 1", result.InteractionCount)
 	}
+	if result.FirstRunReport == "" {
+		t.Fatal("result.FirstRunReport is empty")
+	}
 	if result.NextCommand != "stagehand test --session onboarding-flow -- "+strings.Join(helperCommand("record-write-capture"), " ") {
 		t.Fatalf("result.NextCommand = %q", result.NextCommand)
 	}
@@ -435,6 +481,26 @@ func TestRunRecordBaselineRecordsPromotesAndEmitsJSON(t *testing.T) {
 	}
 	if baseline.SourceRunID != result.RunID || baseline.SessionName != "onboarding-flow" {
 		t.Fatalf("baseline = %#v, want promoted record run", baseline)
+	}
+	reportPath := result.FirstRunReport
+	if !filepath.IsAbs(reportPath) {
+		reportPath = filepath.Join(workdir, reportPath)
+	}
+	reportData, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", reportPath, err)
+	}
+	report := string(reportData)
+	for _, want := range []string{
+		"# Stagehand First Run",
+		"stagehand inspect --run-id " + result.RunID + " --show-bodies",
+		result.NextCommand,
+		"stagehand ci setup --session onboarding-flow",
+		"`openai` `chat.completions.create`: 1",
+	} {
+		if !strings.Contains(report, want) {
+			t.Fatalf("first-run report = %q, want %q", report, want)
+		}
 	}
 }
 

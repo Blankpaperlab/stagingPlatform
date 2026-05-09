@@ -1262,12 +1262,14 @@ AA5 adds `stagehand ci setup`, which generates `.github/workflows/stagehand.yml`
 
 - Outcome: the generated starter files teach the product without forcing users through full reference docs.
 - To do:
-  - [ ] generate starter assertions for count, ordering, forbidden-operation, payload-field, and fallback-prohibition
-  - [ ] generate starter error-injection rules for timeout and HTTP status failures
-  - [ ] generate starter service mapping examples for custom/internal APIs
-  - [ ] generate comments explaining what to edit and what can be deleted
-  - [ ] produce a first-run report that links to `inspect`, stored artifacts, and next-step commands
-  - [ ] keep generated files small enough for users to understand in one screen
+  - [x] generate starter assertions for count, ordering, forbidden-operation, payload-field, and fallback-prohibition
+  - [x] generate starter error-injection rules for timeout and HTTP status failures
+  - [x] generate starter service mapping examples for custom/internal APIs
+  - [x] generate comments explaining what to edit and what can be deleted
+  - [x] produce a first-run report that links to `inspect`, stored artifacts, and next-step commands
+  - [x] keep generated files small enough for users to understand in one screen
+
+AA6 expands the `stagehand init` templates with compact commented examples for common assertions, HTTP/tool error injection, and internal API service mapping while keeping the generated files editable in one short pass. `stagehand record-baseline` now writes a first-run markdown report under `.stagehand/reports` with the run ID, baseline ID, storage location, capture summary, `inspect` command, next `stagehand test` command, and CI setup command.
 
 ### Story AA7: Existing-agent harness guidance
 

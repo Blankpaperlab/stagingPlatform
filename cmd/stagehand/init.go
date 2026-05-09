@@ -348,19 +348,68 @@ fallback:
     - nearest_neighbor
 auth:
   default_mode: permissive
-services: []
+services:
+  # Delete this example if you only call prebuilt providers.
+  # Use service mappings for internal APIs so diffs say "internal-crm"
+  # instead of raw host names. Add ignore paths for request IDs, cursors,
+  # timestamps, and other fields that change on every call.
+  # - name: internal-crm
+  #   type: api
+  #   match:
+  #     host: crm.internal.example.com
+  #     path_prefix: /v1
+  #   replay:
+  #     mode: exact
+  #     allowed_tiers: [0]
+  #   ignore:
+  #     request_paths:
+  #       - body.request_id
+  #       - headers.x-request-id
+  #     response_paths:
+  #       - body.generated_at
+  #       - body.trace_id
+  []
 `
 }
 
 func starterAssertionsYAML() string {
 	return `schema_version: v1alpha1
 assertions:
-  # Uncomment and edit after your first baseline.
+  # These examples are intentionally commented out. Uncomment one at a time
+  # after your first baseline, edit service/operation/path values, and delete
+  # the examples that do not match your workflow.
+  #
+  # - id: model-called-once
+  #   type: count
+  #   match:
+  #     service: openai
+  #   min: 1
+  #
+  # - id: lookup-before-refund
+  #   type: ordering
+  #   before:
+  #     tool: lookup_customer
+  #   after:
+  #     service: stripe
+  #     operation: POST /v1/refunds
+  #
   # - id: no-unsafe-refund
   #   type: forbidden-operation
   #   match:
   #     service: stripe
   #     operation: POST /v1/refunds
+  #
+  # - id: refund-status-approved
+  #   type: payload-field
+  #   match:
+  #     service: internal-billing
+  #   path: events[-1].data.body.status
+  #   equals: approved
+  #
+  # - id: no-llm-synthesis
+  #   type: fallback-prohibition
+  #   disallowed_tiers:
+  #     - llm_synthesis
 `
 }
 
@@ -369,8 +418,28 @@ func starterErrorInjectionYAML() string {
 error_injection:
   enabled: false
   rules:
-    # Uncomment and edit to test recovery behavior.
-    # - name: lookup failure
+    # Set enabled: true, uncomment one rule, edit the target, and run
+    # stagehand test --error-injection error-injection.yml -- <command>
+    #
+    # - name: CRM timeout on first lookup
+    #   match:
+    #     service: internal-crm
+    #     operation: POST /v1/customers/search
+    #     nth_call: 1
+    #   inject:
+    #     error: timeout
+    #
+    # - name: Billing returns 500
+    #   match:
+    #     service: internal-billing
+    #     operation: POST /api/refunds
+    #     nth_call: 1
+    #   inject:
+    #     status: 500
+    #     body:
+    #       error: internal_server_error
+    #
+    # - name: lookup tool not found
     #   match:
     #     tool: lookup_customer
     #     nth_call: 1
