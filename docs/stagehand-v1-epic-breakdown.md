@@ -1275,12 +1275,14 @@ AA6 expands the `stagehand init` templates with compact commented examples for c
 
 - Outcome: teams with existing agent repos can expose a headless entrypoint without restructuring the app.
 - To do:
-  - [ ] document a minimal Python harness pattern
-  - [ ] document a minimal TypeScript harness pattern
-  - [ ] define a simple stdout contract for agent result JSON
-  - [ ] recommend keeping logs on stderr
-  - [ ] support a preflight mode or preflight command that validates the entrypoint before recording live calls
-  - [ ] show how to pass task text through environment variables for scenario-like runs
+  - [x] document a minimal Python harness pattern
+  - [x] document a minimal TypeScript harness pattern
+  - [x] define a simple stdout contract for agent result JSON
+  - [x] recommend keeping logs on stderr
+  - [x] support a preflight mode or preflight command that validates the entrypoint before recording live calls
+  - [x] show how to pass task text through environment variables for scenario-like runs
+
+AA7 adds `docs/existing-agent-harness.md` with minimal Python and TypeScript harnesses, a one-JSON-object stdout contract, stderr logging guidance, and `STAGEHAND_TASK_TEXT` scenario input. It also adds `stagehand preflight`, which sets `STAGEHAND_PREFLIGHT=1`, optionally passes `--task` through `STAGEHAND_TASK_TEXT`, validates the configured entrypoint prints one JSON object to stdout, and prints the next `record-baseline` command.
 
 ### Epic AA completion checklist
 

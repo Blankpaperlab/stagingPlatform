@@ -63,6 +63,9 @@ func TestRunWritesRootHelpWithNoArgs(t *testing.T) {
 	if !strings.Contains(stdout.String(), "ci") {
 		t.Fatalf("stdout = %q, want ci command in help", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "preflight") {
+		t.Fatalf("stdout = %q, want preflight command in help", stdout.String())
+	}
 }
 
 func TestRunInitCreatesScaffoldDetectsProjectAndPrintsNextCommand(t *testing.T) {
@@ -409,6 +412,68 @@ func TestRunCISetupPublishedActionReference(t *testing.T) {
 	}
 	if strings.Contains(output, "go build -o bin/stagehand") {
 		t.Fatalf("stdout = %q, published workflow should not build local CLI", output)
+	}
+}
+
+func TestRunPreflightValidatesJSONStdoutContract(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(filepath.Join(workdir, ".stagehand", "runs"))+"\n")
+
+	args := []string{
+		"preflight",
+		"--config", configPath,
+		"--task", "refund order 123",
+		"--json",
+		"--",
+	}
+	args = append(args, helperCommand("preflight-json-result")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("run(preflight) error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+
+	result := decodeJSONOutput[preflightResult](t, stdout.Bytes())
+	if result.Status != "passed" || !result.StdoutJSON {
+		t.Fatalf("result = %#v, want passed JSON stdout contract", result)
+	}
+	if result.TaskEnv != envStagehandTaskText {
+		t.Fatalf("result.TaskEnv = %q, want %q", result.TaskEnv, envStagehandTaskText)
+	}
+	if !containsTestString(result.ResultKeys, "customer_id") || !containsTestString(result.ResultKeys, "status") {
+		t.Fatalf("result.ResultKeys = %v, want customer_id and status", result.ResultKeys)
+	}
+	if result.StderrBytes == 0 {
+		t.Fatalf("result.StderrBytes = 0, want stderr logs to be allowed and counted")
+	}
+}
+
+func TestRunPreflightRejectsNonJSONStdout(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(filepath.Join(workdir, ".stagehand", "runs"))+"\n")
+
+	args := []string{
+		"preflight",
+		"--config", configPath,
+		"--",
+	}
+	args = append(args, helperCommand("preflight-log-on-stdout")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := run(args, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(preflight invalid stdout) expected error")
+	}
+	if !strings.Contains(err.Error(), "stdout must be a JSON object") {
+		t.Fatalf("run(preflight invalid stdout) error = %v", err)
 	}
 }
 
@@ -1876,6 +1941,21 @@ func TestHelperProcess(t *testing.T) {
 		}
 		fmt.Fprintln(os.Stderr, "controlled replay failure helper expected a terminal failure interaction")
 		os.Exit(7)
+	case "preflight-json-result":
+		if os.Getenv(envStagehandPreflight) != "1" {
+			fmt.Fprintf(os.Stderr, "%s not set\n", envStagehandPreflight)
+			os.Exit(11)
+		}
+		if os.Getenv(envStagehandTaskText) != "refund order 123" {
+			fmt.Fprintf(os.Stderr, "%s = %q\n", envStagehandTaskText, os.Getenv(envStagehandTaskText))
+			os.Exit(12)
+		}
+		fmt.Fprintln(os.Stderr, "preflight log line")
+		fmt.Fprintln(os.Stdout, `{"status":"ok","customer_id":"cus_123"}`)
+		os.Exit(0)
+	case "preflight-log-on-stdout":
+		fmt.Fprintln(os.Stdout, "starting agent")
+		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown helper mode %q\n", mode)
 		os.Exit(5)
@@ -1891,6 +1971,15 @@ func writeFile(t *testing.T, path, content string) {
 
 func toSlash(path string) string {
 	return strings.ReplaceAll(path, `\`, `/`)
+}
+
+func containsTestString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func seedReplayRun(t *testing.T, artifactStore store.ArtifactStore, session string) string {

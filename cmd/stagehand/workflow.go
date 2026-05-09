@@ -37,6 +37,8 @@ const (
 	envStagehandReplayInput  = "STAGEHAND_REPLAY_INPUT"
 	envStagehandInjectInput  = "STAGEHAND_ERROR_INJECTION_INPUT"
 	envStagehandMasterKey    = "STAGEHAND_MASTER_KEY"
+	envStagehandPreflight    = "STAGEHAND_PREFLIGHT"
+	envStagehandTaskText     = "STAGEHAND_TASK_TEXT"
 )
 
 type errorInjectionFile struct {
