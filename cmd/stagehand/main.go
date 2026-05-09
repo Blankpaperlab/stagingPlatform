@@ -48,6 +48,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runInit(args[1:], stdout, stderr)
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
+	case "record-baseline":
+		return runRecordBaseline(args[1:], stdout, stderr)
 	case "record":
 		return runRecord(args[1:], stdout, stderr)
 	case "replay":
@@ -958,6 +960,7 @@ Usage:
 Commands:
   init     Create Stagehand config and first-run scaffolding
   doctor   Check local Stagehand readiness
+  record-baseline Record a command and promote it as a baseline
   record   Run a command and persist captured interactions
   replay   Replay a stored run against a command
   inspect  Inspect a stored run in the terminal

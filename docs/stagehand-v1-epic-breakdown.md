@@ -1218,14 +1218,16 @@ AA2 adds `stagehand doctor`, which reports pass/warn/fail readiness checks for t
 
 - Outcome: first-time users can record and promote a baseline with one command.
 - To do:
-  - [ ] run the managed command in record mode
-  - [ ] persist scrubbed interactions through the standard writer path
-  - [ ] print a short capture summary by service and operation
-  - [ ] warn when no interactions are captured
-  - [ ] promote the run to a baseline automatically when complete
-  - [ ] emit baseline ID, run ID, storage path, and next `stagehand test` command
-  - [ ] support `--session`, `--baseline-id`, `--config`, and `--json`
-  - [ ] fail with actionable messages for missing SDK init or unsupported call paths
+  - [x] run the managed command in record mode
+  - [x] persist scrubbed interactions through the standard writer path
+  - [x] print a short capture summary by service and operation
+  - [x] warn when no interactions are captured
+  - [x] promote the run to a baseline automatically when complete
+  - [x] emit baseline ID, run ID, storage path, and next `stagehand test` command
+  - [x] support `--session`, `--baseline-id`, `--config`, and `--json`
+  - [x] fail with actionable messages for missing SDK init or unsupported call paths
+
+AA3 adds `stagehand record-baseline`, which wraps the existing managed record path, rejects empty captures with SDK/capture-path repair guidance, promotes successful non-empty records to a baseline, prints a service/operation capture summary, and emits the next `stagehand test --session <name> -- <command>` invocation. It supports terminal and JSON output plus `--session`, `--baseline-id`, and `--config`.
 
 ### Story AA4: `stagehand test`
 

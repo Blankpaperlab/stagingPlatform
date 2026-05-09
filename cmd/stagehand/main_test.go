@@ -57,6 +57,9 @@ func TestRunWritesRootHelpWithNoArgs(t *testing.T) {
 	if !strings.Contains(stdout.String(), "doctor") {
 		t.Fatalf("stdout = %q, want doctor command in help", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "record-baseline") {
+		t.Fatalf("stdout = %q, want record-baseline command in help", stdout.String())
+	}
 }
 
 func TestRunInitCreatesScaffoldDetectsProjectAndPrintsNextCommand(t *testing.T) {
@@ -276,6 +279,90 @@ func TestRunRecordRequiresSession(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "record requires --session") {
 		t.Fatalf("run(record) error = %v", err)
+	}
+}
+
+func TestRunRecordBaselineRecordsPromotesAndEmitsJSON(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	args := []string{
+		"record-baseline",
+		"--session", "onboarding-flow",
+		"--baseline-id", "base_onboarding_001",
+		"--config", configPath,
+		"--json",
+		"--",
+	}
+	args = append(args, helperCommand("record-write-capture")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("run(record-baseline) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	result := decodeJSONOutput[recordBaselineResult](t, stdout.Bytes())
+	if result.Mode != "record_baseline" {
+		t.Fatalf("result.Mode = %q, want record_baseline", result.Mode)
+	}
+	if result.SessionName != "onboarding-flow" || result.BaselineID != "base_onboarding_001" {
+		t.Fatalf("result = %#v, want requested session and baseline", result)
+	}
+	if result.InteractionCount != 1 {
+		t.Fatalf("result.InteractionCount = %d, want 1", result.InteractionCount)
+	}
+	if result.NextCommand != "stagehand test --session onboarding-flow -- "+strings.Join(helperCommand("record-write-capture"), " ") {
+		t.Fatalf("result.NextCommand = %q", result.NextCommand)
+	}
+	if len(result.CaptureSummary) != 1 || result.CaptureSummary[0].Service != "openai" || result.CaptureSummary[0].Operation != "chat.completions.create" || result.CaptureSummary[0].Count != 1 {
+		t.Fatalf("result.CaptureSummary = %#v, want one openai chat completion", result.CaptureSummary)
+	}
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+	baseline, err := sqliteStore.GetBaseline(context.Background(), "base_onboarding_001")
+	if err != nil {
+		t.Fatalf("GetBaseline() error = %v", err)
+	}
+	if baseline.SourceRunID != result.RunID || baseline.SessionName != "onboarding-flow" {
+		t.Fatalf("baseline = %#v, want promoted record run", baseline)
+	}
+}
+
+func TestRunRecordBaselineFailsOnEmptyCapture(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	args := []string{
+		"record-baseline",
+		"--session", "empty-flow",
+		"--config", configPath,
+		"--",
+	}
+	args = append(args, helperCommand("record-write-empty-capture")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := run(args, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(record-baseline empty) expected error")
+	}
+	if !strings.Contains(err.Error(), "captured zero interactions") || !strings.Contains(err.Error(), "stagehand.tool") {
+		t.Fatalf("run(record-baseline empty) error = %v, want actionable empty capture message", err)
 	}
 }
 
