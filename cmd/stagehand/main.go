@@ -30,7 +30,7 @@ const defaultRuntimeConfigPath = "stagehand.yml"
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(exitCodeForError(err))
 	}
 }
 
@@ -50,6 +50,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runDoctor(args[1:], stdout, stderr)
 	case "record-baseline":
 		return runRecordBaseline(args[1:], stdout, stderr)
+	case "test":
+		return runTest(args[1:], stdout, stderr)
 	case "record":
 		return runRecord(args[1:], stdout, stderr)
 	case "replay":
@@ -961,6 +963,7 @@ Commands:
   init     Create Stagehand config and first-run scaffolding
   doctor   Check local Stagehand readiness
   record-baseline Record a command and promote it as a baseline
+  test     Replay a baseline, diff behavior, and run assertions
   record   Run a command and persist captured interactions
   replay   Replay a stored run against a command
   inspect  Inspect a stored run in the terminal

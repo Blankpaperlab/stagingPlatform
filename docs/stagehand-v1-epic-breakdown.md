@@ -1233,14 +1233,16 @@ AA3 adds `stagehand record-baseline`, which wraps the existing managed record pa
 
 - Outcome: replay, diff, and assertion evaluation feel like one test command instead of several primitives.
 - To do:
-  - [ ] resolve the latest baseline for the selected session by default
-  - [ ] run exact replay against the managed command
-  - [ ] diff replay or candidate behavior against the selected baseline
-  - [ ] run assertions automatically when an assertions file exists
-  - [ ] apply error injection automatically when an injection file is passed
-  - [ ] produce one pass/fail terminal report
-  - [ ] write JSON and GitHub markdown reports under `.stagehand/reports`
-  - [ ] fail with distinct exit codes for replay failure, behavior diff, assertion failure, and configuration failure
+  - [x] resolve the latest baseline for the selected session by default
+  - [x] run exact replay against the managed command
+  - [x] diff replay or candidate behavior against the selected baseline
+  - [x] run assertions automatically when an assertions file exists
+  - [x] apply error injection automatically when an injection file is passed
+  - [x] produce one pass/fail terminal report
+  - [x] write JSON and GitHub markdown reports under `.stagehand/reports`
+  - [x] fail with distinct exit codes for replay failure, behavior diff, assertion failure, and configuration failure
+
+AA4 adds `stagehand test`, which resolves the latest baseline for a session, replays that baseline against the provided command, compares the replay run to the baseline source, runs assertions from `assertions.yml` or `--assertions` when active assertions exist, applies `--error-injection` during replay, and writes JSON plus GitHub markdown reports under `.stagehand/reports`. The top-level binary now preserves distinct exit codes for configuration errors, replay failures, behavior diffs, and assertion failures.
 
 ### Story AA5: Guided CI setup
 

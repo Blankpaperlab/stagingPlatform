@@ -879,6 +879,232 @@ func TestRunReplayRunsManagedCommandStoresReplayRunAndEmitsJSON(t *testing.T) {
 	}
 }
 
+func TestRunTestReplaysBaselineWritesReportsAndPasses(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedReplayRun(t, sqliteStore, "onboarding-flow")
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_onboarding_latest",
+		SessionName: "onboarding-flow",
+		SourceRunID: sourceRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	args := []string{"test", "--session", "onboarding-flow", "--config", configPath, "--"}
+	args = append(args, helperCommand("replay-consume-seed-and-write-capture")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("run(test) error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"Stagehand test: passed",
+		"Diff: 0 failing, 0 informational, 0 total",
+		"Reports:",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+	reportDir := filepath.Join(workdir, ".stagehand", "reports")
+	entries, err := os.ReadDir(reportDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q) error = %v", reportDir, err)
+	}
+	var jsonReports, markdownReports int
+	for _, entry := range entries {
+		switch filepath.Ext(entry.Name()) {
+		case ".json":
+			jsonReports++
+		case ".md":
+			markdownReports++
+		}
+	}
+	if jsonReports != 1 || markdownReports != 1 {
+		t.Fatalf("report files json=%d markdown=%d entries=%v, want one each", jsonReports, markdownReports, entries)
+	}
+}
+
+func TestRunTestReturnsReplayFailureExitCode(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedReplayFailureRun(t, sqliteStore, "failure-flow")
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_failure",
+		SessionName: "failure-flow",
+		SourceRunID: sourceRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	args := []string{"test", "--session", "failure-flow", "--config", configPath, "--"}
+	args = append(args, helperCommand("replay-fail-on-terminal-error")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = run(args, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(test replay failure) expected error")
+	}
+	if exitCodeForError(err) != exitCodeReplayFailure {
+		t.Fatalf("exitCodeForError() = %d, want %d; err=%v", exitCodeForError(err), exitCodeReplayFailure, err)
+	}
+}
+
+func TestRunTestReturnsBehaviorDiffExitCodeAndAppliesErrorInjection(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	injectionPath := filepath.Join(workdir, "error-injection.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+	writeFile(t, injectionPath, `schema_version: v1alpha1
+error_injection:
+  rules:
+    - name: refund fails
+      match:
+        service: stripe
+        operation: POST /v1/refunds
+        nth_call: 3
+      inject:
+        status: 402
+        body:
+          error:
+            type: card_error
+`)
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedReplayRun(t, sqliteStore, "diff-flow")
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_diff",
+		SessionName: "diff-flow",
+		SourceRunID: sourceRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	args := []string{"test", "--session", "diff-flow", "--config", configPath, "--error-injection", injectionPath, "--"}
+	args = append(args, helperCommand("replay-write-injection-capture")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = run(args, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(test behavior diff) expected error")
+	}
+	if exitCodeForError(err) != exitCodeBehaviorDiff {
+		t.Fatalf("exitCodeForError() = %d, want %d; err=%v", exitCodeForError(err), exitCodeBehaviorDiff, err)
+	}
+	if !strings.Contains(stdout.String(), "Stagehand test: failed") || !strings.Contains(stdout.String(), "Diff:") {
+		t.Fatalf("stdout = %q, want failed diff report", stdout.String())
+	}
+	reportDir := filepath.Join(workdir, ".stagehand", "reports")
+	entries, readErr := os.ReadDir(reportDir)
+	if readErr != nil || len(entries) == 0 {
+		t.Fatalf("reports not written entries=%v err=%v", entries, readErr)
+	}
+}
+
+func TestRunTestReturnsAssertionFailureExitCode(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	assertionsPath := filepath.Join(workdir, "assertions.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+	writeFile(t, assertionsPath, `schema_version: v1alpha1
+assertions:
+  - id: no-openai
+    type: forbidden-operation
+    match:
+      service: openai
+      operation: chat.completions.create
+`)
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedReplayRun(t, sqliteStore, "assert-flow")
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_assert",
+		SessionName: "assert-flow",
+		SourceRunID: sourceRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	args := []string{"test", "--session", "assert-flow", "--config", configPath, "--assertions", assertionsPath, "--"}
+	args = append(args, helperCommand("replay-consume-seed-and-write-capture")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = run(args, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(test assertion failure) expected error")
+	}
+	if exitCodeForError(err) != exitCodeAssertionFailure {
+		t.Fatalf("exitCodeForError() = %d, want %d; err=%v", exitCodeForError(err), exitCodeAssertionFailure, err)
+	}
+	if !strings.Contains(stdout.String(), "Assertions: 0 passed, 1 failed") {
+		t.Fatalf("stdout = %q, want assertion failure summary", stdout.String())
+	}
+}
+
 func TestRunReplayPassesErrorInjectionToManagedCommandAndPersistsProvenance(t *testing.T) {
 	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
 	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
