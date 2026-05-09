@@ -1286,13 +1286,15 @@ AA7 adds `docs/existing-agent-harness.md` with minimal Python and TypeScript har
 
 ### Epic AA completion checklist
 
-- [ ] `stagehand init` creates a usable scaffold
-- [ ] `stagehand doctor` catches missing setup and unsupported call paths
-- [ ] `stagehand record-baseline -- <command>` records and promotes a baseline
-- [ ] `stagehand test -- <command>` runs replay, diff, and assertions in one pass/fail command
-- [ ] `stagehand ci setup` generates a usable workflow
-- [ ] first-run templates exist for assertions, error injection, and custom API service mapping
-- [ ] a new user can reach first replay/diff in under 15 minutes on a supported Python or TypeScript agent
+- [x] `stagehand init` creates a usable scaffold
+- [x] `stagehand doctor` catches missing setup and unsupported call paths
+- [x] `stagehand record-baseline -- <command>` records and promotes a baseline
+- [x] `stagehand test -- <command>` runs replay, diff, and assertions in one pass/fail command
+- [x] `stagehand ci setup` generates a usable workflow
+- [x] first-run templates exist for assertions, error injection, and custom API service mapping
+- [x] a new user can reach first replay/diff in under 15 minutes on a supported Python or TypeScript agent
+
+Epic AA is complete for the local-first onboarding path: `init`, `doctor`, `preflight`, `record-baseline`, `test`, and `ci setup` now give users a guided path from an existing supported agent entrypoint to baseline capture, replay/diff, reports, and CI wiring without hiding the lower-level primitives.
 
 ### Explicit non-goals for Epic AA
 
