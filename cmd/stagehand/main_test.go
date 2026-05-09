@@ -54,6 +54,9 @@ func TestRunWritesRootHelpWithNoArgs(t *testing.T) {
 	if !strings.Contains(stdout.String(), "init") {
 		t.Fatalf("stdout = %q, want init command in help", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "doctor") {
+		t.Fatalf("stdout = %q, want doctor command in help", stdout.String())
+	}
 }
 
 func TestRunInitCreatesScaffoldDetectsProjectAndPrintsNextCommand(t *testing.T) {
@@ -176,6 +179,90 @@ support-agent = "support.agent:main"
 	}
 	if _, err := os.Stat(filepath.Join(workdir, "assertions.yml")); !os.IsNotExist(err) {
 		t.Fatalf("assertions.yml exists after --starter-files=false, err=%v", err)
+	}
+}
+
+func TestRunDoctorPassesForValidConfigOnlyProject(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	writeFile(t, filepath.Join(workdir, "stagehand.yml"), stagehandInitConfigYAML())
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"doctor"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(doctor) error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Stagehand doctor: pass",
+		"PASS CLI binary",
+		"PASS stagehand.yml",
+		"PASS Unsupported network libraries",
+		"Summary:",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stdout = %q, want %q", output, want)
+		}
+	}
+}
+
+func TestRunDoctorReportsMissingConfigAsJSONFailure(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := run([]string{"doctor", "--json"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(doctor --json) expected failed check error")
+	}
+	if !strings.Contains(err.Error(), "doctor found 1 failed check") {
+		t.Fatalf("run(doctor --json) error = %v", err)
+	}
+
+	report := decodeJSONOutput[doctorReport](t, stdout.Bytes())
+	if report.Status != doctorStatusFail {
+		t.Fatalf("report.Status = %q, want fail", report.Status)
+	}
+	if report.Summary.Failed != 1 {
+		t.Fatalf("report.Summary.Failed = %d, want 1", report.Summary.Failed)
+	}
+	configCheck := findDoctorCheck(t, report, "config-valid")
+	if configCheck.Status != doctorStatusFail || !strings.Contains(configCheck.Repair, "stagehand init") {
+		t.Fatalf("config check = %#v, want failed repair with stagehand init", configCheck)
+	}
+}
+
+func TestRunDoctorWarnsForUnsupportedNetworkLibraries(t *testing.T) {
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	writeFile(t, filepath.Join(workdir, "stagehand.yml"), stagehandInitConfigYAML())
+	writeFile(t, filepath.Join(workdir, "package.json"), `{
+  "dependencies": {
+    "@stagehand/sdk": "0.1.0-alpha.0",
+    "axios": "^1.0.0"
+  }
+}
+`)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"doctor", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(doctor --json) error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+
+	report := decodeJSONOutput[doctorReport](t, stdout.Bytes())
+	if report.Status != doctorStatusWarn {
+		t.Fatalf("report.Status = %q, want warn", report.Status)
+	}
+	unsupported := findDoctorCheck(t, report, "unsupported-network-libraries")
+	if unsupported.Status != doctorStatusWarn || !strings.Contains(unsupported.Message, "axios") {
+		t.Fatalf("unsupported check = %#v, want axios warning", unsupported)
+	}
+	build := findDoctorCheck(t, report, "typescript-build")
+	if build.Status != doctorStatusWarn || !strings.Contains(build.Repair, "tsc --noEmit") {
+		t.Fatalf("typescript build check = %#v, want no build script warning", build)
 	}
 }
 
@@ -1698,4 +1785,15 @@ func decodeJSONOutput[T any](t *testing.T, data []byte) T {
 		t.Fatalf("json.Unmarshal() error = %v\npayload=%s", err, string(data))
 	}
 	return value
+}
+
+func findDoctorCheck(t *testing.T, report doctorReport, id string) doctorCheck {
+	t.Helper()
+	for _, check := range report.Checks {
+		if check.ID == id {
+			return check
+		}
+	}
+	t.Fatalf("doctor check %q not found in %#v", id, report.Checks)
+	return doctorCheck{}
 }

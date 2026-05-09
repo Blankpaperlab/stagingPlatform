@@ -1203,14 +1203,16 @@ AA1 adds `stagehand init`, which scaffolds a valid `stagehand.yml`, creates `.st
 
 - Outcome: users can verify local readiness and find unsupported capture paths before trying a real agent run.
 - To do:
-  - [ ] verify the CLI binary is runnable
-  - [ ] verify `stagehand.yml` loads and validates
-  - [ ] verify Python SDK import when a Python project is detected
-  - [ ] verify TypeScript SDK import/build when a TypeScript project is detected
-  - [ ] detect missing optional packages such as `openai` and `stripe`
-  - [ ] warn when common unsupported network libraries are detected
-  - [ ] print pass/warn/fail checks with concrete repair commands
-  - [ ] support `--json` for CI diagnostics
+  - [x] verify the CLI binary is runnable
+  - [x] verify `stagehand.yml` loads and validates
+  - [x] verify Python SDK import when a Python project is detected
+  - [x] verify TypeScript SDK import/build when a TypeScript project is detected
+  - [x] detect missing optional packages such as `openai` and `stripe`
+  - [x] warn when common unsupported network libraries are detected
+  - [x] print pass/warn/fail checks with concrete repair commands
+  - [x] support `--json` for CI diagnostics
+
+AA2 adds `stagehand doctor`, which reports pass/warn/fail readiness checks for the CLI, config validation, Python SDK import, TypeScript SDK declaration/build scripts, optional OpenAI/Stripe packages, and unsupported network clients such as `requests`, `aiohttp`, `urllib`, `axios`, `got`, `superagent`, and `node-fetch`. Terminal output includes concrete repair commands, and `--json` emits the same diagnostics for CI.
 
 ### Story AA3: `stagehand record-baseline`
 
