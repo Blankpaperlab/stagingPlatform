@@ -1334,15 +1334,17 @@ O1 now has first-party examples for onboarding (`examples/onboarding-agent`), re
 
 - Outcome: external users can self-serve the happy path.
 - To do:
-  - [ ] write getting-started guide
-  - [ ] write scrubbing guide
-  - [ ] write error injection guide
-  - [ ] write custom API replay guide
-  - [ ] write custom tool wrapper guide
-  - [ ] write first-run onboarding guide
-  - [ ] write existing-agent harness guide
-  - [ ] write limitations page
-  - [ ] write baseline and CI usage guide
+  - [x] write getting-started guide
+  - [x] write scrubbing guide
+  - [x] write error injection guide
+  - [x] write custom API replay guide
+  - [x] write custom tool wrapper guide
+  - [x] write first-run onboarding guide
+  - [x] write existing-agent harness guide
+  - [x] write limitations page
+  - [x] write baseline and CI usage guide
+
+O2 adds external user guides for getting started, first-run onboarding, scrubbing, error injection, custom tool wrappers, limitations, and baseline/CI usage. Existing guides cover custom API replay and existing-agent harness setup. The root README now links the user guide set before the deeper schema/runtime references.
 
 ### Story O3: Finalize packaging and installability
 
@@ -1358,8 +1360,8 @@ O1 now has first-party examples for onboarding (`examples/onboarding-agent`), re
 
 - [x] three example flows exist
 - [x] custom API and custom tool example exists
-- [ ] first-run onboarding docs exist
-- [ ] core docs exist
+- [x] first-run onboarding docs exist
+- [x] core docs exist
 - [ ] install steps are documented and tested
 - [x] examples serve as regression fixtures
 

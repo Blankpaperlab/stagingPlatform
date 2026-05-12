@@ -52,6 +52,18 @@ Current status:
 
 Primary planning docs live under `docs/`.
 
+User guides:
+
+- getting started: `docs/getting-started.md`
+- first-run onboarding: `docs/first-run-onboarding.md`
+- existing agent harness: `docs/existing-agent-harness.md`
+- scrubbing: `docs/scrubbing.md`
+- error injection: `docs/error-injection.md`
+- custom API replay: `docs/custom-api-generic-http.md`
+- custom tool wrapper: `docs/custom-tool-wrapper.md`
+- baseline and CI: `docs/baseline-ci.md`
+- limitations: `docs/limitations.md`
+
 Current schema references:
 
 - config schema: `docs/config-schema.md`
