@@ -1,0 +1,21 @@
+schema_version: v1alpha1
+record:
+  storage_path: .stagehand/runs
+replay:
+  mode: exact
+services:
+  - name: support-ticket-api
+    type: api
+    match:
+      host: support.internal.acme.test
+      path_prefix: /api
+    replay:
+      mode: exact
+      allowed_tiers: [0]
+    ignore:
+      request_paths:
+        - body.request_id
+        - headers.x-request-id
+      response_paths:
+        - body.generated_at
+        - body.trace_id

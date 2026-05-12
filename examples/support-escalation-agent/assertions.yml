@@ -1,0 +1,15 @@
+schema_version: v1alpha1
+assertions:
+  - id: lookup-before-ticket
+    type: ordering
+    before:
+      tool: lookup_customer
+    after:
+      service: support-ticket-api
+      operation: POST /api/tickets
+
+  - id: no-refund-from-support-flow
+    type: forbidden-operation
+    match:
+      service: stripe
+      operation: POST /v1/refunds

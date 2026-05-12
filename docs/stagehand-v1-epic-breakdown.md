@@ -1315,18 +1315,20 @@ Epic AA is complete for the local-first onboarding path: `init`, `doctor`, `pref
 
 - Outcome: first-party examples double as demos and regression tests.
 - To do:
-  - [ ] create onboarding example
-  - [ ] create refund example
-  - [ ] create support escalation example
-  - [ ] create custom API and custom tool example flow
-  - [ ] wire examples into automated test paths where possible
-  - [ ] ensure each example demonstrates one core product capability
+  - [x] create onboarding example
+  - [x] create refund example
+  - [x] create support escalation example
+  - [x] create custom API and custom tool example flow
+  - [x] wire examples into automated test paths where possible
+  - [x] ensure each example demonstrates one core product capability
 - Verification-agent slice:
   - [x] add simplest Python OpenAI record/replay/inspect verification agent
   - [x] add Python multi-step tool-calling verification agent
   - [x] add Python sensitive-data scrub verification agent
   - [x] add verifier that runs agents in order and checks SQLite persistence, scrub reports, replay output, and inspect output
   - [ ] run the verifier against a real `OPENAI_API_KEY` in an environment allowed to call OpenAI
+
+O1 now has first-party examples for onboarding (`examples/onboarding-agent`), refund (`examples/end-to-end-verification`, linked from `examples/refund-agent`), support escalation (`examples/support-escalation-agent`), custom APIs (`examples/custom-api-regression-demo` and `examples/internal-apis-e2e`), and custom tools (`examples/custom-tool-demo`). Automated coverage includes Python example replay tests, Go demo tests, and the live-gated OpenAI verification agents; the only remaining manual gate is running the verifier with a real `OPENAI_API_KEY`.
 
 ### Story O2: Write docs
 
@@ -1354,12 +1356,12 @@ Epic AA is complete for the local-first onboarding path: `init`, `doctor`, `pref
 
 ### Epic O completion checklist
 
-- [ ] three example flows exist
-- [ ] custom API and custom tool example exists
+- [x] three example flows exist
+- [x] custom API and custom tool example exists
 - [ ] first-run onboarding docs exist
 - [ ] core docs exist
 - [ ] install steps are documented and tested
-- [ ] examples serve as regression fixtures
+- [x] examples serve as regression fixtures
 
 ## Epic P: Security Hardening for OSS Launch
 
