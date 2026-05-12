@@ -1350,11 +1350,13 @@ O2 adds external user guides for getting started, first-run onboarding, scrubbin
 
 - Outcome: the CLI and SDKs are installable by external users.
 - To do:
-  - [ ] finalize build and release commands
-  - [ ] verify installation paths for CLI, Python, and TypeScript
-  - [ ] write version and release notes template
-  - [ ] create sample install commands for docs
-  - [ ] verify the `stagehand init` / `record-baseline` / `test` path from a clean checkout
+  - [x] finalize build and release commands
+  - [x] verify installation paths for CLI, Python, and TypeScript
+  - [x] write version and release notes template
+  - [x] create sample install commands for docs
+  - [x] verify the `stagehand init` / `record-baseline` / `test` path from a clean checkout
+
+O3 adds `npm run package:release` for version-aligned CLI, Python, and TypeScript packaging, `npm run verify:clean-onboarding` for a temporary-project first-run smoke check, and `npm run release:check` for CI plus packaging plus onboarding verification. `docs/install.md`, `docs/release.md`, and `RELEASE_NOTES_TEMPLATE.md` document install paths, release artifacts, version files, and manual publish gates.
 
 ### Epic O completion checklist
 
@@ -1362,7 +1364,7 @@ O2 adds external user guides for getting started, first-run onboarding, scrubbin
 - [x] custom API and custom tool example exists
 - [x] first-run onboarding docs exist
 - [x] core docs exist
-- [ ] install steps are documented and tested
+- [x] install steps are documented and tested
 - [x] examples serve as regression fixtures
 
 ## Epic P: Security Hardening for OSS Launch

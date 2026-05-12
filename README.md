@@ -55,6 +55,7 @@ Primary planning docs live under `docs/`.
 User guides:
 
 - getting started: `docs/getting-started.md`
+- installation: `docs/install.md`
 - first-run onboarding: `docs/first-run-onboarding.md`
 - existing agent harness: `docs/existing-agent-harness.md`
 - scrubbing: `docs/scrubbing.md`
@@ -63,6 +64,7 @@ User guides:
 - custom tool wrapper: `docs/custom-tool-wrapper.md`
 - baseline and CI: `docs/baseline-ci.md`
 - limitations: `docs/limitations.md`
+- release process: `docs/release.md`
 
 Current schema references:
 
@@ -111,6 +113,9 @@ Build commands:
 3. Build the Python SDK package with `npm run build:python`.
 4. Build the TypeScript SDK package with `npm run build:typescript`.
 5. Build all available artifacts with `npm run build:all`.
+6. Package release artifacts with `npm run package:release`.
+7. Verify the clean first-run path with `npm run verify:clean-onboarding`.
+8. Run the full release check with `npm run release:check`.
 
 Version placeholders:
 

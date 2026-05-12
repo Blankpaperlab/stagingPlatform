@@ -1,7 +1,6 @@
 {
   "name": "@stagehand/sdk",
   "version": "0.1.0-alpha.0",
-  "private": true,
   "description": "TypeScript SDK scaffold for Stagehand.",
   "type": "module",
   "main": "./dist/index.js",
@@ -14,6 +13,8 @@
   },
   "files": [
     "dist",
+    "!dist/*.test.d.ts",
+    "!dist/*.test.js",
     "README.md"
   ],
   "scripts": {
