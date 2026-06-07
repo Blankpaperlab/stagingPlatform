@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,6 +39,12 @@ func TestRunWritesRootHelpWithNoArgs(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "inspect") {
 		t.Fatalf("stdout = %q, want inspect command in help", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "delete-run") {
+		t.Fatalf("stdout = %q, want delete-run command in help", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "delete-session") {
+		t.Fatalf("stdout = %q, want delete-session command in help", stdout.String())
 	}
 	if !strings.Contains(stdout.String(), "diff") {
 		t.Fatalf("stdout = %q, want diff command in help", stdout.String())
@@ -1630,6 +1637,125 @@ func TestRunBaselineShowResolvesLatestSessionBaseline(t *testing.T) {
 	}
 	if result.BaselineID != "base_show_001" || result.SourceRunID != sourceRunID {
 		t.Fatalf("baseline show result = %#v, want latest baseline source", result)
+	}
+}
+
+func TestRunDeleteRunRemovesRunAndPreservesSessionSalt(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	deletedRunID := seedReplayRunAt(t, sqliteStore, "delete-flow", time.Date(2026, time.April, 25, 12, 0, 0, 0, time.UTC))
+	remainingRunID := seedReplayRunAt(t, sqliteStore, "delete-flow", time.Date(2026, time.April, 25, 12, 5, 0, 0, time.UTC))
+	if err := sqliteStore.PutScrubSalt(context.Background(), store.ScrubSalt{
+		SessionName:   "delete-flow",
+		SaltID:        "salt_delete_flow",
+		SaltEncrypted: []byte("encrypted-salt"),
+		CreatedAt:     time.Date(2026, time.April, 25, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("PutScrubSalt() error = %v", err)
+	}
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_delete_flow",
+		SessionName: "delete-flow",
+		SourceRunID: deletedRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Date(2026, time.April, 25, 12, 10, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"delete-run", "--run-id", deletedRunID, "--config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(delete-run) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	result := decodeJSONOutput[deletionResult](t, stdout.Bytes())
+	if result.Mode != "delete_run" || result.RunID != deletedRunID {
+		t.Fatalf("delete-run result = %#v, want deleted run id", result)
+	}
+
+	sqliteStore, err = sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore(after delete) error = %v", err)
+	}
+	defer sqliteStore.Close()
+	if _, err := sqliteStore.GetRunRecord(context.Background(), deletedRunID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRunRecord(deleted) error = %v, want store.ErrNotFound", err)
+	}
+	if _, err := sqliteStore.GetRunRecord(context.Background(), remainingRunID); err != nil {
+		t.Fatalf("GetRunRecord(remaining) error = %v", err)
+	}
+	if _, err := sqliteStore.GetBaseline(context.Background(), "base_delete_flow"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetBaseline(deleted run baseline) error = %v, want store.ErrNotFound", err)
+	}
+	if _, err := sqliteStore.GetScrubSalt(context.Background(), "delete-flow"); err != nil {
+		t.Fatalf("GetScrubSalt() after delete-run error = %v", err)
+	}
+}
+
+func TestRunDeleteSessionRemovesRunsAndSessionSalt(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	targetRunID := seedReplayRunAt(t, sqliteStore, "session-delete-flow", time.Date(2026, time.April, 25, 12, 0, 0, 0, time.UTC))
+	otherRunID := seedReplayRunAt(t, sqliteStore, "session-keep-flow", time.Date(2026, time.April, 25, 12, 5, 0, 0, time.UTC))
+	for _, sessionName := range []string{"session-delete-flow", "session-keep-flow"} {
+		if err := sqliteStore.PutScrubSalt(context.Background(), store.ScrubSalt{
+			SessionName:   sessionName,
+			SaltID:        "salt_" + sessionName,
+			SaltEncrypted: []byte("encrypted-salt"),
+			CreatedAt:     time.Date(2026, time.April, 25, 12, 0, 0, 0, time.UTC),
+		}); err != nil {
+			t.Fatalf("PutScrubSalt(%q) error = %v", sessionName, err)
+		}
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"delete-session", "--session", "session-delete-flow", "--config", configPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(delete-session) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	result := decodeJSONOutput[deletionResult](t, stdout.Bytes())
+	if result.Mode != "delete_session" || result.SessionName != "session-delete-flow" {
+		t.Fatalf("delete-session result = %#v, want deleted session", result)
+	}
+
+	sqliteStore, err = sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore(after delete) error = %v", err)
+	}
+	defer sqliteStore.Close()
+	if _, err := sqliteStore.GetRunRecord(context.Background(), targetRunID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRunRecord(deleted session run) error = %v, want store.ErrNotFound", err)
+	}
+	if _, err := sqliteStore.GetScrubSalt(context.Background(), "session-delete-flow"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetScrubSalt(deleted session) error = %v, want store.ErrNotFound", err)
+	}
+	if _, err := sqliteStore.GetRunRecord(context.Background(), otherRunID); err != nil {
+		t.Fatalf("GetRunRecord(other session) error = %v", err)
+	}
+	if _, err := sqliteStore.GetScrubSalt(context.Background(), "session-keep-flow"); err != nil {
+		t.Fatalf("GetScrubSalt(other session) error = %v", err)
 	}
 }
 

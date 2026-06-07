@@ -212,6 +212,13 @@ type baselineShowResult struct {
 	StoragePath string `json:"storage_path"`
 }
 
+type deletionResult struct {
+	Mode        string `json:"mode"`
+	RunID       string `json:"run_id,omitempty"`
+	SessionName string `json:"session_name,omitempty"`
+	StoragePath string `json:"storage_path"`
+}
+
 type assertionSummary struct {
 	Total       int `json:"total"`
 	Passed      int `json:"passed"`

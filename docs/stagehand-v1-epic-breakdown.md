@@ -30,19 +30,79 @@ Use these statuses on your board:
 
 ## Product Promise for Plan A
 
-Stagehand is not limited to prebuilt OpenAI and Stripe workflows. The Plan A product promise is:
+Stagehand is now the release-review and safety-gate layer for production AI agents.
 
-> Stagehand tests agent workflows across LLM calls, third-party APIs, internal APIs, and custom tools.
+The product promise is:
 
-OpenAI and Stripe are prebuilt profiles that prove model-aware replay and stateful service simulation. The broader product boundary is generic enough for company-specific workflows: internal billing APIs, CRM wrappers, support/admin APIs, private microservices, MCP-style tools, and local Python or TypeScript functions.
+> Before an AI agent change reaches production, know exactly what new actions it can take and whether those actions are safe.
 
-Plan A supports this through three execution boundaries:
+Every time a developer changes an AI agent, Stagehand reviews what changed before the code reaches production. It detects new tools, new API calls, changed prompts, risky side effects, unsafe actions, missing approvals, secret exposure, and behavior drift from the approved baseline.
 
-1. Model boundary: OpenAI-style and later provider-specific LLM calls.
-2. External API boundary: prebuilt service profiles such as Stripe.
-3. Custom API/tool boundary: generic HTTP replay plus explicit Python and TypeScript tool wrappers.
+Record/replay, diff, assertions, scrubbing, error injection, custom API capture, and custom tool capture remain the underlying engine. They are no longer the product story.
 
-V1 must not promise automatic stateful simulation for arbitrary private APIs. The V1 promise is generic record/replay, diff, assertions, and failure injection across those boundaries. User-defined simulator hooks and OpenAPI-assisted simulation remain later expansion paths after the core loop is proven.
+The V1 wedge is GitHub PR release review for AI agents:
+
+```bash
+stagehand init
+stagehand record-baseline -- python agent.py
+stagehand contract generate --session refund-agent
+stagehand review -- python agent.py
+```
+
+Expected output:
+
+```txt
+Agent Release Review: FAILED
+
+Risk: HIGH
+
+New risky behavior:
+- POST /v1/refunds
+- amount: 50000
+- reason: financial/destructive action
+- required approval: missing
+
+Behavior drift:
+- refund classification prompt changed
+- support ticket priority changed from normal to urgent
+
+Safe behavior:
+- customer lookup preserved
+- replay stayed offline
+- no plaintext secrets persisted
+```
+
+## Product Reframe
+
+These existing epics remain useful foundation and should not be rebuilt:
+
+- A-F: repo, schemas, SQLite, Python SDK, scrubbing, CLI
+- G: TypeScript SDK
+- H: runtime core
+- J: assertion engine
+- K: diff engine and baseline logic
+- L: GitHub Action
+- N: custom API replay
+- Y: custom tool capture and replay
+- AA: first-run onboarding
+
+These concepts stay implemented but change how they are described:
+
+- Assertions become release gates.
+- Diff reports become agent behavior review.
+- Baselines become approved behavior contracts.
+- Replay becomes the safe offline execution engine.
+- Error injection becomes a failure-readiness check.
+
+These should not lead the roadmap or landing page:
+
+- Stripe simulator
+- conformance harness
+- provider-specific simulators
+- hosted dashboard
+- broad generic workflow testing
+
+Do not build more provider simulators or hosted dashboard features until at least three real teams use the local/GitHub workflow.
 
 ## Epic A: Repo Scaffold, CI, Packaging Skeleton
 
@@ -1379,131 +1439,759 @@ O3 adds `npm run package:release` for version-aligned CLI, Python, and TypeScrip
 
 - Outcome: the project has a declared security posture before launch.
 - To do:
-  - [ ] write initial threat model
-  - [ ] document trust boundaries
-  - [ ] document secret handling
-  - [ ] document local and hosted risk assumptions
+  - [x] write initial threat model
+  - [x] document trust boundaries
+  - [x] document secret handling
+  - [x] document local and hosted risk assumptions
+
+P1 adds `docs/security-posture.md`, which defines the launch posture for the
+local-first OSS product, key protected assets, trust boundaries, current
+controls, residual risks, secret-handling rules, local assumptions, and hosted
+assumptions that must be resolved before any managed service launch.
 
 ### Story P2: Implement retention and deletion behavior
 
 - Outcome: stored recordings can be removed intentionally and predictably.
 - To do:
-  - [ ] define retention defaults
-  - [ ] implement `delete-run`
-  - [ ] implement `delete-session`
-  - [ ] ensure salts are deleted with associated sessions
-  - [ ] write tests for deletion behavior
+  - [x] define retention defaults
+  - [x] implement `delete-run`
+  - [x] implement `delete-session`
+  - [x] ensure salts are deleted with associated sessions
+  - [x] write tests for deletion behavior
+
+P2 adds `docs/retention-deletion.md` and exposes `stagehand delete-run` plus
+`stagehand delete-session`. The local default is manual retention: Stagehand
+does not automatically expire local recordings in V1. `delete-run` removes one
+run and dependent artifacts while preserving the session salt for remaining
+runs. `delete-session` removes all session runs, runtime state, queue state, and
+the associated scrub salt.
 
 ### Story P3: Add launch-time security controls
 
 - Outcome: OSS launch does not ship with obvious avoidable gaps.
 - To do:
-  - [ ] enable dependency scanning in CI
-  - [ ] enable secret scanning in CI
-  - [ ] publish vulnerability disclosure policy
-  - [ ] verify no plaintext auth artifacts persist in standard paths
+  - [x] enable dependency scanning in CI
+  - [x] enable secret scanning in CI
+  - [x] publish vulnerability disclosure policy
+  - [x] verify no plaintext auth artifacts persist in standard paths
+
+P3 adds `.github/workflows/security.yml` for dependency review, Go/Python/npm
+vulnerability scans, and verified-secret scanning. It adds weekly Dependabot
+update configuration, publishes the launch vulnerability disclosure policy in
+`SECURITY.md`, expands built-in scrub rules for common auth artifact headers,
+and adds a raw-SQLite regression test proving the standard recording writer does
+not persist plaintext auth artifacts through the durable path.
 
 ### Epic P completion checklist
 
-- [ ] threat model exists
-- [ ] deletion exists
-- [ ] retention defaults are documented
-- [ ] disclosure policy is published
-- [ ] CI security scans run
+- [x] threat model exists
+- [x] deletion exists
+- [x] retention defaults are documented
+- [x] disclosure policy is published
+- [x] CI security scans run
 
-## Epic Q: Design Partner Recruiting and Feedback Ops
+## Epic AB: Agent Behavior Contract
 
-- Epic code: `Q`
-- Milestone span: `M2-M6`
-- Estimate: `8d`
-- Goal: ensure roadmap decisions are informed by real users before hosted and advanced integrations are built.
-- Depends on: `D`, `F`
-
-### Story Q1: Recruit design partners
-
-- Outcome: a small set of real teams is ready to test the wedge.
-- To do:
-  - [ ] define partner profile
-  - [ ] build outreach list
-  - [ ] write concise outreach message
-  - [ ] track outreach, replies, and fit
-  - [ ] secure 3-5 active design partners
-
-### Story Q2: Run structured onboarding and feedback sessions
-
-- Outcome: feedback becomes comparable rather than anecdotal.
-- To do:
-  - [ ] define onboarding script
-  - [ ] define feedback template
-  - [ ] record blocked workflows
-  - [ ] classify feedback as launch blocker, partner-specific, or later
-  - [ ] review findings at the end of each milestone
-
-### Story Q3: Feed roadmap decisions back into planning
-
-- Outcome: partner input changes the roadmap in an explicit way.
-- To do:
-  - [ ] reserve 20 percent milestone capacity for partner blockers
-  - [ ] track requested integrations
-  - [ ] decide whether any deferred Plan B epic should move forward
-  - [ ] document why requests are accepted or deferred
-
-### Epic Q completion checklist
-
-- [ ] outreach list exists
-- [ ] at least 3 design partners have seen a demo
-- [ ] feedback is categorized and tracked
-- [ ] roadmap adjustments are explicit
-
-## Epic R: Distribution Work
-
-- Epic code: `R`
-- Milestone span: `M5-M6`
+- Epic code: `AB`
+- Milestone span: `M6`
 - Estimate: `7d`
-- Goal: make the OSS launch discoverable and coherent.
-- Depends on: `O`, `Q`
+- Goal: turn a successful baseline run into an explicit, reviewable behavior contract.
+- Depends on: `F`, `J`, `K`, `N`, `Y`, `AA`
 
-### Story R1: Build launch assets
+### Story AB1: Define behavior contract schema
 
-- Outcome: there is enough material for a credible public launch.
+- Outcome: `stagehand.contract.yml` has a stable schema.
 - To do:
-  - [ ] write landing page copy
-  - [ ] record 3-minute demo video
-  - [ ] gather screenshots and terminal captures
-  - [ ] prepare architecture and workflow diagrams if needed
+  - [x] define contract schema version
+  - [x] define allowed services
+  - [x] define allowed operations
+  - [x] define allowed tools
+  - [x] define side-effect types: `read`, `write`, `destructive`, `financial`, `external_message`, `unknown`
+  - [x] define allowed fallback tiers
+  - [x] define approval requirements
+  - [x] define user override format
+  - [x] add schema validation fixtures
 
-### Story R2: Prepare launch messaging
+AB1 adds `internal/analysis/contracts` and `docs/behavior-contract-schema.md`, which strictly parse, validate, and document `stagehand.contract.yml` with `schema_version: v1alpha1`, action selectors, side-effect labels, fallback tiers, approval requirements, forbidden-action reasons, user override metadata, and fixture-backed validation tests.
 
-- Outcome: the launch tells a clear wedge story.
+Example:
+
+```yaml
+schema_version: v1alpha1
+
+agent:
+  name: refund-agent
+
+allowed_actions:
+  - service: openai
+    operation: POST /v1/chat/completions
+    side_effect: read
+
+  - tool: lookup_customer
+    side_effect: read
+
+  - service: stripe
+    operation: GET /v1/customers/search
+    side_effect: read
+
+restricted_actions:
+  - service: stripe
+    operation: POST /v1/refunds
+    side_effect: financial
+    max_amount: 5000
+    requires_approval: true
+
+forbidden_actions:
+  - service: postgres
+    operation: DELETE
+    reason: destructive database write
+```
+
+### Story AB2: Generate contract from baseline
+
+- Outcome: users can generate a first contract from an approved baseline run.
 - To do:
-  - [ ] draft Show HN post
-  - [ ] draft blog post or launch article
-  - [ ] draft short-form social posts
-  - [ ] tailor messaging for AI platform engineers
-  - [ ] position Stagehand as CI for agents that call LLMs, third-party APIs, internal APIs, and custom tools
-  - [ ] avoid positioning OpenAI and Stripe as the product boundary; describe them as prebuilt profiles
-  - [ ] lead with the simple first-run path: initialize, record a baseline, run tests
-  - [ ] show advanced primitives only after the quick path is clear
+  - [ ] add `stagehand contract generate --session <name>`
+  - [ ] read latest promoted baseline
+  - [ ] extract observed services, operations, tools, models, and side-effect metadata
+  - [ ] classify each action as read/write/destructive/financial/external/unknown
+  - [ ] write `stagehand.contract.yml`
+  - [ ] include comments showing what users should review
+  - [ ] print summary of generated contract
 
-### Story R3: Run outreach and launch follow-up
+### Story AB3: Review contract manually
 
-- Outcome: launch traffic converts into real users and conversations.
+- Outcome: the generated contract is easy to approve or edit.
 - To do:
-  - [ ] compile outreach list of engineers and founders
-  - [ ] send launch notes to design partners and warm contacts
-  - [ ] monitor launch responses
-  - [ ] route feedback into Epic Q workflow
+  - [ ] group actions by service/tool
+  - [ ] mark unknown-risk actions clearly
+  - [ ] include suggested risk labels
+  - [ ] include suggested release gates for high-risk actions
+  - [ ] document common edits
+  - [ ] keep generated contract readable in one screen for small agents
 
-### Epic R completion checklist
+### Story AB4: Enforce contract during test/review
 
-- [ ] demo video exists
-- [ ] launch post exists
-- [ ] landing page copy exists
+- Outcome: candidate runs fail when behavior exceeds the approved contract.
+- To do:
+  - [ ] load `stagehand.contract.yml` during `stagehand test`
+  - [ ] load `stagehand.contract.yml` during new `stagehand review`
+  - [ ] fail on new unapproved actions
+  - [ ] fail on forbidden actions
+  - [ ] fail on restricted actions without required approval
+  - [ ] emit machine-readable contract violation results
+  - [ ] include exact interaction evidence
+
+### Story AB5: Contract diff
+
+- Outcome: teams can see what behavior changed between baseline and candidate.
+- To do:
+  - [ ] detect newly introduced actions
+  - [ ] detect removed actions
+  - [ ] detect side-effect type changes
+  - [ ] detect fallback tier changes
+  - [ ] detect prompt/model changes when captured
+  - [ ] render terminal, JSON, and GitHub markdown output
+
+### Epic AB completion checklist
+
+- [ ] contract schema exists
+- [ ] contract can be generated from a baseline
+- [ ] contract can be enforced in local runs
+- [ ] contract violations include concrete evidence
+- [ ] contract diff appears in PR output
+
+## Epic AC: Action Risk Classifier
+
+- Epic code: `AC`
+- Milestone span: `M6`
+- Estimate: `6d`
+- Goal: automatically classify agent actions so users do not need to manually label everything.
+- Depends on: `AB`, `N`, `Y`
+
+### Story AC1: Classify HTTP/API risk
+
+- Outcome: captured HTTP/API calls receive a default risk label.
+- To do:
+  - [ ] classify `GET`, `HEAD`, and safe reads as `read`
+  - [ ] classify `POST`, `PUT`, `PATCH` as `write`
+  - [ ] classify `DELETE` as `destructive`
+  - [ ] detect endpoint terms: `refund`, `charge`, `payment`, `invoice`, `payout`
+  - [ ] detect endpoint terms: `email`, `sms`, `message`, `notify`, `slack`
+  - [ ] detect endpoint terms: `delete`, `drop`, `remove`, `archive`, `disable`
+  - [ ] expose classifier reason in artifacts
+
+### Story AC2: Classify tool risk
+
+- Outcome: local/custom tools receive risk labels.
+- To do:
+  - [ ] use declared `side_effect` metadata from wrapped tools
+  - [ ] classify missing side-effect metadata as `unknown`
+  - [ ] infer basic risk from tool names
+  - [ ] classify tools such as `send_email`, `refund_customer`, `delete_user`, `update_ticket`
+  - [ ] allow config overrides
+
+### Story AC3: Classify database-like actions
+
+- Outcome: dangerous database behavior is surfaced clearly.
+- To do:
+  - [ ] detect SQL verbs in captured queries
+  - [ ] classify `SELECT` as read
+  - [ ] classify `INSERT`, `UPDATE`, `UPSERT` as write
+  - [ ] classify `DELETE`, `DROP`, `TRUNCATE`, `ALTER` as destructive
+  - [ ] include query snippets only after scrub rules are applied
+
+### Story AC4: Risk score summary
+
+- Outcome: every review has an overall risk level.
+- To do:
+  - [ ] define `LOW`, `MEDIUM`, `HIGH`, `BLOCKED`
+  - [ ] high risk when new financial/destructive/external actions appear
+  - [ ] medium risk when new write actions appear
+  - [ ] low risk for read-only changes
+  - [ ] blocked when contract violations exist
+  - [ ] explain why the score was assigned
+
+### Epic AC completion checklist
+
+- [ ] HTTP/API actions are classified
+- [ ] tool actions are classified
+- [ ] database-like operations are classified
+- [ ] every review receives a risk score
+- [ ] users can override classifications
+
+## Epic AD: Release Gates
+
+- Epic code: `AD`
+- Milestone span: `M6-M7`
+- Estimate: `7d`
+- Goal: turn the existing assertion engine into user-facing release gates.
+- Depends on: `J`, `AB`, `AC`
+
+### Story AD1: Define release gate schema
+
+- Outcome: users can write `stagehand.gates.yml`.
+- To do:
+  - [ ] define `release_gates` schema
+  - [ ] support `block_if`
+  - [ ] support `require_order`
+  - [ ] support `require_approval`
+  - [ ] support `max_amount`
+  - [ ] support `allowed_channels`
+  - [ ] support `allowed_domains`
+  - [ ] support `forbid_new_action`
+  - [ ] support `forbid_unknown_risk`
+
+Example:
+
+```yaml
+schema_version: v1alpha1
+
+release_gates:
+  - name: Refunds over $50 require approval
+    block_if:
+      service: stripe
+      operation: POST /v1/refunds
+      amount_gt: 5000
+      approval_missing: true
+
+  - name: Agent cannot send external customer messages
+    block_if:
+      side_effect: external_message
+      destination_type: external
+
+  - name: Customer lookup must happen before billing action
+    require_order:
+      before:
+        tool: lookup_customer
+      after:
+        service: billing-api
+```
+
+### Story AD2: Map release gates onto assertion engine
+
+- Outcome: existing assertion execution powers the new gate layer.
+- To do:
+  - [ ] translate release gates into internal assertions
+  - [ ] preserve old assertion files as advanced API
+  - [ ] show gate names instead of raw assertion IDs in user-facing output
+  - [ ] include evidence from matched interactions
+  - [ ] keep failure output concise
+
+### Story AD3: Add default starter gates
+
+- Outcome: first-time users get useful gates without writing YAML from scratch.
+- To do:
+  - [ ] generate starter gates in `stagehand init`
+  - [ ] include forbidden destructive DB action gate
+  - [ ] include external message approval gate
+  - [ ] include high-value financial action approval gate
+  - [ ] include unknown-risk action warning gate
+  - [ ] keep generated file short and commented
+
+### Story AD4: Gate result output
+
+- Outcome: local and CI reports show clear pass/fail gate status.
+- To do:
+  - [ ] add gate section to terminal output
+  - [ ] add gate section to JSON output
+  - [ ] add gate section to GitHub markdown output
+  - [ ] show failed gates first
+  - [ ] include exact service/tool/operation evidence
+
+### Epic AD completion checklist
+
+- [ ] `stagehand.gates.yml` exists
+- [ ] release gates execute through existing assertion engine
+- [ ] default starter gates exist
+- [ ] gate failures appear clearly in local and PR reports
+
+## Epic AE: Agent Release Review Command
+
+- Epic code: `AE`
+- Milestone span: `M7`
+- Estimate: `8d`
+- Goal: make `stagehand review` the main product workflow.
+- Depends on: `AB`, `AC`, `AD`, `K`, `L`, `AA`
+
+### Story AE1: Add `stagehand review`
+
+- Outcome: users can run a single command that produces an agent release review.
+- To do:
+  - [ ] add `stagehand review -- <command>`
+  - [ ] resolve latest baseline
+  - [ ] run candidate behavior capture or replay path
+  - [ ] compare candidate against baseline
+  - [ ] load behavior contract
+  - [ ] load release gates
+  - [ ] classify action risk
+  - [ ] emit one review result
+
+### Story AE2: Review terminal report
+
+- Outcome: local output is understandable without opening artifacts.
+- To do:
+  - [ ] show overall status: passed/failed
+  - [ ] show risk score
+  - [ ] show new risky actions
+  - [ ] show blocked gates
+  - [ ] show behavior drift
+  - [ ] show safe unchanged behavior
+  - [ ] show next suggested command
+
+Example:
+
+```txt
+Stagehand Agent Release Review: FAILED
+
+Risk: HIGH
+
+Blocked gates:
+- Refunds over $50 require approval
+  Evidence: stripe POST /v1/refunds amount=50000
+
+New actions:
+- stripe POST /v1/refunds
+- support-api POST /tickets/escalate
+
+Behavior drift:
+- support ticket priority changed normal -> urgent
+
+Suggested fix:
+- Add approval check before refund
+- Update stagehand.contract.yml only if this behavior is intentional
+```
+
+### Story AE3: JSON and markdown report
+
+- Outcome: CI and external tools can consume review results.
+- To do:
+  - [ ] write `.stagehand/reports/release-review.json`
+  - [ ] write `.stagehand/reports/release-review.md`
+  - [ ] include risk score
+  - [ ] include contract violations
+  - [ ] include gate failures
+  - [ ] include behavior diffs
+  - [ ] include artifact paths
+  - [ ] include suggested fixes
+
+### Story AE4: Exit codes
+
+- Outcome: CI can distinguish why a review failed.
+- To do:
+  - [ ] define exit code for contract violation
+  - [ ] define exit code for gate failure
+  - [ ] define exit code for replay failure
+  - [ ] define exit code for config error
+  - [ ] define exit code for high-risk warning if configured as fail
+  - [ ] document exit codes
+
+### Story AE5: Integrate with `stagehand test`
+
+- Outcome: old workflow keeps working but points toward review.
+- To do:
+  - [ ] keep `stagehand test`
+  - [ ] add message recommending `stagehand review` for agent release checks
+  - [ ] allow `stagehand test --review`
+  - [ ] avoid breaking existing examples
+
+### Epic AE completion checklist
+
+- [ ] `stagehand review` exists
+- [ ] review combines replay, diff, contract, gates, and risk classification
+- [ ] terminal report is clear
+- [ ] JSON and markdown reports exist
+- [ ] CI-compatible exit codes exist
+
+## Epic AF: GitHub PR Release Review
+
+- Epic code: `AF`
+- Milestone span: `M7`
+- Estimate: `6d`
+- Goal: make the GitHub PR comment the primary product surface.
+- Depends on: `L`, `AE`
+
+### Story AF1: Add review mode to GitHub Action
+
+- Outcome: the existing GitHub Action can run release review.
+- To do:
+  - [ ] add action input `mode: review`
+  - [ ] run `stagehand review`
+  - [ ] upload review artifacts
+  - [ ] post release-review markdown comment
+  - [ ] fail PR on blocked gates
+  - [ ] support distinct comment IDs
+
+### Story AF2: PR comment design
+
+- Outcome: PR comments read like a useful code review, not a raw diff.
+- To do:
+  - [ ] show final status at top
+  - [ ] show risk score
+  - [ ] show blocked gates
+  - [ ] show new actions
+  - [ ] show behavior drift
+  - [ ] show suggested fixes
+  - [ ] link artifacts
+  - [ ] include local reproduction commands
+
+Example PR comment:
+
+```md
+## Stagehand Agent Release Review: Failed
+
+**Risk:** High
+
+### Blocked gates
+
+- Refunds over $50 require approval
+  - Evidence: `stripe POST /v1/refunds`
+  - Observed amount: `$500`
+  - Approval: missing
+
+### New behavior introduced in this PR
+
+- `stripe POST /v1/refunds`
+- `support-api POST /tickets/escalate`
+
+### Suggested fix
+
+Add an approval check before refund execution, or update `stagehand.contract.yml` if this behavior is intentional and reviewed.
+```
+
+### Story AF3: Real PR verification
+
+- Outcome: the workflow is proven in an actual GitHub PR.
+- To do:
+  - [ ] create test PR that introduces risky agent behavior
+  - [ ] verify artifact upload works
+  - [ ] verify PR comment is created
+  - [ ] verify existing comment updates on rerun
+  - [ ] verify the check fails on blocked gates
+  - [ ] document screenshots and expected output
+
+### Story AF4: Copy-paste workflow
+
+- Outcome: external users can add PR review quickly.
+- To do:
+  - [ ] update `stagehand ci setup`
+  - [ ] generate review-mode workflow
+  - [ ] include required permissions
+  - [ ] include comments for secrets
+  - [ ] include local action mode before publishing
+  - [ ] include published action mode after release
+
+### Epic AF completion checklist
+
+- [ ] GitHub Action supports review mode
+- [ ] PR comment is readable and useful
+- [ ] real PR run is verified
+- [ ] risky behavior fails the PR
+- [ ] copy-paste workflow exists
+
+## Epic AG: Approval Workflow
+
+- Epic code: `AG`
+- Milestone span: `M7-M8`
+- Estimate: `5d`
+- Goal: let teams intentionally approve new agent behavior instead of fighting the tool.
+- Depends on: `AB`, `AE`, `AF`
+
+### Story AG1: Approve action command
+
+- Outcome: users can approve a new action into the behavior contract.
+- To do:
+  - [ ] add `stagehand contract approve-action`
+  - [ ] accept service/operation/tool selector
+  - [ ] accept side-effect type
+  - [ ] accept optional reason
+  - [ ] update `stagehand.contract.yml`
+  - [ ] preserve comments where possible
+
+Example:
+
+```bash
+stagehand contract approve-action \
+  --service stripe \
+  --operation "POST /v1/refunds" \
+  --side-effect financial \
+  --requires-approval true \
+  --reason "Refunds are allowed after human approval"
+```
+
+### Story AG2: Approve candidate behavior
+
+- Outcome: users can promote an intentional behavior change.
+- To do:
+  - [ ] add `stagehand contract approve-from-run --run-id <id>`
+  - [ ] list new actions from candidate run
+  - [ ] ask for explicit approval per risky action unless `--yes`
+  - [ ] update contract
+  - [ ] print diff of contract changes
+
+### Story AG3: Approval metadata
+
+- Outcome: approvals are auditable.
+- To do:
+  - [ ] store approval reason
+  - [ ] store approved timestamp
+  - [ ] store approved-by from git config when available
+  - [ ] show approval metadata in review output
+  - [ ] keep metadata in repo file, not only local DB
+
+### Story AG4: PR guidance for approval
+
+- Outcome: failed PR comments teach users what to do next.
+- To do:
+  - [ ] suggest exact approval command
+  - [ ] suggest contract edit when manual review is better
+  - [ ] warn against approving unknown-risk actions blindly
+  - [ ] document approval workflow
+
+### Epic AG completion checklist
+
+- [ ] users can approve specific actions
+- [ ] users can approve candidate behavior from a run
+- [ ] approval metadata is stored
+- [ ] PR comments suggest next steps
+
+## Epic AH: MCP Action Review First Slice
+
+- Epic code: `AH`
+- Milestone span: `M8`
+- Estimate: `8d`
+- Goal: support MCP-style tool calls as first-class reviewed agent actions.
+- Depends on: `Y`, `AB`, `AC`, `AE`
+
+### Story AH1: Define MCP artifact model
+
+- Outcome: MCP tool calls appear as first-class interactions.
+- To do:
+  - [ ] define MCP protocol fields
+  - [ ] capture server name
+  - [ ] capture tool name
+  - [ ] capture tool arguments
+  - [ ] capture tool result or error
+  - [ ] scrub arguments and result
+  - [ ] preserve ordering with model/API/tool calls
+
+### Story AH2: MCP proxy first slice
+
+- Outcome: agents can route MCP calls through Stagehand for review.
+- To do:
+  - [ ] support `list_tools`
+  - [ ] support `call_tool`
+  - [ ] record MCP tool calls
+  - [ ] replay recorded MCP tool results
+  - [ ] fail closed on replay miss
+  - [ ] show MCP calls in `inspect`
+
+### Story AH3: MCP risk classification
+
+- Outcome: MCP tools are classified for release review.
+- To do:
+  - [ ] classify tools by declared metadata when available
+  - [ ] classify tools by name when metadata is missing
+  - [ ] mark unknown MCP tools as `unknown`
+  - [ ] detect file, shell, browser, database, and external-message tools
+  - [ ] allow contract overrides
+
+### Story AH4: MCP contract enforcement
+
+- Outcome: new MCP tools fail release review unless approved.
+- To do:
+  - [ ] add MCP tools to generated behavior contract
+  - [ ] fail on new unapproved MCP tools
+  - [ ] fail on forbidden MCP tools
+  - [ ] support MCP-specific release gates
+  - [ ] include MCP evidence in PR comment
+
+### Epic AH completion checklist
+
+- [ ] MCP calls are captured
+- [ ] MCP calls are replayable
+- [ ] MCP calls appear in behavior contract
+- [ ] new risky MCP tools fail review
+- [ ] PR comment shows MCP evidence
+
+## Epic AI: Launch Demos for Release Review
+
+- Epic code: `AI`
+- Milestone span: `M8`
+- Estimate: `5d`
+- Goal: replace generic replay demos with demos that sell the new release-review wedge.
+- Depends on: `AE`, `AF`, `AG`
+
+### Story AI1: Refund-risk demo
+
+- Outcome: demo shows an agent introducing a risky refund action.
+- To do:
+  - [ ] baseline agent only looks up customer and opens support ticket
+  - [ ] candidate agent introduces `POST /v1/refunds`
+  - [ ] release review classifies refund as financial
+  - [ ] PR fails because approval is missing
+  - [ ] PR comment suggests approval or code fix
+
+### Story AI2: Database-delete demo
+
+- Outcome: demo shows agent introducing destructive database behavior.
+- To do:
+  - [ ] baseline agent performs read-only lookup
+  - [ ] candidate agent introduces delete/update behavior
+  - [ ] release review classifies action as destructive
+  - [ ] release gate blocks PR
+  - [ ] terminal and PR output are screenshot-ready
+
+### Story AI3: Customer-message demo
+
+- Outcome: demo shows agent attempting external communication.
+- To do:
+  - [ ] baseline agent drafts internal note only
+  - [ ] candidate agent sends customer-facing message
+  - [ ] release review classifies as external message
+  - [ ] gate requires approval
+  - [ ] PR comment shows exact evidence
+
+### Story AI4: MCP-new-tool demo
+
+- Outcome: demo shows agent using a new MCP tool.
+- To do:
+  - [ ] baseline agent uses approved read-only MCP tool
+  - [ ] candidate agent uses new file/shell/browser tool
+  - [ ] release review flags new MCP tool
+  - [ ] contract approval workflow is demonstrated
+
+### Story AI5: 3-minute launch video
+
+- Outcome: launch messaging is simple and visual.
+- To do:
+  - [ ] record 3-minute video
+  - [ ] show baseline generation
+  - [ ] show candidate PR failure
+  - [ ] show PR comment
+  - [ ] show approval workflow
+  - [ ] avoid deep simulator/conformance explanation
+
+### Epic AI completion checklist
+
+- [ ] refund-risk demo exists
+- [ ] database-delete demo exists
+- [ ] customer-message demo exists
+- [ ] MCP-new-tool demo exists
+- [ ] 3-minute launch video exists
+
+## Epic AJ: Design Partner Validation
+
+- Epic code: `AJ`
+- Milestone span: `M6-M8`
+- Estimate: `6d`
+- Goal: validate the release-review wedge with real teams before hosted/dashboard work.
+- Depends on: `AE`, `AF`
+
+### Story AJ1: Define design partner profile
+
+- Outcome: outreach targets are specific.
+- To do:
+  - [ ] target teams building AI agents that call tools/APIs
+  - [ ] target teams using GitHub Actions
+  - [ ] target teams with OpenAI/Anthropic/LangChain/CrewAI/custom agents
+  - [ ] avoid slow enterprise security buyers for first validation
+  - [ ] create qualification checklist
+
+### Story AJ2: Build outreach list
+
+- Outcome: there are enough prospects to test demand.
+- To do:
+  - [ ] identify 50 agent startups
+  - [ ] identify 30 open-source agent repos
+  - [ ] identify 20 AI infrastructure founders/engineers
+  - [ ] track source, contact, status, notes
+
+### Story AJ3: Run wedge demo calls
+
+- Outcome: feedback is based on the release-review story, not generic replay.
+- To do:
+  - [ ] show 3-minute PR review demo
+  - [ ] ask whether they would install it in CI
+  - [ ] ask which actions they fear most
+  - [ ] ask what would block adoption
+  - [ ] classify feedback as launch blocker, nice-to-have, or ignore
+
+### Story AJ4: Convert 3 active users
+
+- Outcome: roadmap decisions are grounded in real usage.
+- To do:
+  - [ ] get 3 teams to run local workflow
+  - [ ] get 1 team to run GitHub Action
+  - [ ] collect failure logs
+  - [ ] fix onboarding blockers
+  - [ ] document learnings
+
+### Epic AJ completion checklist
+
+- [ ] design partner profile exists
 - [ ] outreach list exists
+- [ ] 10+ demos completed
+- [ ] 3 teams run local workflow
+- [ ] 1 team runs GitHub Action
+- [ ] launch blockers are tracked
 
 ## Plan B Deferred Epics
 
-These epics are not part of the recommended 6-month V1. Do not start them unless the roadmap is explicitly changed.
+These epics are not part of the release-review V1. Do not start them until at least three external teams have used the local or GitHub release-review workflow and the roadmap has been explicitly changed.
+
+Explicit non-goals until design partner validation:
+
+- hosted dashboard
+- hosted multi-tenant API
+- more provider-specific simulators
+- Salesforce simulator
+- Gmail simulator
+- Slack simulator
+- broad enterprise governance UI
+- policy marketplace
+- SOC 2/compliance dashboard
+- automatic business-semantics inference
 
 ## Epic S: Gmail Dedicated Simulator
 
@@ -1511,7 +2199,7 @@ These epics are not part of the recommended 6-month V1. Do not start them unless
 - Milestone span: `M7`
 - Estimate: `6d`
 - Goal: provide a dedicated Gmail simulation path only if design partners prove generic HTTP is insufficient.
-- Depends on: `H`, `N`, `Q`
+- Depends on: `H`, `N`, `AJ`
 
 ### Story S1: Define Gmail subset
 
@@ -1550,7 +2238,7 @@ These epics are not part of the recommended 6-month V1. Do not start them unless
 - Milestone span: `M7`
 - Estimate: `6d`
 - Goal: provide a dedicated Slack Web API simulation path only if partner demand requires it.
-- Depends on: `H`, `N`, `Q`
+- Depends on: `H`, `N`, `AJ`
 
 ### Story T1: Define Slack subset
 
@@ -1589,7 +2277,7 @@ These epics are not part of the recommended 6-month V1. Do not start them unless
 - Milestone span: `M8`
 - Estimate: `18d`
 - Goal: add database-level coverage only after the local core loop is proven externally.
-- Depends on: `H`, `Q`
+- Depends on: `H`, `AJ`
 
 ### Story U1: Scope V1.1/V2 Postgres coverage
 
@@ -1631,7 +2319,7 @@ These epics are not part of the recommended 6-month V1. Do not start them unless
 - Milestone span: `M9`
 - Estimate: `12d`
 - Goal: provide the minimum hosted backend needed for shared runs and baselines.
-- Depends on: `K`, `P`, `Q`
+- Depends on: `K`, `P`, `AJ`
 
 ### Story V1: Define hosted data and auth model
 
@@ -1766,27 +2454,33 @@ If you want to turn this page into tickets immediately, use this pattern:
 
 If execution starts now, open these first:
 
-1. `A1` Create monorepo skeleton
-2. `A2` Add baseline CI automation
-3. `B1` Define config schemas
-4. `B2` Define run and event artifact schemas
-5. `P1` Write threat model and security posture docs
+1. `AB1` Define behavior contract schema
+2. `AB2` Generate contract from baseline
+3. `AB4` Enforce contract during test/review
+4. `AC1` Classify HTTP/API risk
+5. `AC2` Classify tool risk
+6. `AD1` Define release gate schema
+7. `AD2` Map release gates onto assertion engine
+8. `AE1` Add `stagehand review`
+9. `AE2` Build review terminal report
+10. `AF1` Add review mode to GitHub Action
+11. `AF2` Build PR comment design
+12. `AF3` Verify real PR failure on risky behavior
+13. `AI1` Build refund-risk release-review demo
+14. `AJ1` Define design partner profile
+15. `AJ2` Build outreach list
 
-Do not persist `D2` captures as durable artifacts before `E1` exists in at least a minimal form. In-memory interception can land earlier, but stored recordings must not bypass scrubbing.
+Do not open hosted/dashboard work yet.
 
-## Current Launch-Critical Planning Additions
+## New Launch Definition
 
-After the already-completed foundational stories, the custom workflow additions should be opened as launch-critical product tickets:
+V1 is launch-ready only when all of these are true:
 
-1. `N1` Generic HTTP exact replay
-2. `N2` Service mapping config
-3. `N3` Dynamic field ignore config
-4. `Y1` Python tool wrapper
-5. `Y2` TypeScript tool wrapper
-6. `Y3` Tool artifact schema and inspect support
-7. `AA1` `stagehand init`
-8. `AA2` `stagehand doctor`
-9. `AA3` `stagehand record-baseline`
-10. `AA4` `stagehand test`
-
-These are the scoped version of the custom API/custom tool strategy plus the minimum onboarding layer needed to keep the product from feeling too hard to adopt. User-defined stateful simulator hooks and OpenAPI-assisted generation remain later expansion work.
+- `stagehand review -- <command>` works locally
+- `stagehand.contract.yml` can be generated from a baseline
+- new risky actions fail review
+- release gates appear in terminal and PR output
+- GitHub Action posts a useful release-review comment
+- a real GitHub PR run proves artifact upload, comment update, and failure behavior
+- at least one demo clearly shows a dangerous agent change being blocked
+- at least three external users have attempted the workflow

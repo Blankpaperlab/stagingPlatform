@@ -1,0 +1,9 @@
+schema_version: v0
+
+agent:
+  name: refund-agent
+
+allowed_actions:
+  - service: openai
+    operation: POST /v1/chat/completions
+    side_effect: read

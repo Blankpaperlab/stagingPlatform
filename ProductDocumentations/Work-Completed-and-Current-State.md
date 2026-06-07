@@ -613,6 +613,8 @@ Implemented:
 - session hashing reference
 - SQLite local store reference
 - detector library reference
+- launch security posture and threat model
+- retention defaults and deletion behavior
 - product documentation set in `ProductDocumentations/`
 
 ## Current Quality Bar
@@ -639,7 +641,7 @@ This is still early-stage, but it is no longer just planning plus placeholders.
 
 The next major unfinished milestone items are:
 
-1. Story P1: write threat model and security posture docs
+1. Story P3: add launch-time security controls
 2. replace the current CLI/SDK file-bundle handoff with a more direct recording boundary where appropriate
 3. extend replay beyond exact seeded interactions into fuller runtime or simulator behavior
 4. source the session-salt master key from a real runtime secret instead of test/local construction

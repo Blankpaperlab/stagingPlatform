@@ -29,7 +29,15 @@ func TestMergeRulesAppendsCustomRulesAfterDefaults(t *testing.T) {
 
 	wantNames := []string{
 		"request-authorization-header",
+		"request-proxy-authorization-header",
 		"request-cookie-header",
+		"request-idempotency-key-header",
+		"request-set-cookie-header",
+		"request-x-api-key-header",
+		"response-authorization-header",
+		"response-proxy-authorization-header",
+		"response-set-cookie-header",
+		"response-x-api-key-header",
 		"customer-email-mask",
 		"token-hash",
 	}

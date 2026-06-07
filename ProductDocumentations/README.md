@@ -10,17 +10,24 @@ These documents describe:
 - what code modules, types, functions, and entrypoints exist today
 - what work has already been completed
 - what is scaffolded versus what is truly implemented
+- the current product thesis, positioning, workflow, and strategic direction
 
 Related implementation references under `docs/`:
 
 - `config-schema.md`
 - `artifact-schema.md`
 - `schema-compatibility.md`
+- `security-posture.md`
+- `retention-deletion.md`
 - `scrub-detector-library.md`
 - `scrub-session-hashing.md`
 - `sqlite-local-store.md`
 
 ## Document List
+
+### `Stagehand-Product-Thesis.md`
+
+Detailed product thesis for Stagehand, covering the product argument, target user, problem, local-first strategy, architecture, current capability surface, differentiation, risks, and definition of success.
 
 ### `Tracked-File-Inventory.md`
 

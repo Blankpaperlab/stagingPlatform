@@ -62,6 +62,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runReplay(args[1:], stdout, stderr)
 	case "inspect":
 		return runInspect(args[1:], stdout, stderr)
+	case "delete-run":
+		return runDeleteRun(args[1:], stdout, stderr)
+	case "delete-session":
+		return runDeleteSession(args[1:], stdout, stderr)
 	case "diff":
 		return runDiff(args[1:], stdout, stderr)
 	case "assert":
@@ -359,6 +363,94 @@ func runReplay(args []string, stdout io.Writer, stderr io.Writer) error {
 		ReplayInteractionCount: interactionCount,
 		Services:               sourceSummary.Services,
 		FallbackTiersUsed:      sourceSummary.FallbackTiersUsed,
+	})
+}
+
+func runDeleteRun(args []string, stdout io.Writer, _ io.Writer) error {
+	flags := flag.NewFlagSet("delete-run", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	runID := flags.String("run-id", "", "Run identifier to delete")
+	configPath := flags.String("config", "", "Path to stagehand.yml")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse delete-run flags: %w\n\n%s", err, deleteRunHelpText())
+	}
+
+	resolvedRunID := strings.TrimSpace(*runID)
+	if resolvedRunID == "" {
+		return fmt.Errorf("delete-run requires --run-id\n\n%s", deleteRunHelpText())
+	}
+
+	cfgPath := strings.TrimSpace(*configPath)
+	if cfgPath == "" {
+		cfgPath = defaultRuntimeConfigPath
+	}
+
+	ctx := context.Background()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load runtime config %q: %w", cfgPath, err)
+	}
+
+	dbPath := sqliteDatabasePath(cfg.Record.StoragePath)
+	sqliteStore, err := sqlitestore.OpenStore(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open local store %q: %w", dbPath, err)
+	}
+	defer sqliteStore.Close()
+
+	if err := sqliteStore.DeleteRun(ctx, resolvedRunID); err != nil {
+		return fmt.Errorf("delete run %q: %w", resolvedRunID, err)
+	}
+
+	return emitJSON(stdout, deletionResult{
+		Mode:        "delete_run",
+		RunID:       resolvedRunID,
+		StoragePath: dbPath,
+	})
+}
+
+func runDeleteSession(args []string, stdout io.Writer, _ io.Writer) error {
+	flags := flag.NewFlagSet("delete-session", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	session := flags.String("session", "", "Session name to delete")
+	configPath := flags.String("config", "", "Path to stagehand.yml")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse delete-session flags: %w\n\n%s", err, deleteSessionHelpText())
+	}
+
+	resolvedSession := strings.TrimSpace(*session)
+	if resolvedSession == "" {
+		return fmt.Errorf("delete-session requires --session\n\n%s", deleteSessionHelpText())
+	}
+
+	cfgPath := strings.TrimSpace(*configPath)
+	if cfgPath == "" {
+		cfgPath = defaultRuntimeConfigPath
+	}
+
+	ctx := context.Background()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load runtime config %q: %w", cfgPath, err)
+	}
+
+	dbPath := sqliteDatabasePath(cfg.Record.StoragePath)
+	sqliteStore, err := sqlitestore.OpenStore(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open local store %q: %w", dbPath, err)
+	}
+	defer sqliteStore.Close()
+
+	if err := sqliteStore.DeleteSession(ctx, resolvedSession); err != nil {
+		return fmt.Errorf("delete session %q: %w", resolvedSession, err)
+	}
+
+	return emitJSON(stdout, deletionResult{
+		Mode:        "delete_session",
+		SessionName: resolvedSession,
+		StoragePath: dbPath,
 	})
 }
 
@@ -973,6 +1065,8 @@ Commands:
   record   Run a command and persist captured interactions
   replay   Replay a stored run against a command
   inspect  Inspect a stored run in the terminal
+  delete-run Delete one stored run and dependent artifacts
+  delete-session Delete one stored session, all runs, and its scrub salt
   diff     Compare a candidate run against a base run or baseline
   assert   Evaluate assertions against a stored run
   conformance Run simulator conformance cases
@@ -1051,6 +1145,26 @@ Flags:
   --baseline-id string  Baseline identifier to show
   --session string      Session name to resolve the latest baseline for
   --config string       Path to stagehand.yml (default: stagehand.yml)
+`
+}
+
+func deleteRunHelpText() string {
+	return `Usage:
+  stagehand delete-run --run-id <id> [--config path]
+
+Flags:
+  --run-id string  Run identifier to delete
+  --config string  Path to stagehand.yml (default: stagehand.yml)
+`
+}
+
+func deleteSessionHelpText() string {
+	return `Usage:
+  stagehand delete-session --session <name> [--config path]
+
+Flags:
+  --session string  Session name to delete
+  --config string   Path to stagehand.yml (default: stagehand.yml)
 `
 }
 

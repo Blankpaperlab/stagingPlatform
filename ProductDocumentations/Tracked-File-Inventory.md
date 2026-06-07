@@ -187,18 +187,20 @@ These directories exist to stabilize repo layout but do not yet contain implemen
 
 ## Planning and Product Docs Under `docs/`
 
-| File                                      | Purpose                                                               | Current Status |
-| ----------------------------------------- | --------------------------------------------------------------------- | -------------- |
-| `docs/stagehand-v1-build-plan.md`         | Main build plan, scope cuts, milestones, and execution guidance       | Implemented    |
-| `docs/stagehand-v1-epic-milestone-map.md` | Epic-to-milestone mapping and blocker rules                           | Implemented    |
-| `docs/stagehand-v1-epic-breakdown.md`     | Story-level backlog and epic checklists                               | Implemented    |
-| `docs/config-schema.md`                   | Human-readable reference for `stagehand.yml` and `stagehand.test.yml` | Implemented    |
-| `docs/artifact-schema.md`                 | Human-readable reference for recording artifact schemas               | Implemented    |
-| `docs/schema-compatibility.md`            | Validation strategy and schema compatibility policy                   | Implemented    |
-| `docs/scrub-structural-pipeline.md`       | Human-readable reference for the E1 structural scrub pipeline         | Implemented    |
-| `docs/scrub-detector-library.md`          | Human-readable reference for the E2 free-text detector library        | Implemented    |
-| `docs/scrub-session-hashing.md`           | Human-readable reference for the E3 session-salt and hashing logic    | Implemented    |
-| `docs/sqlite-local-store.md`              | Human-readable reference for local SQLite schema and migration policy | Implemented    |
+| File                                      | Purpose                                                                      | Current Status |
+| ----------------------------------------- | ---------------------------------------------------------------------------- | -------------- |
+| `docs/stagehand-v1-build-plan.md`         | Main build plan, scope cuts, milestones, and execution guidance              | Implemented    |
+| `docs/stagehand-v1-epic-milestone-map.md` | Epic-to-milestone mapping and blocker rules                                  | Implemented    |
+| `docs/stagehand-v1-epic-breakdown.md`     | Story-level backlog and epic checklists                                      | Implemented    |
+| `docs/config-schema.md`                   | Human-readable reference for `stagehand.yml` and `stagehand.test.yml`        | Implemented    |
+| `docs/artifact-schema.md`                 | Human-readable reference for recording artifact schemas                      | Implemented    |
+| `docs/schema-compatibility.md`            | Validation strategy and schema compatibility policy                          | Implemented    |
+| `docs/security-posture.md`                | Launch threat model, trust boundaries, secret handling, and risk assumptions | Implemented    |
+| `docs/retention-deletion.md`              | Retention defaults and CLI deletion behavior for runs and sessions           | Implemented    |
+| `docs/scrub-structural-pipeline.md`       | Human-readable reference for the E1 structural scrub pipeline                | Implemented    |
+| `docs/scrub-detector-library.md`          | Human-readable reference for the E2 free-text detector library               | Implemented    |
+| `docs/scrub-session-hashing.md`           | Human-readable reference for the E3 session-salt and hashing logic           | Implemented    |
+| `docs/sqlite-local-store.md`              | Human-readable reference for local SQLite schema and migration policy        | Implemented    |
 
 ## Product Documentation Files Under `ProductDocumentations/`
 

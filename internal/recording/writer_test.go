@@ -141,6 +141,114 @@ func TestWriterPersistsScrubbedInteractionWithoutPlaintextSecrets(t *testing.T) 
 	}
 }
 
+func TestWriterDropsPlaintextAuthArtifactsInStandardPersistence(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "stagehand.db")
+	sqliteStore, err := sqlitestore.OpenStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	defer sqliteStore.Close()
+
+	run := validRunningRunRecord()
+	if err := sqliteStore.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	saltManager := newSaltManager(t, sqliteStore)
+	writer, err := recording.NewWriter(recording.WriterOptions{
+		Store:       sqliteStore,
+		SaltManager: saltManager,
+		ScrubConfig: cfg.Scrub,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+
+	raw := authArtifactInteraction(run.RunID)
+	scrubbed, err := writer.PersistInteraction(ctx, raw)
+	if err != nil {
+		t.Fatalf("PersistInteraction() error = %v", err)
+	}
+
+	for _, header := range []string{
+		"authorization",
+		"proxy-authorization",
+		"cookie",
+		"idempotency-key",
+		"set-cookie",
+		"x-api-key",
+	} {
+		if _, ok := scrubbed.Request.Headers[header]; ok {
+			t.Fatalf("request header %q was persisted in scrubbed interaction", header)
+		}
+	}
+
+	responseHeaders := scrubbed.Events[1].Data["headers"].(map[string]any)
+	for _, header := range []string{
+		"authorization",
+		"proxy-authorization",
+		"set-cookie",
+		"x-api-key",
+	} {
+		if _, ok := responseHeaders[header]; ok {
+			t.Fatalf("response header %q was persisted in scrubbed interaction", header)
+		}
+	}
+
+	requestJSON, eventJSON := rawStoredJSON(t, dbPath, raw.InteractionID)
+	persisted := requestJSON + "\n" + eventJSON
+	for _, leak := range []string{
+		"Bearer " + fakeStripeKey(),
+		"Basic c3RhZ2VoYW5kOnByb3h5LXNlY3JldA==",
+		"session=stagehand-secret-cookie",
+		"reply-session=stagehand-secret-cookie",
+		"stagehand-idempotency-secret",
+		fakeOpenAIProjectKey(),
+		fakeGitHubToken(),
+		"password: launch-secret-password",
+	} {
+		if strings.Contains(persisted, leak) {
+			t.Fatalf("persisted SQLite JSON still contains plaintext auth artifact %q:\n%s", leak, persisted)
+		}
+	}
+
+	for _, unexpected := range []string{
+		`"authorization"`,
+		`"proxy-authorization"`,
+		`"cookie"`,
+		`"idempotency-key"`,
+		`"set-cookie"`,
+		`"x-api-key"`,
+	} {
+		if strings.Contains(persisted, unexpected) {
+			t.Fatalf("persisted SQLite JSON still contains auth header key %q:\n%s", unexpected, persisted)
+		}
+	}
+
+	for _, requiredPath := range []string{
+		"request.headers.authorization",
+		"request.headers.cookie",
+		"request.headers.idempotency-key",
+		"request.headers.proxy-authorization",
+		"request.headers.set-cookie",
+		"request.headers.x-api-key",
+		"request.body.note",
+		"response.headers.authorization",
+		"response.headers.proxy-authorization",
+		"response.headers.set-cookie",
+		"response.headers.x-api-key",
+		"events[1].data.message",
+	} {
+		if !containsString(scrubbed.ScrubReport.RedactedPaths, requiredPath) {
+			t.Fatalf("ScrubReport.RedactedPaths = %#v, want %q", scrubbed.ScrubReport.RedactedPaths, requiredPath)
+		}
+	}
+}
+
 func openStore(t *testing.T) *sqlitestore.Store {
 	t.Helper()
 
@@ -227,6 +335,63 @@ func sensitiveInteraction(runID string) recorder.Interaction {
 	}
 }
 
+func authArtifactInteraction(runID string) recorder.Interaction {
+	return recorder.Interaction{
+		RunID:         runID,
+		InteractionID: "int_recording_auth_artifacts_001",
+		Sequence:      1,
+		Service:       "billing-api",
+		Operation:     "POST /launch/security",
+		Protocol:      recorder.ProtocolHTTPS,
+		Request: recorder.Request{
+			URL:    "https://billing.internal.example/launch/security",
+			Method: "POST",
+			Headers: map[string][]string{
+				"authorization":       {"Bearer " + fakeStripeKey()},
+				"proxy-authorization": {"Basic c3RhZ2VoYW5kOnByb3h5LXNlY3JldA=="},
+				"cookie":              {"session=stagehand-secret-cookie"},
+				"idempotency-key":     {"stagehand-idempotency-secret"},
+				"set-cookie":          {"request-session=stagehand-secret-cookie"},
+				"x-api-key":           {fakeOpenAIProjectKey()},
+				"content-type":        {"application/json"},
+			},
+			Body: map[string]any{
+				"note": "Use " + fakeGitHubToken() + " with password: launch-secret-password",
+			},
+		},
+		Events: []recorder.Event{
+			{
+				Sequence: 1,
+				TMS:      0,
+				SimTMS:   0,
+				Type:     recorder.EventTypeRequestSent,
+			},
+			{
+				Sequence: 2,
+				TMS:      50,
+				SimTMS:   50,
+				Type:     recorder.EventTypeResponseReceived,
+				Data: map[string]any{
+					"status_code": 200,
+					"headers": map[string]any{
+						"authorization":       []any{"Bearer " + fakeStripeKey()},
+						"proxy-authorization": []any{"Basic c3RhZ2VoYW5kOnByb3h5LXNlY3JldA=="},
+						"set-cookie":          []any{"reply-session=stagehand-secret-cookie"},
+						"x-api-key":           []any{fakeOpenAIProjectKey()},
+						"content-type":        []any{"application/json"},
+					},
+					"message": "returned " + fakeGitHubToken() + " and password: launch-secret-password",
+				},
+			},
+		},
+		ScrubReport: recorder.ScrubReport{
+			ScrubPolicyVersion: "placeholder",
+			SessionSaltID:      "placeholder",
+		},
+		LatencyMS: 50,
+	}
+}
+
 func rawStoredJSON(t *testing.T, path, interactionID string) (string, string) {
 	t.Helper()
 
@@ -274,4 +439,17 @@ func fakeOpenAIProjectKey() string {
 
 func fakeJWT() string {
 	return "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" + ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkFsaWNlIn0.c2lnbmF0dXJl"
+}
+
+func fakeGitHubToken() string {
+	return "ghp_" + "1234567890abcdefghijklmnopqrstuv"
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

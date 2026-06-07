@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"stagehand/internal/scrub"
 )
 
 func TestDefaultConfigIsValid(t *testing.T) {
@@ -327,12 +329,17 @@ scrub:
 		t.Fatalf("Scrub.Rules() error = %v", err)
 	}
 
-	if len(rules) != 4 {
-		t.Fatalf("len(Scrub.Rules()) = %d, want 4", len(rules))
+	defaultRuleCount := len(scrub.DefaultRules())
+	if len(rules) != defaultRuleCount+2 {
+		t.Fatalf("len(Scrub.Rules()) = %d, want %d", len(rules), defaultRuleCount+2)
 	}
 
-	if rules[2].Name != "customer-email-mask" || rules[3].Name != "support-id-preserve" {
-		t.Fatalf("merged custom rule names = [%q, %q], want customer-email-mask/support-id-preserve", rules[2].Name, rules[3].Name)
+	if rules[defaultRuleCount].Name != "customer-email-mask" || rules[defaultRuleCount+1].Name != "support-id-preserve" {
+		t.Fatalf(
+			"merged custom rule names = [%q, %q], want customer-email-mask/support-id-preserve",
+			rules[defaultRuleCount].Name,
+			rules[defaultRuleCount+1].Name,
+		)
 	}
 }
 

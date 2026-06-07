@@ -84,8 +84,48 @@ func DefaultRules() []Rule {
 			Action:  ActionDrop,
 		},
 		{
+			Name:    "request-proxy-authorization-header",
+			Pattern: "request.headers.proxy-authorization",
+			Action:  ActionDrop,
+		},
+		{
 			Name:    "request-cookie-header",
 			Pattern: "request.headers.cookie",
+			Action:  ActionDrop,
+		},
+		{
+			Name:    "request-idempotency-key-header",
+			Pattern: "request.headers.idempotency-key",
+			Action:  ActionDrop,
+		},
+		{
+			Name:    "request-set-cookie-header",
+			Pattern: "request.headers.set-cookie",
+			Action:  ActionDrop,
+		},
+		{
+			Name:    "request-x-api-key-header",
+			Pattern: "request.headers.x-api-key",
+			Action:  ActionDrop,
+		},
+		{
+			Name:    "response-authorization-header",
+			Pattern: "response.headers.authorization",
+			Action:  ActionDrop,
+		},
+		{
+			Name:    "response-proxy-authorization-header",
+			Pattern: "response.headers.proxy-authorization",
+			Action:  ActionDrop,
+		},
+		{
+			Name:    "response-set-cookie-header",
+			Pattern: "response.headers.set-cookie",
+			Action:  ActionDrop,
+		},
+		{
+			Name:    "response-x-api-key-header",
+			Pattern: "response.headers.x-api-key",
 			Action:  ActionDrop,
 		},
 	}

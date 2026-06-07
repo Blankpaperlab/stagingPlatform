@@ -256,6 +256,8 @@ This project is not one engineering track. It is five tracks that must run in pa
 
 ### Workstream D: Design Partner and Feedback Loop
 
+- make the product easy enough to install before recruiting partners
+- prepare the canonical quickstart and demo
 - recruit 3-5 design partners
 - run onboarding sessions
 - collect blocked workflows
@@ -340,15 +342,22 @@ These are rough engineer-day estimates for one strong solo engineer. They are in
 | N    | Generic HTTP simulator                                 |       4d | Exact + nearest-neighbor                        |
 | O    | Example flows + docs + packaging                       |       8d | This is real work, not polish                   |
 | P    | Security hardening for OSS launch                      |       6d | Threat model, retention, deletion, disclosure   |
-| Q    | Design partner recruiting + feedback ops               |       8d | Spread across the project, not one block        |
-| R    | Distribution work                                      |       7d | Demo video, launch post, landing page, outreach |
+| AB   | Agent behavior contract                                |       7d | Approved behavior contract from baselines       |
+| AC   | Action risk classifier                                 |       6d | HTTP/API, tool, and database-like risk labels   |
+| AD   | Release gates                                          |       7d | User-facing gates over assertion engine         |
+| AE   | Agent release review command                           |       8d | Main local `stagehand review` workflow          |
+| AF   | GitHub PR release review                               |       6d | PR comment and failure behavior                 |
+| AG   | Approval workflow                                      |       5d | Intentional behavior-change approvals           |
+| AH   | MCP action review first slice                          |       8d | MCP calls as first-class reviewed actions       |
+| AI   | Launch demos for release review                        |       5d | Demos that show dangerous changes blocked       |
+| AJ   | Design partner validation                              |       6d | Validate release-review wedge with real teams   |
 
 Total for recommended V1:
 
-- 122 engineer-days
-- Roughly 24-26 working weeks after allowing for bug fixing, context switching, and support load
+- 157 engineer-days
+- Roughly 31-33 working weeks after allowing for bug fixing, context switching, and support load
 
-That is why the recommended V1 is a real 6-month build only after cutting hosted and Postgres.
+That is why the release-review V1 must keep hosted, dashboards, and additional provider-specific simulators frozen until real users prove they are needed.
 
 ### Additional Estimates for Full-Scope Plan B
 
@@ -619,7 +628,7 @@ These must be written down by April 30, 2026:
 
 #### Acceptance criteria
 
-- At least one external team gets to first replay without live assistance longer than one hour.
+- At least one external team gets to first release review without live assistance longer than one hour.
 - The top 10 launch issues are categorized by:
   - bug
   - missing integration
@@ -776,6 +785,9 @@ This is not optional work. It starts before launch.
 ### Required deliverables before OSS launch
 
 - landing page
+- validated install path for CLI and primary SDK
+- Python-first quickstart from install to first release review
+- canonical release-review demo flow for partner onboarding
 - 3-minute demo video
 - launch blog post or Show HN draft
 - screenshots and terminal demos
@@ -799,7 +811,7 @@ This should exist even if you plan to bootstrap.
 ### Metrics to inspect
 
 - number of active external teams
-- weekly replay runs
+- weekly release-review runs
 - number of teams using CI integration
 - number of teams asking for hosted mode
 - number of teams blocked on integrations you deferred
@@ -906,13 +918,15 @@ This is the corrected first 10-session sequence:
 
 Recommended V1 is ready when:
 
-- Python and TypeScript both support a documented record/replay flow
+- `stagehand review -- <command>` works locally
+- `stagehand.contract.yml` can be generated from a baseline
+- new risky actions fail review
+- release gates appear in terminal and PR output
+- GitHub Action posts a useful release-review comment
+- a real GitHub PR run proves artifact upload, comment update, and failure behavior
+- at least one demo clearly shows a dangerous agent change being blocked
+- at least three external users have attempted the workflow
 - no persisted recording contains plaintext credentials in standard locations
-- OpenAI/Anthropic, Stripe, and Generic HTTP ship with documented supported surfaces
-- error injection works from config
-- assertions and diffs work in CI via GitHub Action
-- nightly conformance exists for every shipped simulator
-- three example flows work end to end
 - retention, deletion, compatibility, and disclosure policies are published
 
 Full-scope V1 is ready when the above is true plus:
@@ -929,7 +943,7 @@ If you want the honest answer to the implied question, it is this:
 
 - Start Milestone 0 on April 22, 2026.
 - Commit to Plan A unless a real design partner forces Plan B.
-- Spend the first 30 days getting to a safe Python OpenAI record/replay demo.
-- Do not build hosted or Postgres before external users prove they are blocking.
+- After the completed foundation, open AB1, AB2, AB4, AC1, AC2, AD1, AD2, AE1, AE2, AF1, AF2, AF3, AI1, AJ1, and AJ2.
+- Do not build hosted, dashboards, more provider simulators, or broad enterprise governance UI before at least three external teams attempt the local or GitHub release-review workflow.
 
 If you do not start coding this week, the bottleneck is no longer architecture quality. It is avoidance.

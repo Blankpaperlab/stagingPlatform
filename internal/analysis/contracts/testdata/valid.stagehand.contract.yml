@@ -1,0 +1,49 @@
+schema_version: v1alpha1
+
+agent:
+  name: refund-agent
+
+allowed_actions:
+  - service: openai
+    operation: POST /v1/chat/completions
+    side_effect: read
+    allowed_fallback_tiers:
+      - exact
+
+  - tool: lookup_customer
+    side_effect: read
+
+  - service: stripe
+    operation: GET /v1/customers/search
+    side_effect: read
+
+restricted_actions:
+  - service: stripe
+    operation: POST /v1/refunds
+    side_effect: financial
+    allowed_fallback_tiers:
+      - exact
+      - nearest_neighbor
+    max_amount: 5000
+    requires_approval: true
+    approval:
+      source: human
+      role: support_lead
+      evidence_path: request.body.approval_id
+
+forbidden_actions:
+  - service: postgres
+    operation: DELETE
+    side_effect: destructive
+    reason: destructive database write
+
+user_overrides:
+  - id: reviewed-refund-threshold
+    match:
+      service: stripe
+      operation: POST /v1/refunds
+    max_amount: 7500
+    requires_approval: true
+    reason: Temporary launch partner threshold approved for refund agent.
+    approved_by: ops@example.com
+    approved_at: 2026-06-07T12:00:00Z

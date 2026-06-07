@@ -1,0 +1,12 @@
+schema_version: v1alpha1
+
+agent:
+  name: refund-agent
+
+allowed_actions:
+  - tool: lookup_customer
+    side_effect: read
+
+restricted_actions:
+  - tool: lookup_customer
+    side_effect: write

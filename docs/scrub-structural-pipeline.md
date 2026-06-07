@@ -142,9 +142,19 @@ Detector-driven scrubbing is applied to:
 `DefaultRules()` currently returns:
 
 - `request.headers.authorization` -> `drop`
+- `request.headers.proxy-authorization` -> `drop`
 - `request.headers.cookie` -> `drop`
+- `request.headers.idempotency-key` -> `drop`
+- `request.headers.set-cookie` -> `drop`
+- `request.headers.x-api-key` -> `drop`
+- `response.headers.authorization` -> `drop`
+- `response.headers.proxy-authorization` -> `drop`
+- `response.headers.set-cookie` -> `drop`
+- `response.headers.x-api-key` -> `drop`
 
-These are the minimum safe structural rules required before persisted capture is allowed.
+These are the minimum safe structural rules required before persisted capture is
+allowed. Detector-driven scrubbing still runs on other string fields and header
+values when no structural rule matches.
 
 ## Custom Rule Merging
 
@@ -194,7 +204,7 @@ Known limits in the current E1 implementation:
 
 Current tests cover:
 
-- default auth/cookie header dropping
+- default auth, API-key, and cookie-like header dropping
 - query hashing
 - request body masking
 - event payload masking

@@ -58,6 +58,8 @@ User guides:
 - installation: `docs/install.md`
 - first-run onboarding: `docs/first-run-onboarding.md`
 - existing agent harness: `docs/existing-agent-harness.md`
+- security posture and threat model: `docs/security-posture.md`
+- retention and deletion: `docs/retention-deletion.md`
 - scrubbing: `docs/scrubbing.md`
 - error injection: `docs/error-injection.md`
 - custom API replay: `docs/custom-api-generic-http.md`
@@ -97,7 +99,8 @@ Current local CLI workflow:
 2. Run `stagehand replay (--run-id <id> | --session <name>) -- <command> [args...]` to seed a Stagehand-aware subprocess from a stored run and persist the replay run result.
 3. Run `stagehand inspect (--run-id <id> | --session <name>) [--show-bodies]` to inspect ordered interactions, nested calls, and failed-run integrity issues from the terminal.
 4. Run `stagehand baseline promote --run-id <id> [--git-sha <sha>]` to promote a complete run to the latest local baseline for its session.
-5. In Python child processes, call `stagehand.init_from_env()` or `stagehand.init(...)` so the SDK picks up the CLI-provided session/mode wiring.
+5. Run `stagehand delete-run --run-id <id>` or `stagehand delete-session --session <name>` to remove stored local artifacts intentionally.
+6. In Python child processes, call `stagehand.init_from_env()` or `stagehand.init(...)` so the SDK picks up the CLI-provided session/mode wiring.
 
 Minimal OpenAI verification agents:
 

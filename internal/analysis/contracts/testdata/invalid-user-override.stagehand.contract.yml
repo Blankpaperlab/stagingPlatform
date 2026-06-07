@@ -1,0 +1,17 @@
+schema_version: v1alpha1
+
+agent:
+  name: refund-agent
+
+allowed_actions:
+  - service: openai
+    operation: POST /v1/chat/completions
+    side_effect: read
+
+user_overrides:
+  - id: reviewed-refund-threshold
+    match:
+      service: stripe
+      operation: POST /v1/refunds
+    max_amount: 7500
+    approved_at: yesterday

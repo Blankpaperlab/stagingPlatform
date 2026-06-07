@@ -19,7 +19,8 @@ Common detector categories include:
 - JWTs
 - API keys
 - passwords and secret-like fields
-- authorization headers
+- authorization, proxy authorization, API-key, idempotency-key, cookie, and
+  set-cookie headers
 
 Scrubbed interactions include a `scrub_report` that records which paths were
 changed.
