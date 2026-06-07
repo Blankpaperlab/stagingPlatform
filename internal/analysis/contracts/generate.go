@@ -139,13 +139,13 @@ func RenderYAML(file File, sourceRunID, baselineID string) []byte {
 	if len(file.AllowedActions) > 0 {
 		fmt.Fprintf(&b, "allowed_actions:\n")
 		fmt.Fprintf(&b, "  # Review: these actions were classified as read-only baseline behavior.\n")
-		renderActions(&b, file.AllowedActions)
+		renderGroupedActions(&b, file.AllowedActions)
 		fmt.Fprintf(&b, "\n")
 	}
 	if len(file.RestrictedActions) > 0 {
 		fmt.Fprintf(&b, "restricted_actions:\n")
 		fmt.Fprintf(&b, "  # Review carefully: these actions write, send messages, move money, destroy data, or have unknown risk.\n")
-		renderActions(&b, file.RestrictedActions)
+		renderGroupedActions(&b, file.RestrictedActions)
 		fmt.Fprintf(&b, "\n")
 	}
 
@@ -159,27 +159,111 @@ func RenderYAML(file File, sourceRunID, baselineID string) []byte {
 	return []byte(b.String())
 }
 
-func renderActions(b *strings.Builder, actions []Action) {
+func renderGroupedActions(b *strings.Builder, actions []Action) {
+	groups := groupActions(actions)
+	for _, group := range groups {
+		fmt.Fprintf(b, "  # %s\n", group.label)
+		for _, action := range group.actions {
+			renderAction(b, action)
+		}
+	}
+}
+
+type actionGroup struct {
+	label   string
+	sortKey string
+	actions []Action
+}
+
+func groupActions(actions []Action) []actionGroup {
+	groupByKey := map[string]*actionGroup{}
 	for _, action := range actions {
-		if strings.TrimSpace(action.Tool) != "" {
-			fmt.Fprintf(b, "  - tool: %s\n", yamlString(action.Tool))
-		} else {
-			fmt.Fprintf(b, "  - service: %s\n", yamlString(action.Service))
-			fmt.Fprintf(b, "    operation: %s\n", yamlString(action.Operation))
-		}
-		fmt.Fprintf(b, "    side_effect: %s\n", action.SideEffect)
-		if len(action.AllowedFallbackTiers) > 0 {
-			fmt.Fprintf(b, "    allowed_fallback_tiers:\n")
-			for _, tier := range action.AllowedFallbackTiers {
-				fmt.Fprintf(b, "      - %s\n", tier)
+		label, sortKey := actionGroupLabel(action)
+		group := groupByKey[sortKey]
+		if group == nil {
+			group = &actionGroup{
+				label:   label,
+				sortKey: sortKey,
 			}
+			groupByKey[sortKey] = group
 		}
-		if action.MaxAmount != nil {
-			fmt.Fprintf(b, "    max_amount: %s\n", yamlNumber(*action.MaxAmount))
+		group.actions = append(group.actions, action)
+	}
+
+	groups := make([]actionGroup, 0, len(groupByKey))
+	for _, group := range groupByKey {
+		sort.Slice(group.actions, func(i, j int) bool {
+			return actionSortKey(group.actions[i]) < actionSortKey(group.actions[j])
+		})
+		groups = append(groups, *group)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].sortKey < groups[j].sortKey
+	})
+	return groups
+}
+
+func actionGroupLabel(action Action) (string, string) {
+	if strings.TrimSpace(action.Tool) != "" {
+		return "Tools", "1:tool"
+	}
+	service := strings.TrimSpace(action.Service)
+	if service == "" {
+		return "Service: unknown", "0:"
+	}
+	return "Service: " + service, "0:" + service
+}
+
+func actionSortKey(action Action) string {
+	if strings.TrimSpace(action.Tool) != "" {
+		return strings.TrimSpace(action.Tool)
+	}
+	return strings.TrimSpace(action.Operation)
+}
+
+func renderAction(b *strings.Builder, action Action) {
+	fmt.Fprintf(b, "  # Suggested risk: %s\n", action.SideEffect)
+	if gate := suggestedGateComment(action); gate != "" {
+		fmt.Fprintf(b, "  # Suggested release gate: %s\n", gate)
+	}
+	if action.SideEffect == SideEffectUnknown {
+		fmt.Fprintf(b, "  # UNKNOWN RISK: review and replace side_effect before approving this action.\n")
+	}
+	if strings.TrimSpace(action.Tool) != "" {
+		fmt.Fprintf(b, "  - tool: %s\n", yamlString(action.Tool))
+	} else {
+		fmt.Fprintf(b, "  - service: %s\n", yamlString(action.Service))
+		fmt.Fprintf(b, "    operation: %s\n", yamlString(action.Operation))
+	}
+	fmt.Fprintf(b, "    side_effect: %s\n", action.SideEffect)
+	if len(action.AllowedFallbackTiers) > 0 {
+		fmt.Fprintf(b, "    allowed_fallback_tiers:\n")
+		for _, tier := range action.AllowedFallbackTiers {
+			fmt.Fprintf(b, "      - %s\n", tier)
 		}
-		if action.RequiresApproval {
-			fmt.Fprintf(b, "    requires_approval: true\n")
-		}
+	}
+	if action.MaxAmount != nil {
+		fmt.Fprintf(b, "    max_amount: %s\n", yamlNumber(*action.MaxAmount))
+	}
+	if action.RequiresApproval {
+		fmt.Fprintf(b, "    requires_approval: true\n")
+	}
+}
+
+func suggestedGateComment(action Action) string {
+	switch action.SideEffect {
+	case SideEffectFinancial:
+		return "require approval and a reviewed max_amount before this financial action runs."
+	case SideEffectDestructive:
+		return "block unless an explicit destructive-action approval is present."
+	case SideEffectExternalMessage:
+		return "require approval before sending external customer messages."
+	case SideEffectUnknown:
+		return "forbid unknown-risk actions until side_effect is reviewed."
+	case SideEffectWrite:
+		return "review whether writes should require approval or ordering constraints."
+	default:
+		return ""
 	}
 }
 

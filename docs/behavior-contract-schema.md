@@ -14,6 +14,18 @@ stagehand contract generate --session refund-agent
 
 By default this writes `stagehand.contract.yml` and refuses to overwrite an existing file unless `--force` is passed.
 
+Generated contracts group actions by service or tool and include review comments above generated risk labels and high-risk release-gate suggestions. Small agents should produce a compact file that can be reviewed in one screen.
+
+`stagehand test` and `stagehand review` load `stagehand.contract.yml` automatically when it is present. Use `--contract path` to require a specific contract file. Contract violations are emitted in the JSON report under `contract_violations` with exact interaction evidence.
+
+Compare contract-level behavior between an approved base and a candidate run:
+
+```bash
+stagehand contract diff --session refund-agent --candidate-run-id run_123 --format github-markdown
+```
+
+The contract diff reports newly introduced actions, removed actions, side-effect changes, fallback tier changes, model changes, and captured prompt changes. Supported formats are `terminal`, `json`, and `github-markdown`.
+
 ## File Shape
 
 ```yaml
@@ -89,6 +101,8 @@ tool: lookup_customer
 - `external_message`
 - `unknown`
 
+Generated `side_effect` values are suggested labels. Review them before committing the contract, especially for `unknown`, `financial`, `destructive`, and `external_message`.
+
 ## Fallback Tiers
 
 `allowed_fallback_tiers` is optional. When present, values must be unique and in canonical order:
@@ -130,3 +144,15 @@ user_overrides:
 ```
 
 Each override requires `id`, `match`, `reason`, and at least one override field. `approved_at`, when present, must be an RFC3339 timestamp.
+
+## Common Manual Edits
+
+Move an action from `restricted_actions` to `allowed_actions` only when the generated label is too conservative and the action is safe without approval.
+
+Change `side_effect: unknown` to a concrete label after reviewing what the service operation or tool does. Do not leave unknown-risk actions approved without a release gate.
+
+Add `requires_approval: true` to financial, destructive, external-message, or sensitive write actions. Add `max_amount` when a financial action has an expected ceiling.
+
+Add `forbidden_actions` for operations that should never run in production, such as destructive database writes or unapproved external messages.
+
+Tighten `allowed_fallback_tiers` when an action must only be replayed or reviewed from exact evidence.

@@ -3,11 +3,12 @@ package main
 import "errors"
 
 const (
-	exitCodeGeneral          = 1
-	exitCodeConfiguration    = 2
-	exitCodeReplayFailure    = 3
-	exitCodeBehaviorDiff     = 4
-	exitCodeAssertionFailure = 5
+	exitCodeGeneral           = 1
+	exitCodeConfiguration     = 2
+	exitCodeReplayFailure     = 3
+	exitCodeBehaviorDiff      = 4
+	exitCodeAssertionFailure  = 5
+	exitCodeContractViolation = 6
 )
 
 type commandError struct {

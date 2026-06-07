@@ -74,6 +74,9 @@ func TestRunWritesRootHelpWithNoArgs(t *testing.T) {
 	if !strings.Contains(stdout.String(), "preflight") {
 		t.Fatalf("stdout = %q, want preflight command in help", stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "review") {
+		t.Fatalf("stdout = %q, want review command in help", stdout.String())
+	}
 }
 
 func TestRunInitCreatesScaffoldDetectsProjectAndPrintsNextCommand(t *testing.T) {
@@ -1344,6 +1347,139 @@ assertions:
 	}
 }
 
+func TestRunTestReturnsContractViolationExitCode(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	contractPath := filepath.Join(workdir, "stagehand.contract.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+	writeFile(t, contractPath, `schema_version: v1alpha1
+agent:
+  name: contract-test-flow
+allowed_actions:
+  - service: openai
+    operation: chat.completions.create
+    side_effect: read
+`)
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedReplayRun(t, sqliteStore, "contract-test-flow")
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_contract_test",
+		SessionName: "contract-test-flow",
+		SourceRunID: sourceRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	args := []string{"test", "--session", "contract-test-flow", "--config", configPath, "--contract", contractPath, "--"}
+	args = append(args, helperCommand("replay-write-contract-violation-capture")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = run(args, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(test contract violation) expected error")
+	}
+	if exitCodeForError(err) != exitCodeContractViolation {
+		t.Fatalf("exitCodeForError() = %d, want %d; err=%v", exitCodeForError(err), exitCodeContractViolation, err)
+	}
+	if !strings.Contains(stdout.String(), "Contract: failed, 1 violation(s)") || !strings.Contains(stdout.String(), "int_helper_contract_violation") {
+		t.Fatalf("stdout = %q, want contract violation summary and evidence", stdout.String())
+	}
+
+	reportDir := filepath.Join(workdir, ".stagehand", "reports")
+	entries, readErr := os.ReadDir(reportDir)
+	if readErr != nil {
+		t.Fatalf("ReadDir(%q) error = %v", reportDir, readErr)
+	}
+	var report testCommandReport
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, readFileErr := os.ReadFile(filepath.Join(reportDir, entry.Name()))
+		if readFileErr != nil {
+			t.Fatalf("ReadFile(report) error = %v", readFileErr)
+		}
+		report = decodeJSONOutput[testCommandReport](t, data)
+		break
+	}
+	if report.ContractSummary.Total != 1 || len(report.ContractViolations) != 1 {
+		t.Fatalf("contract report = %#v, want one violation", report)
+	}
+	evidence := report.ContractViolations[0].Evidence[0]
+	if !strings.Contains(evidence.InteractionID, "int_helper_contract_violation") || evidence.RequestURL != "https://api.stripe.com/v1/refunds" {
+		t.Fatalf("evidence = %#v, want exact stripe interaction", evidence)
+	}
+}
+
+func TestRunReviewEnforcesContract(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
+
+	workdir := t.TempDir()
+	t.Chdir(workdir)
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	contractPath := filepath.Join(workdir, "stagehand.contract.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+	writeFile(t, contractPath, `schema_version: v1alpha1
+agent:
+  name: contract-review-flow
+allowed_actions:
+  - service: openai
+    operation: chat.completions.create
+    side_effect: read
+`)
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedReplayRun(t, sqliteStore, "contract-review-flow")
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_contract_review",
+		SessionName: "contract-review-flow",
+		SourceRunID: sourceRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	args := []string{"review", "--session", "contract-review-flow", "--config", configPath, "--contract", contractPath, "--"}
+	args = append(args, helperCommand("replay-write-contract-violation-capture")...)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = run(args, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(review contract violation) expected error")
+	}
+	if exitCodeForError(err) != exitCodeContractViolation {
+		t.Fatalf("exitCodeForError() = %d, want %d; err=%v", exitCodeForError(err), exitCodeContractViolation, err)
+	}
+	if !strings.Contains(stdout.String(), "Stagehand review: failed") || !strings.Contains(stdout.String(), "Contract: failed, 1 violation(s)") {
+		t.Fatalf("stdout = %q, want review contract enforcement", stdout.String())
+	}
+}
+
 func TestRunReplayPassesErrorInjectionToManagedCommandAndPersistsProvenance(t *testing.T) {
 	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
 	t.Setenv(envStagehandMasterKey, strings.Repeat("ab", 32))
@@ -1743,6 +1879,46 @@ func TestRunContractGenerateRefusesOverwriteWithoutForce(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "refuses to overwrite") {
 		t.Fatalf("run(contract generate overwrite) error = %v, want overwrite protection", err)
+	}
+}
+
+func TestRunContractDiffRendersJSON(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	baseRunID := seedContractDiffRun(t, sqliteStore, "contract-diff-flow", "gpt-5.4", "refund order 123", false)
+	candidateRunID := seedContractDiffRun(t, sqliteStore, "contract-diff-flow", "gpt-5.5", "refund order 456", true)
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{
+		"contract", "diff",
+		"--base-run-id", baseRunID,
+		"--candidate-run-id", candidateRunID,
+		"--config", configPath,
+		"--format", "json",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(contract diff) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	result := decodeJSONOutput[analysiscontracts.DiffResult](t, stdout.Bytes())
+	if result.BaseRunID != baseRunID || result.CandidateRunID != candidateRunID {
+		t.Fatalf("contract diff run IDs = %q -> %q, want %q -> %q", result.BaseRunID, result.CandidateRunID, baseRunID, candidateRunID)
+	}
+	if result.Summary.NewActions != 1 || result.Summary.ModelChanges != 1 || result.Summary.PromptChanges != 1 {
+		t.Fatalf("contract diff summary = %#v, want new action, model change, and prompt change", result.Summary)
+	}
+	if len(result.Changes) != result.Summary.TotalChanges {
+		t.Fatalf("len(Changes) = %d, summary total = %d", len(result.Changes), result.Summary.TotalChanges)
 	}
 }
 
@@ -2156,6 +2332,22 @@ func TestHelperProcess(t *testing.T) {
 			os.Exit(10)
 		}
 		os.Exit(0)
+	case "replay-write-contract-violation-capture":
+		_ = mustEnv(t, envStagehandReplayInput)
+		capturePath := mustEnv(t, envStagehandCaptureOut)
+		interactions := append(helperCapturedInteractions(), helperContractViolationInteraction())
+		if err := writeInteractionBundle(capturePath, interactionBundle{
+			BundleVersion: interactionBundleVersion,
+			Metadata: map[string]any{
+				"mode":    os.Getenv(envStagehandMode),
+				"session": os.Getenv(envStagehandSession),
+			},
+			Interactions: interactions,
+		}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(12)
+		}
+		os.Exit(0)
 	case "replay-fail-on-terminal-error":
 		seedPath := mustEnv(t, envStagehandReplayInput)
 		if bundle, err := loadInteractionBundle(seedPath); err != nil {
@@ -2335,6 +2527,68 @@ func seedContractSourceRun(t *testing.T, artifactStore store.ArtifactStore, sess
 			Events:      successfulEvents(),
 			ScrubReport: fixtureScrubReport(),
 		},
+	}
+	for _, interaction := range interactions {
+		if err := artifactStore.WriteInteraction(context.Background(), interaction); err != nil {
+			t.Fatalf("WriteInteraction(%q) error = %v", interaction.InteractionID, err)
+		}
+	}
+	if err := finalizeRun(context.Background(), artifactStore, run, nil); err != nil {
+		t.Fatalf("finalizeRun() error = %v", err)
+	}
+
+	return run.RunID
+}
+
+func seedContractDiffRun(t *testing.T, artifactStore store.ArtifactStore, session, model, prompt string, includeSlack bool) string {
+	t.Helper()
+
+	run, err := newRunRecordForMode(session, minimalConfig(), recorder.RunModeRecord)
+	if err != nil {
+		t.Fatalf("newRunRecordForMode() error = %v", err)
+	}
+	run.StartedAt = time.Now().UTC().Add(-time.Minute)
+	if err := artifactStore.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+
+	interactions := []recorder.Interaction{
+		{
+			RunID:         run.RunID,
+			InteractionID: run.RunID + "_contract_diff_openai",
+			Sequence:      1,
+			Service:       "openai",
+			Operation:     "chat.completions.create",
+			Protocol:      recorder.ProtocolHTTPS,
+			Request: recorder.Request{
+				URL:    "https://api.openai.com/v1/chat/completions",
+				Method: "POST",
+				Body: map[string]any{
+					"model": model,
+					"messages": []map[string]string{
+						{"role": "user", "content": prompt},
+					},
+				},
+			},
+			Events:      successfulEvents(),
+			ScrubReport: fixtureScrubReport(),
+		},
+	}
+	if includeSlack {
+		interactions = append(interactions, recorder.Interaction{
+			RunID:         run.RunID,
+			InteractionID: run.RunID + "_contract_diff_slack",
+			Sequence:      2,
+			Service:       "slack",
+			Operation:     "POST /chat.postMessage",
+			Protocol:      recorder.ProtocolHTTPS,
+			Request: recorder.Request{
+				URL:    "https://slack.example/chat.postMessage",
+				Method: "POST",
+			},
+			Events:      successfulEvents(),
+			ScrubReport: fixtureScrubReport(),
+		})
 	}
 	for _, interaction := range interactions {
 		if err := artifactStore.WriteInteraction(context.Background(), interaction); err != nil {
@@ -2560,6 +2814,47 @@ func helperCapturedInteractions() []recorder.Interaction {
 			},
 			LatencyMS: 12,
 		},
+	}
+}
+
+func helperContractViolationInteraction() recorder.Interaction {
+	return recorder.Interaction{
+		RunID:         "run_helper_source",
+		InteractionID: "int_helper_contract_violation",
+		Sequence:      2,
+		Service:       "stripe",
+		Operation:     "POST /v1/refunds",
+		Protocol:      recorder.ProtocolHTTPS,
+		Request: recorder.Request{
+			URL:    "https://api.stripe.com/v1/refunds",
+			Method: "POST",
+			Headers: map[string][]string{
+				"content-type": {"application/x-www-form-urlencoded"},
+			},
+			Body: map[string]any{
+				"amount": 5000,
+			},
+		},
+		Events: []recorder.Event{
+			{Sequence: 1, TMS: 0, SimTMS: 0, Type: recorder.EventTypeRequestSent},
+			{
+				Sequence: 2,
+				TMS:      1,
+				SimTMS:   1,
+				Type:     recorder.EventTypeResponseReceived,
+				Data: map[string]any{
+					"status_code": 200,
+					"body": map[string]any{
+						"id": "re_123",
+					},
+				},
+			},
+		},
+		ScrubReport: recorder.ScrubReport{
+			ScrubPolicyVersion: "v1",
+			SessionSaltID:      "salt_fixture",
+		},
+		LatencyMS: 1,
 	}
 }
 

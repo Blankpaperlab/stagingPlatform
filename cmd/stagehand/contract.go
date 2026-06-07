@@ -14,6 +14,8 @@ import (
 	sqlitestore "stagehand/internal/store/sqlite"
 )
 
+const defaultContractPath = "stagehand.contract.yml"
+
 func runContract(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("contract requires a subcommand\n\n%s", contractHelpText())
@@ -25,6 +27,8 @@ func runContract(args []string, stdout io.Writer, stderr io.Writer) error {
 		return nil
 	case "generate":
 		return runContractGenerate(args[1:], stdout, stderr)
+	case "diff":
+		return runContractDiff(args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown contract subcommand %q\n\n%s", args[0], contractHelpText())
 	}
@@ -35,7 +39,7 @@ func runContractGenerate(args []string, stdout io.Writer, _ io.Writer) error {
 	flags.SetOutput(io.Discard)
 
 	session := flags.String("session", "", "Session name whose latest baseline should be used")
-	output := flags.String("output", "stagehand.contract.yml", "Path to write behavior contract YAML")
+	output := flags.String("output", defaultContractPath, "Path to write behavior contract YAML")
 	configPath := flags.String("config", "", "Path to stagehand.yml")
 	force := flags.Bool("force", false, "Overwrite an existing behavior contract")
 	if err := flags.Parse(args); err != nil {
@@ -122,12 +126,102 @@ func runContractGenerate(args []string, stdout io.Writer, _ io.Writer) error {
 	return err
 }
 
+func runContractDiff(args []string, stdout io.Writer, _ io.Writer) error {
+	flags := flag.NewFlagSet("contract diff", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+
+	baseRunID := flags.String("base-run-id", "", "Base run identifier")
+	baselineID := flags.String("baseline-id", "", "Baseline identifier to use as base")
+	session := flags.String("session", "", "Session name to resolve latest baseline as base")
+	candidateRunID := flags.String("candidate-run-id", "", "Candidate run identifier")
+	format := flags.String("format", string(config.ReportFormatTerminal), "Output format: terminal, json, or github-markdown")
+	configPath := flags.String("config", "", "Path to stagehand.yml")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse contract diff flags: %w\n\n%s", err, contractDiffHelpText())
+	}
+
+	resolvedCandidateRunID := strings.TrimSpace(*candidateRunID)
+	if resolvedCandidateRunID == "" {
+		return fmt.Errorf("contract diff requires --candidate-run-id\n\n%s", contractDiffHelpText())
+	}
+
+	selectors := 0
+	for _, selector := range []string{*baseRunID, *baselineID, *session} {
+		if strings.TrimSpace(selector) != "" {
+			selectors++
+		}
+	}
+	if selectors != 1 {
+		return fmt.Errorf("contract diff requires exactly one of --base-run-id, --baseline-id, or --session\n\n%s", contractDiffHelpText())
+	}
+
+	cfgPath := strings.TrimSpace(*configPath)
+	if cfgPath == "" {
+		cfgPath = defaultRuntimeConfigPath
+	}
+
+	ctx := context.Background()
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load runtime config %q: %w", cfgPath, err)
+	}
+
+	dbPath := sqliteDatabasePath(cfg.Record.StoragePath)
+	sqliteStore, err := sqlitestore.OpenStore(ctx, dbPath)
+	if err != nil {
+		return fmt.Errorf("open local store %q: %w", dbPath, err)
+	}
+	defer sqliteStore.Close()
+
+	resolvedBaseRunID := strings.TrimSpace(*baseRunID)
+	if resolvedBaseRunID == "" {
+		baseline, err := loadBaseline(ctx, sqliteStore, strings.TrimSpace(*baselineID), strings.TrimSpace(*session))
+		if err != nil {
+			return err
+		}
+		resolvedBaseRunID = baseline.SourceRunID
+	}
+
+	baseRun, err := sqliteStore.GetRun(ctx, resolvedBaseRunID)
+	if err != nil {
+		return fmt.Errorf("load base run %q: %w", resolvedBaseRunID, err)
+	}
+	candidateRun, err := sqliteStore.GetRun(ctx, resolvedCandidateRunID)
+	if err != nil {
+		return fmt.Errorf("load candidate run %q: %w", resolvedCandidateRunID, err)
+	}
+
+	result, err := analysiscontracts.DiffRuns(baseRun, candidateRun)
+	if err != nil {
+		return fmt.Errorf("contract diff runs: %w", err)
+	}
+
+	switch config.ReportFormat(strings.TrimSpace(*format)) {
+	case config.ReportFormatTerminal, "":
+		_, err = io.WriteString(stdout, analysiscontracts.RenderDiffTerminal(result))
+		return err
+	case config.ReportFormatJSON:
+		report, err := analysiscontracts.RenderDiffJSON(result)
+		if err != nil {
+			return err
+		}
+		_, err = stdout.Write(report)
+		return err
+	case config.ReportFormatGitHubMarkdown:
+		_, err = io.WriteString(stdout, analysiscontracts.RenderDiffGitHubMarkdown(result))
+		return err
+	default:
+		return fmt.Errorf("contract diff --format must be one of %q, %q, or %q\n\n%s", config.ReportFormatTerminal, config.ReportFormatJSON, config.ReportFormatGitHubMarkdown, contractDiffHelpText())
+	}
+}
+
 func contractHelpText() string {
 	return `Usage:
   stagehand contract <subcommand> [flags]
 
 Subcommands:
   generate  Generate stagehand.contract.yml from the latest promoted baseline
+  diff      Compare contract-level behavior between a base run and candidate run
 `
 }
 
@@ -140,5 +234,19 @@ Flags:
   --config string   Path to stagehand.yml (default: stagehand.yml)
   --output string   Path to write behavior contract YAML (default: stagehand.contract.yml)
   --force           Overwrite an existing behavior contract
+`
+}
+
+func contractDiffHelpText() string {
+	return `Usage:
+  stagehand contract diff --candidate-run-id <id> (--base-run-id <id> | --baseline-id <id> | --session <name>) [flags]
+
+Flags:
+  --candidate-run-id string  Candidate run identifier
+  --base-run-id string       Base run identifier
+  --baseline-id string       Baseline identifier to use as base
+  --session string           Session name to resolve latest baseline as base
+  --format string            Output format: terminal, json, or github-markdown (default: terminal)
+  --config string            Path to stagehand.yml (default: stagehand.yml)
 `
 }

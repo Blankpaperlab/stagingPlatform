@@ -13,43 +13,65 @@ import (
 	"time"
 
 	analysisassertions "stagehand/internal/analysis/assertions"
+	analysiscontracts "stagehand/internal/analysis/contracts"
 	analysisdiff "stagehand/internal/analysis/diff"
 	"stagehand/internal/config"
 	sqlitestore "stagehand/internal/store/sqlite"
 )
 
 type testCommandReport struct {
-	Mode             string               `json:"mode"`
-	Status           string               `json:"status"`
-	SessionName      string               `json:"session_name"`
-	BaselineID       string               `json:"baseline_id"`
-	BaselineRunID    string               `json:"baseline_run_id"`
-	ReplayRunID      string               `json:"replay_run_id"`
-	StoragePath      string               `json:"storage_path"`
-	Command          []string             `json:"command"`
-	DiffSummary      analysisdiff.Summary `json:"diff_summary"`
-	AssertionSummary assertionSummary     `json:"assertion_summary"`
-	AssertionsPath   string               `json:"assertions_path,omitempty"`
-	ErrorInjection   string               `json:"error_injection,omitempty"`
-	ReportJSONPath   string               `json:"report_json_path"`
-	ReportMarkdown   string               `json:"report_markdown_path"`
-	Warnings         []string             `json:"warnings,omitempty"`
+	Mode               string                        `json:"mode"`
+	Status             string                        `json:"status"`
+	SessionName        string                        `json:"session_name"`
+	BaselineID         string                        `json:"baseline_id"`
+	BaselineRunID      string                        `json:"baseline_run_id"`
+	ReplayRunID        string                        `json:"replay_run_id"`
+	StoragePath        string                        `json:"storage_path"`
+	Command            []string                      `json:"command"`
+	DiffSummary        analysisdiff.Summary          `json:"diff_summary"`
+	AssertionSummary   assertionSummary              `json:"assertion_summary"`
+	ContractSummary    contractSummary               `json:"contract_summary"`
+	ContractPath       string                        `json:"contract_path,omitempty"`
+	ContractViolations []analysiscontracts.Violation `json:"contract_violations,omitempty"`
+	AssertionsPath     string                        `json:"assertions_path,omitempty"`
+	ErrorInjection     string                        `json:"error_injection,omitempty"`
+	ReportJSONPath     string                        `json:"report_json_path"`
+	ReportMarkdown     string                        `json:"report_markdown_path"`
+	Warnings           []string                      `json:"warnings,omitempty"`
+}
+
+type contractSummary struct {
+	Status     string `json:"status"`
+	Total      int    `json:"total"`
+	Forbidden  int    `json:"forbidden"`
+	Restricted int    `json:"restricted_without_approval"`
+	Unapproved int    `json:"new_unapproved"`
 }
 
 func runTest(args []string, stdout io.Writer, stderr io.Writer) error {
-	flags := flag.NewFlagSet("test", flag.ContinueOnError)
+	return runTestOrReview("test", args, stdout, stderr)
+}
+
+func runReview(args []string, stdout io.Writer, stderr io.Writer) error {
+	return runTestOrReview("review", args, stdout, stderr)
+}
+
+func runTestOrReview(mode string, args []string, stdout io.Writer, stderr io.Writer) error {
+	flags := flag.NewFlagSet(mode, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 
 	session := flags.String("session", "", "Session name to resolve the latest baseline for")
 	configPath := flags.String("config", "", "Path to stagehand.yml")
 	assertionsPath := flags.String("assertions", "assertions.yml", "Path to assertions YAML")
+	contractPath := flags.String("contract", "", "Path to behavior contract YAML")
 	errorInjectionPath := flags.String("error-injection", "", "Path to deterministic error injection rules")
+	contractExplicit := flagProvided(args, "contract")
 	if err := flags.Parse(args); err != nil {
-		return newCommandError(exitCodeConfiguration, fmt.Errorf("parse test flags: %w\n\n%s", err, testHelpText()))
+		return newCommandError(exitCodeConfiguration, fmt.Errorf("parse %s flags: %w\n\n%s", mode, err, testReviewHelpText(mode)))
 	}
 	commandArgs := flags.Args()
 	if len(commandArgs) == 0 {
-		return newCommandError(exitCodeConfiguration, fmt.Errorf("test requires a command after --\n\n%s", testHelpText()))
+		return newCommandError(exitCodeConfiguration, fmt.Errorf("%s requires a command after --\n\n%s", mode, testReviewHelpText(mode)))
 	}
 
 	cfgPath := strings.TrimSpace(*configPath)
@@ -59,6 +81,24 @@ func runTest(args []string, stdout io.Writer, stderr io.Writer) error {
 	resolvedSession := strings.TrimSpace(*session)
 	if resolvedSession == "" {
 		resolvedSession = defaultRecordBaselineSession()
+	}
+	resolvedContractPath := strings.TrimSpace(*contractPath)
+	if resolvedContractPath == "" && fileExists(defaultContractPath) {
+		resolvedContractPath = defaultContractPath
+	}
+	var contractFile *analysiscontracts.File
+	if resolvedContractPath != "" {
+		if !fileExists(resolvedContractPath) {
+			if contractExplicit {
+				return newCommandError(exitCodeConfiguration, fmt.Errorf("load contract %q: file does not exist", resolvedContractPath))
+			}
+		} else {
+			file, loadErr := analysiscontracts.Load(resolvedContractPath)
+			if loadErr != nil {
+				return newCommandError(exitCodeConfiguration, fmt.Errorf("load contract %q: %w", resolvedContractPath, loadErr))
+			}
+			contractFile = &file
+		}
 	}
 
 	ctx := context.Background()
@@ -134,26 +174,48 @@ func runTest(args []string, stdout io.Writer, stderr io.Writer) error {
 		warnings = append(warnings, fmt.Sprintf("no assertions file found at %s; skipped assertions", resolvedAssertionsPath))
 	}
 
+	contractReport := contractSummary{Status: "skipped"}
+	var contractViolations []analysiscontracts.Violation
+	if contractFile != nil {
+		result, evalErr := analysiscontracts.Evaluate(replayRun, *contractFile)
+		if evalErr != nil {
+			return newCommandError(exitCodeConfiguration, fmt.Errorf("evaluate contract %q: %w", resolvedContractPath, evalErr))
+		}
+		contractReport = contractSummary{
+			Status:     string(result.Status),
+			Total:      result.Summary.Total,
+			Forbidden:  result.Summary.Forbidden,
+			Restricted: result.Summary.Restricted,
+			Unapproved: result.Summary.Unapproved,
+		}
+		contractViolations = append(contractViolations, result.Violations...)
+	}
+
 	status := "passed"
-	if diffResult.Summary().FailingChanges > 0 || assertionReport.Summary.Failed > 0 {
+	if diffResult.Summary().FailingChanges > 0 || assertionReport.Summary.Failed > 0 || contractReport.Total > 0 {
 		status = "failed"
 	}
 
 	report := testCommandReport{
-		Mode:             "test",
-		Status:           status,
-		SessionName:      replayRun.SessionName,
-		BaselineID:       baseline.BaselineID,
-		BaselineRunID:    baseline.SourceRunID,
-		ReplayRunID:      replayRun.RunID,
-		StoragePath:      dbPath,
-		Command:          append([]string(nil), commandArgs...),
-		DiffSummary:      diffResult.Summary(),
-		AssertionSummary: assertionReport.Summary,
-		Warnings:         warnings,
+		Mode:               mode,
+		Status:             status,
+		SessionName:        replayRun.SessionName,
+		BaselineID:         baseline.BaselineID,
+		BaselineRunID:      baseline.SourceRunID,
+		ReplayRunID:        replayRun.RunID,
+		StoragePath:        dbPath,
+		Command:            append([]string(nil), commandArgs...),
+		DiffSummary:        diffResult.Summary(),
+		AssertionSummary:   assertionReport.Summary,
+		ContractSummary:    contractReport,
+		ContractViolations: contractViolations,
+		Warnings:           warnings,
 	}
 	if resolvedAssertionsPath != "" && fileExists(resolvedAssertionsPath) {
 		report.AssertionsPath = resolvedAssertionsPath
+	}
+	if contractFile != nil {
+		report.ContractPath = resolvedContractPath
 	}
 	if strings.TrimSpace(*errorInjectionPath) != "" {
 		report.ErrorInjection = strings.TrimSpace(*errorInjectionPath)
@@ -166,11 +228,14 @@ func runTest(args []string, stdout io.Writer, stderr io.Writer) error {
 	if err := renderTestTerminal(stdout, report, diffResult, assertionReport); err != nil {
 		return err
 	}
+	if contractReport.Total > 0 {
+		return newCommandError(exitCodeContractViolation, fmt.Errorf("stagehand %s failed: %d contract violation(s)", mode, contractReport.Total))
+	}
 	if diffResult.Summary().FailingChanges > 0 {
-		return newCommandError(exitCodeBehaviorDiff, fmt.Errorf("stagehand test failed: %d behavior diff(s)", diffResult.Summary().FailingChanges))
+		return newCommandError(exitCodeBehaviorDiff, fmt.Errorf("stagehand %s failed: %d behavior diff(s)", mode, diffResult.Summary().FailingChanges))
 	}
 	if assertionReport.Summary.Failed > 0 {
-		return newCommandError(exitCodeAssertionFailure, fmt.Errorf("stagehand test failed: %d assertion failure(s)", assertionReport.Summary.Failed))
+		return newCommandError(exitCodeAssertionFailure, fmt.Errorf("stagehand %s failed: %d assertion failure(s)", mode, assertionReport.Summary.Failed))
 	}
 	return nil
 }
@@ -232,12 +297,13 @@ func writeTestReports(report testCommandReport, diffResult analysisdiff.Result, 
 
 func renderTestTerminal(w io.Writer, report testCommandReport, diffResult analysisdiff.Result, assertionReport assertionReport) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Stagehand test: %s\n", report.Status)
+	fmt.Fprintf(&b, "Stagehand %s: %s\n", report.Mode, report.Status)
 	fmt.Fprintf(&b, "Session: %s\n", report.SessionName)
 	fmt.Fprintf(&b, "Baseline: %s (%s)\n", report.BaselineID, report.BaselineRunID)
 	fmt.Fprintf(&b, "Replay: %s\n", report.ReplayRunID)
 	fmt.Fprintf(&b, "Diff: %d failing, %d informational, %d total\n", report.DiffSummary.FailingChanges, report.DiffSummary.InformationalChanges, report.DiffSummary.TotalChanges)
 	fmt.Fprintf(&b, "Assertions: %d passed, %d failed, %d unsupported, %d total\n", report.AssertionSummary.Passed, report.AssertionSummary.Failed, report.AssertionSummary.Unsupported, report.AssertionSummary.Total)
+	fmt.Fprintf(&b, "Contract: %s, %d violation(s)\n", report.ContractSummary.Status, report.ContractSummary.Total)
 	for _, warning := range report.Warnings {
 		fmt.Fprintf(&b, "Warning: %s\n", warning)
 	}
@@ -247,6 +313,9 @@ func renderTestTerminal(w io.Writer, report testCommandReport, diffResult analys
 	if assertionReport.Summary.Total > 0 {
 		fmt.Fprintf(&b, "\n%s", renderAssertionTerminal(assertionReport))
 	}
+	if len(report.ContractViolations) > 0 {
+		fmt.Fprintf(&b, "\n%s", renderContractTerminal(report.ContractViolations))
+	}
 	fmt.Fprintf(&b, "\nReports:\n- %s\n- %s\n", filepath.ToSlash(report.ReportJSONPath), filepath.ToSlash(report.ReportMarkdown))
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -254,7 +323,7 @@ func renderTestTerminal(w io.Writer, report testCommandReport, diffResult analys
 
 func renderTestMarkdown(report testCommandReport, diffResult analysisdiff.Result, assertionReport assertionReport) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Stagehand Test Report\n\n")
+	fmt.Fprintf(&b, "# Stagehand %s Report\n\n", reportModeTitle(report.Mode))
 	fmt.Fprintf(&b, "- Status: **%s**\n", report.Status)
 	fmt.Fprintf(&b, "- Session: `%s`\n", report.SessionName)
 	fmt.Fprintf(&b, "- Baseline: `%s` (`%s`)\n", report.BaselineID, report.BaselineRunID)
@@ -276,17 +345,73 @@ func renderTestMarkdown(report testCommandReport, diffResult analysisdiff.Result
 			fmt.Fprintf(&b, "- `%s` `%s` `%s`: %s\n", result.Status, result.Type, result.AssertionID, result.Message)
 		}
 	}
+	if len(report.ContractViolations) > 0 {
+		fmt.Fprintf(&b, "\n## Contract Violations\n\n")
+		for _, violation := range report.ContractViolations {
+			fmt.Fprintf(&b, "- `%s` `%s`: %s\n", violation.Type, contractViolationLabel(violation), violation.Reason)
+			for _, evidence := range violation.Evidence {
+				fmt.Fprintf(&b, "  - interaction `%s` sequence `%d` `%s %s`\n", evidence.InteractionID, evidence.Sequence, evidence.RequestMethod, evidence.RequestURL)
+			}
+		}
+	}
 	return b.String()
 }
 
+func reportModeTitle(mode string) string {
+	switch mode {
+	case "review":
+		return "Review"
+	default:
+		return "Test"
+	}
+}
+
 func testHelpText() string {
+	return testReviewHelpText("test")
+}
+
+func reviewHelpText() string {
+	return testReviewHelpText("review")
+}
+
+func testReviewHelpText(mode string) string {
 	return `Usage:
-  stagehand test [--session name] [--config path] [--assertions path] [--error-injection path] -- <command> [args...]
+  stagehand ` + mode + ` [--session name] [--config path] [--assertions path] [--contract path] [--error-injection path] -- <command> [args...]
 
 Flags:
   --session string          Session name to resolve the latest baseline for (default: current directory name)
   --config string           Path to stagehand.yml (default: stagehand.yml)
   --assertions string       Path to assertions YAML (default: assertions.yml)
+  --contract string         Path to behavior contract YAML (default: stagehand.contract.yml when present)
   --error-injection string  Path to deterministic error injection rules
 `
+}
+
+func renderContractTerminal(violations []analysiscontracts.Violation) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Stagehand contract violations:\n")
+	for _, violation := range violations {
+		fmt.Fprintf(&b, "- %s %s: %s\n", violation.Type, contractViolationLabel(violation), violation.Reason)
+		for _, evidence := range violation.Evidence {
+			fmt.Fprintf(&b, "  evidence: interaction=%s sequence=%d request=%s %s\n", evidence.InteractionID, evidence.Sequence, evidence.RequestMethod, evidence.RequestURL)
+		}
+	}
+	return b.String()
+}
+
+func contractViolationLabel(violation analysiscontracts.Violation) string {
+	if strings.TrimSpace(violation.Tool) != "" {
+		return "tool:" + violation.Tool
+	}
+	return strings.TrimSpace(violation.Service + " " + violation.Operation)
+}
+
+func flagProvided(args []string, name string) bool {
+	long := "--" + name
+	for _, arg := range args {
+		if arg == long || strings.HasPrefix(arg, long+"=") {
+			return true
+		}
+	}
+	return false
 }

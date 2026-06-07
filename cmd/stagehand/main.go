@@ -52,6 +52,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runRecordBaseline(args[1:], stdout, stderr)
 	case "test":
 		return runTest(args[1:], stdout, stderr)
+	case "review":
+		return runReview(args[1:], stdout, stderr)
 	case "ci":
 		return runCI(args[1:], stdout, stderr)
 	case "preflight":
@@ -1062,6 +1064,7 @@ Commands:
   doctor   Check local Stagehand readiness
   record-baseline Record a command and promote it as a baseline
   test     Replay a baseline, diff behavior, and run assertions
+  review   Replay a baseline, diff behavior, run assertions, and enforce contract
   ci       Generate CI workflow scaffolding
   preflight Validate an existing-agent entrypoint before recording
   record   Run a command and persist captured interactions

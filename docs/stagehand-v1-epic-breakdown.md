@@ -1544,6 +1544,7 @@ restricted_actions:
 forbidden_actions:
   - service: postgres
     operation: DELETE
+    side_effect: destructive
     reason: destructive database write
 ```
 
@@ -1565,43 +1566,49 @@ AB2 adds `stagehand contract generate --session <name>`, backed by `internal/ana
 
 - Outcome: the generated contract is easy to approve or edit.
 - To do:
-  - [ ] group actions by service/tool
-  - [ ] mark unknown-risk actions clearly
-  - [ ] include suggested risk labels
-  - [ ] include suggested release gates for high-risk actions
-  - [ ] document common edits
-  - [ ] keep generated contract readable in one screen for small agents
+  - [x] group actions by service/tool
+  - [x] mark unknown-risk actions clearly
+  - [x] include suggested risk labels
+  - [x] include suggested release gates for high-risk actions
+  - [x] document common edits
+  - [x] keep generated contract readable in one screen for small agents
+
+AB3 updates generated `stagehand.contract.yml` output so actions are grouped by service/tool, each action carries a suggested risk label, high-risk and unknown-risk actions get review/gate comments, and the schema guide documents common manual edits. The renderer keeps comments compact so small-agent contracts remain scannable.
 
 ### Story AB4: Enforce contract during test/review
 
 - Outcome: candidate runs fail when behavior exceeds the approved contract.
 - To do:
-  - [ ] load `stagehand.contract.yml` during `stagehand test`
-  - [ ] load `stagehand.contract.yml` during new `stagehand review`
-  - [ ] fail on new unapproved actions
-  - [ ] fail on forbidden actions
-  - [ ] fail on restricted actions without required approval
-  - [ ] emit machine-readable contract violation results
-  - [ ] include exact interaction evidence
+  - [x] load `stagehand.contract.yml` during `stagehand test`
+  - [x] load `stagehand.contract.yml` during new `stagehand review`
+  - [x] fail on new unapproved actions
+  - [x] fail on forbidden actions
+  - [x] fail on restricted actions without required approval
+  - [x] emit machine-readable contract violation results
+  - [x] include exact interaction evidence
+
+AB4 adds contract enforcement to the replay-backed `stagehand test` flow and introduces `stagehand review` with the same contract gate. When a behavior contract is present, candidate replay interactions are checked against allowed, restricted, and forbidden actions. Violations fail with a contract-specific exit code, are written into the JSON report as machine-readable `contract_violations`, and include exact run, interaction, sequence, request method, URL, and fallback evidence.
 
 ### Story AB5: Contract diff
 
 - Outcome: teams can see what behavior changed between baseline and candidate.
 - To do:
-  - [ ] detect newly introduced actions
-  - [ ] detect removed actions
-  - [ ] detect side-effect type changes
-  - [ ] detect fallback tier changes
-  - [ ] detect prompt/model changes when captured
-  - [ ] render terminal, JSON, and GitHub markdown output
+  - [x] detect newly introduced actions
+  - [x] detect removed actions
+  - [x] detect side-effect type changes
+  - [x] detect fallback tier changes
+  - [x] detect prompt/model changes when captured
+  - [x] render terminal, JSON, and GitHub markdown output
+
+AB5 adds `stagehand contract diff`, which compares a candidate run against a base run, baseline id, or latest session baseline at the contract-behavior level. It groups interactions by service operation or tool selector, reports introduced and removed actions, detects side-effect and fallback-tier changes, and fingerprints captured prompt/model fields so PR output can show intentional or unexpected behavior drift without dumping full payloads.
 
 ### Epic AB completion checklist
 
-- [ ] contract schema exists
-- [ ] contract can be generated from a baseline
-- [ ] contract can be enforced in local runs
-- [ ] contract violations include concrete evidence
-- [ ] contract diff appears in PR output
+- [x] contract schema exists
+- [x] contract can be generated from a baseline
+- [x] contract can be enforced in local runs
+- [x] contract violations include concrete evidence
+- [x] contract diff appears in PR output
 
 ## Epic AC: Action Risk Classifier
 

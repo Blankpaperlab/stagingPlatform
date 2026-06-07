@@ -70,12 +70,33 @@ func TestRenderYAMLIncludesReviewCommentsAndParses(t *testing.T) {
 			contractInteraction("run_contract", 1, "openai", "chat.completions.create", recorder.ProtocolHTTPS, "POST", "https://api.openai.com/v1/chat/completions", map[string]any{
 				"model": "gpt-5.4",
 			}),
+			contractInteraction("run_contract", 2, "stagehand.tool", "lookup_customer", recorder.ProtocolTool, "CALL", "stagehand://tool/lookup_customer", map[string]any{
+				"name":        "lookup_customer",
+				"side_effect": "read",
+			}),
+			contractInteraction("run_contract", 3, "internal-api", "MYSTERY /v1/side-effect", recorder.ProtocolHTTPS, "CUSTOM", "https://internal.example/v1/side-effect", nil),
+			contractInteraction("run_contract", 4, "stripe", "POST /v1/refunds", recorder.ProtocolHTTPS, "POST", "https://api.stripe.com/v1/refunds", map[string]any{
+				"amount": 5000,
+			}),
 		},
 	}
 	file, _ := GenerateFromRun(run, GenerateOptions{})
 	rendered := RenderYAML(file, "run_contract", "base_contract")
-	if !strings.Contains(string(rendered), "# Review side_effect") {
-		t.Fatalf("rendered YAML missing review comment:\n%s", string(rendered))
+	renderedText := string(rendered)
+	for _, want := range []string{
+		"# Review side_effect",
+		"# Service: openai",
+		"# Service: stripe",
+		"# Tools",
+		"# Suggested risk: read",
+		"# Suggested risk: financial",
+		"# Suggested release gate: require approval",
+		"# Suggested risk: unknown",
+		"# UNKNOWN RISK:",
+	} {
+		if !strings.Contains(renderedText, want) {
+			t.Fatalf("rendered YAML missing %q:\n%s", want, renderedText)
+		}
 	}
 	parsed, err := Parse(rendered)
 	if err != nil {
