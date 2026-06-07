@@ -26,6 +26,16 @@ stagehand contract diff --session refund-agent --candidate-run-id run_123 --form
 
 The contract diff reports newly introduced actions, removed actions, side-effect changes, fallback tier changes, model changes, and captured prompt changes. Supported formats are `terminal`, `json`, and `github-markdown`.
 
+Tool risk labels can be overridden in `stagehand.yml` before generating a contract:
+
+```yaml
+classification:
+  tool_overrides:
+    - tool: update_ticket
+      side_effect: write
+      reason: support ticket updates are reviewed writes
+```
+
 ## File Shape
 
 ```yaml
@@ -40,6 +50,7 @@ allowed_actions:
   - service: openai
     operation: POST /v1/chat/completions
     side_effect: read
+    classifier_reason: service openai is treated as model read
 
   - tool: lookup_customer
     side_effect: read
@@ -48,6 +59,7 @@ restricted_actions:
   - service: stripe
     operation: POST /v1/refunds
     side_effect: financial
+    classifier_reason: endpoint contains financial term "refund"
     max_amount: 5000
     requires_approval: true
     approval:
@@ -102,6 +114,12 @@ tool: lookup_customer
 - `unknown`
 
 Generated `side_effect` values are suggested labels. Review them before committing the contract, especially for `unknown`, `financial`, `destructive`, and `external_message`.
+
+Generated actions may include `classifier_reason`, which explains why the default classifier selected the side-effect label. Common reasons include HTTP method defaults such as `HTTP method GET classified as read`, model-service rules such as `service openai is treated as model read`, and endpoint term matches such as `endpoint contains financial term "refund"`.
+
+For tools, the classifier first uses captured `side_effect` metadata from the wrapper. When metadata is absent, names such as `send_email`, `refund_customer`, `delete_user`, and `update_ticket` are inferred from risk terms. Unrecognized tools remain `unknown` unless overridden in `stagehand.yml`.
+
+For database-like captures, the classifier detects SQL verbs in the captured operation or common request body fields such as `query`, `sql`, and `statement`. `SELECT` is classified as `read`; `INSERT`, `UPDATE`, and `UPSERT` as `write`; and `DELETE`, `DROP`, `TRUNCATE`, and `ALTER` as `destructive`. Query snippets appear in `classifier_reason` only after scrub metadata is present on the interaction.
 
 ## Fallback Tiers
 

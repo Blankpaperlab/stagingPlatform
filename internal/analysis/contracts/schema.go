@@ -83,6 +83,7 @@ type Action struct {
 	Operation            string               `yaml:"operation"`
 	Tool                 string               `yaml:"tool"`
 	SideEffect           SideEffect           `yaml:"side_effect"`
+	ClassifierReason     string               `yaml:"classifier_reason"`
 	AllowedFallbackTiers []FallbackTier       `yaml:"allowed_fallback_tiers"`
 	RequiresApproval     bool                 `yaml:"requires_approval"`
 	Approval             *ApprovalRequirement `yaml:"approval"`

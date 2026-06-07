@@ -12,7 +12,14 @@ import (
 )
 
 type GenerateOptions struct {
-	AgentName string
+	AgentName               string
+	ClassificationOverrides []ClassificationOverride
+}
+
+type ClassificationOverride struct {
+	Tool       string
+	SideEffect SideEffect
+	Reason     string
 }
 
 type GenerateSummary struct {
@@ -26,6 +33,11 @@ type GenerateSummary struct {
 type actionAccumulator struct {
 	action Action
 	models map[string]bool
+}
+
+type Classification struct {
+	SideEffect SideEffect `json:"side_effect"`
+	Reason     string     `json:"reason"`
 }
 
 func GenerateFromRun(run recorder.Run, opts GenerateOptions) (File, GenerateSummary) {
@@ -55,8 +67,11 @@ func GenerateFromRun(run recorder.Run, opts GenerateOptions) (File, GenerateSumm
 			accumulators[key] = accumulator
 		}
 
-		sideEffect := classifyInteraction(interaction)
-		accumulator.action.SideEffect = higherRisk(accumulator.action.SideEffect, sideEffect)
+		classification := ClassifyInteractionWithOverrides(interaction, opts.ClassificationOverrides)
+		if riskRank(classification.SideEffect) > riskRank(accumulator.action.SideEffect) || strings.TrimSpace(accumulator.action.ClassifierReason) == "" {
+			accumulator.action.ClassifierReason = classification.Reason
+		}
+		accumulator.action.SideEffect = higherRisk(accumulator.action.SideEffect, classification.SideEffect)
 		for _, tier := range fallbackTiersFromInteraction(interaction) {
 			if !slicesContainsFallback(accumulator.action.AllowedFallbackTiers, tier) {
 				accumulator.action.AllowedFallbackTiers = append(accumulator.action.AllowedFallbackTiers, tier)
@@ -236,6 +251,9 @@ func renderAction(b *strings.Builder, action Action) {
 		fmt.Fprintf(b, "    operation: %s\n", yamlString(action.Operation))
 	}
 	fmt.Fprintf(b, "    side_effect: %s\n", action.SideEffect)
+	if strings.TrimSpace(action.ClassifierReason) != "" {
+		fmt.Fprintf(b, "    classifier_reason: %s\n", yamlString(action.ClassifierReason))
+	}
 	if len(action.AllowedFallbackTiers) > 0 {
 		fmt.Fprintf(b, "    allowed_fallback_tiers:\n")
 		for _, tier := range action.AllowedFallbackTiers {
@@ -288,23 +306,43 @@ func selectorFromInteraction(interaction recorder.Interaction) (ActionSelector, 
 }
 
 func classifyInteraction(interaction recorder.Interaction) SideEffect {
+	return ClassifyInteraction(interaction).SideEffect
+}
+
+func ClassifyInteractionWithOverrides(interaction recorder.Interaction, overrides []ClassificationOverride) Classification {
+	if override, ok := matchingClassificationOverride(interaction, overrides); ok {
+		reason := strings.TrimSpace(override.Reason)
+		if reason == "" {
+			reason = "config classification.tool_overrides declares side_effect=" + string(override.SideEffect)
+		}
+		return Classification{SideEffect: override.SideEffect, Reason: reason}
+	}
+	return ClassifyInteraction(interaction)
+}
+
+func ClassifyInteraction(interaction recorder.Interaction) Classification {
 	if interaction.Protocol == recorder.ProtocolTool || interaction.Service == "stagehand.tool" {
 		if sideEffect := sideEffectFromValue(valueFromMap(interaction.Request.Body, "side_effect")); sideEffect != "" {
-			return sideEffect
+			return Classification{SideEffect: sideEffect, Reason: "tool request body declares side_effect=" + string(sideEffect)}
 		}
 		for _, event := range interaction.Events {
 			if sideEffect := sideEffectFromValue(event.Data["side_effect"]); sideEffect != "" {
-				return sideEffect
+				return Classification{SideEffect: sideEffect, Reason: "tool event declares side_effect=" + string(sideEffect)}
 			}
 		}
-		return inferRiskFromText(interaction.Operation)
+		return classifyToolName(toolNameFromInteraction(interaction))
 	}
 
 	if strings.EqualFold(interaction.Service, "openai") || strings.EqualFold(interaction.Service, "anthropic") {
-		return SideEffectRead
+		return Classification{SideEffect: SideEffectRead, Reason: fmt.Sprintf("service %s is treated as model read", interaction.Service)}
 	}
 	if interaction.Protocol == recorder.ProtocolPostgres {
-		return classifyDatabaseOperation(interaction.Operation)
+		return classifyDatabaseInteraction(interaction)
+	}
+
+	method := normalizedHTTPMethod(interaction)
+	if method == "DELETE" {
+		return classifyHTTPMethod(method)
 	}
 
 	text := strings.ToLower(strings.Join([]string{
@@ -313,62 +351,205 @@ func classifyInteraction(interaction recorder.Interaction) SideEffect {
 		interaction.Request.Method,
 		interaction.Request.URL,
 	}, " "))
-	if sideEffect := keywordRisk(text); sideEffect != "" {
-		return sideEffect
+	if classification := keywordRisk(text); classification.SideEffect != "" {
+		return classification
 	}
 
-	switch strings.ToUpper(strings.TrimSpace(interaction.Request.Method)) {
-	case "GET", "HEAD", "OPTIONS":
-		return SideEffectRead
-	case "DELETE":
-		return SideEffectDestructive
-	case "POST", "PUT", "PATCH":
-		return SideEffectWrite
+	if classification := classifyHTTPMethod(method); classification.SideEffect != "" {
+		return classification
 	}
 	if strings.TrimSpace(interaction.Request.Method) == "" {
 		return inferRiskFromText(interaction.Operation)
 	}
-	return SideEffectUnknown
+	return Classification{SideEffect: SideEffectUnknown, Reason: "HTTP method " + method + " did not match known risk rules"}
 }
 
-func classifyDatabaseOperation(operation string) SideEffect {
-	verb := firstWord(operation)
+func matchingClassificationOverride(interaction recorder.Interaction, overrides []ClassificationOverride) (ClassificationOverride, bool) {
+	if len(overrides) == 0 {
+		return ClassificationOverride{}, false
+	}
+	if interaction.Protocol != recorder.ProtocolTool && interaction.Service != "stagehand.tool" {
+		return ClassificationOverride{}, false
+	}
+	toolName := toolNameFromInteraction(interaction)
+	for _, override := range overrides {
+		if strings.EqualFold(strings.TrimSpace(override.Tool), toolName) && override.SideEffect != "" {
+			return override, true
+		}
+	}
+	return ClassificationOverride{}, false
+}
+
+func toolNameFromInteraction(interaction recorder.Interaction) string {
+	toolName := strings.TrimSpace(interaction.Operation)
+	if toolName == "" {
+		toolName = stringFromMap(interaction.Request.Body, "name")
+	}
+	return toolName
+}
+
+func classifyToolName(toolName string) Classification {
+	trimmed := strings.TrimSpace(toolName)
+	if trimmed == "" {
+		return Classification{SideEffect: SideEffectUnknown, Reason: "tool has no side_effect metadata and no name to classify"}
+	}
+	if classification := keywordRisk(strings.ToLower(trimmed)); classification.SideEffect != "" {
+		classification.Reason = "tool name " + classification.Reason
+		return classification
+	}
+	if classification := toolVerbRisk(trimmed); classification.SideEffect != "" {
+		return classification
+	}
+	return Classification{SideEffect: SideEffectUnknown, Reason: "tool has no side_effect metadata and name did not match known risk rules"}
+}
+
+func toolVerbRisk(toolName string) Classification {
+	normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(toolName, "-", "_"), " ", "_"))
+	parts := strings.FieldsFunc(normalized, func(r rune) bool {
+		return r == '_' || r == '.' || r == ':' || r == '/'
+	})
+	for _, part := range parts {
+		switch part {
+		case "get", "lookup", "list", "find", "search", "fetch", "read", "retrieve":
+			return Classification{SideEffect: SideEffectRead, Reason: fmt.Sprintf("tool name contains read term %q", part)}
+		case "update", "create", "set", "assign", "add", "edit", "write", "upsert", "close", "open":
+			return Classification{SideEffect: SideEffectWrite, Reason: fmt.Sprintf("tool name contains write term %q", part)}
+		}
+	}
+	return Classification{}
+}
+
+func normalizedHTTPMethod(interaction recorder.Interaction) string {
+	method := strings.ToUpper(strings.TrimSpace(interaction.Request.Method))
+	if method == "" {
+		method = strings.ToUpper(firstWord(interaction.Operation))
+	}
+	return method
+}
+
+func classifyHTTPMethod(method string) Classification {
+	switch method {
+	case "GET", "HEAD":
+		return Classification{SideEffect: SideEffectRead, Reason: "HTTP method " + method + " classified as read"}
+	case "OPTIONS":
+		return Classification{SideEffect: SideEffectRead, Reason: "HTTP method OPTIONS classified as safe read"}
+	case "DELETE":
+		return Classification{SideEffect: SideEffectDestructive, Reason: "HTTP method DELETE classified as destructive"}
+	case "POST", "PUT", "PATCH":
+		return Classification{SideEffect: SideEffectWrite, Reason: "HTTP method " + method + " classified as write"}
+	}
+	return Classification{}
+}
+
+func classifyDatabaseInteraction(interaction recorder.Interaction) Classification {
+	query := databaseQueryText(interaction)
+	classification := classifyDatabaseOperation(query)
+	if snippet := scrubbedQuerySnippet(interaction, query); snippet != "" {
+		classification.Reason += "; scrubbed query snippet: " + strconv.Quote(snippet)
+	}
+	return classification
+}
+
+func classifyDatabaseOperation(query string) Classification {
+	verb := sqlVerb(query)
 	switch strings.ToUpper(verb) {
 	case "SELECT", "SHOW", "DESCRIBE", "EXPLAIN":
-		return SideEffectRead
+		return Classification{SideEffect: SideEffectRead, Reason: "database operation " + strings.ToUpper(verb) + " classified as read"}
 	case "INSERT", "UPDATE", "UPSERT":
-		return SideEffectWrite
+		return Classification{SideEffect: SideEffectWrite, Reason: "database operation " + strings.ToUpper(verb) + " classified as write"}
 	case "DELETE", "DROP", "TRUNCATE", "ALTER":
-		return SideEffectDestructive
+		return Classification{SideEffect: SideEffectDestructive, Reason: "database operation " + strings.ToUpper(verb) + " classified as destructive"}
 	default:
-		return SideEffectUnknown
+		return Classification{SideEffect: SideEffectUnknown, Reason: "database operation did not match known risk rules"}
 	}
 }
 
-func inferRiskFromText(value string) SideEffect {
-	if sideEffect := keywordRisk(strings.ToLower(value)); sideEffect != "" {
-		return sideEffect
+func databaseQueryText(interaction recorder.Interaction) string {
+	for _, value := range []string{
+		strings.TrimSpace(interaction.Operation),
+		stringFromNestedMap(interaction.Request.Body, "query"),
+		stringFromNestedMap(interaction.Request.Body, "sql"),
+		stringFromNestedMap(interaction.Request.Body, "statement"),
+		stringFromNestedMap(interaction.Request.Body, "command"),
+	} {
+		if isKnownSQLVerb(sqlVerb(value)) {
+			return value
+		}
 	}
-	return SideEffectUnknown
+	return strings.TrimSpace(interaction.Operation)
 }
 
-func keywordRisk(text string) SideEffect {
+func sqlVerb(query string) string {
+	query = strings.TrimSpace(query)
+	for {
+		switch {
+		case strings.HasPrefix(query, "--"):
+			newline := strings.Index(query, "\n")
+			if newline < 0 {
+				return ""
+			}
+			query = strings.TrimSpace(query[newline+1:])
+		case strings.HasPrefix(query, "/*"):
+			end := strings.Index(query, "*/")
+			if end < 0 {
+				return ""
+			}
+			query = strings.TrimSpace(query[end+2:])
+		default:
+			return firstWord(query)
+		}
+	}
+}
+
+func isKnownSQLVerb(verb string) bool {
+	switch strings.ToUpper(strings.TrimSpace(verb)) {
+	case "SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "INSERT", "UPDATE", "UPSERT", "DELETE", "DROP", "TRUNCATE", "ALTER":
+		return true
+	default:
+		return false
+	}
+}
+
+func scrubbedQuerySnippet(interaction recorder.Interaction, query string) string {
+	if !scrubReportPresent(interaction.ScrubReport) {
+		return ""
+	}
+	query = strings.Join(strings.Fields(query), " ")
+	const limit = 120
+	if len(query) <= limit {
+		return query
+	}
+	return query[:limit] + "..."
+}
+
+func scrubReportPresent(report recorder.ScrubReport) bool {
+	return strings.TrimSpace(report.ScrubPolicyVersion) != "" && strings.TrimSpace(report.SessionSaltID) != ""
+}
+
+func inferRiskFromText(value string) Classification {
+	if classification := keywordRisk(strings.ToLower(value)); classification.SideEffect != "" {
+		return classification
+	}
+	return Classification{SideEffect: SideEffectUnknown, Reason: "text did not match known risk terms"}
+}
+
+func keywordRisk(text string) Classification {
 	for _, term := range []string{"delete", "drop", "remove", "archive", "disable", "destroy", "truncate", "alter"} {
 		if strings.Contains(text, term) {
-			return SideEffectDestructive
+			return Classification{SideEffect: SideEffectDestructive, Reason: fmt.Sprintf("endpoint contains destructive term %q", term)}
 		}
 	}
 	for _, term := range []string{"refund", "charge", "payment", "invoice", "payout", "transfer"} {
 		if strings.Contains(text, term) {
-			return SideEffectFinancial
+			return Classification{SideEffect: SideEffectFinancial, Reason: fmt.Sprintf("endpoint contains financial term %q", term)}
 		}
 	}
 	for _, term := range []string{"email", "sms", "message", "notify", "slack", "send"} {
 		if strings.Contains(text, term) {
-			return SideEffectExternalMessage
+			return Classification{SideEffect: SideEffectExternalMessage, Reason: fmt.Sprintf("endpoint contains external-message term %q", term)}
 		}
 	}
-	return ""
+	return Classification{}
 }
 
 func requiresApproval(sideEffect SideEffect) bool {
@@ -522,6 +703,27 @@ func stringFromMap(value any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(raw))
+}
+
+func stringFromNestedMap(value any, key string) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for itemKey, item := range typed {
+			if strings.EqualFold(itemKey, key) {
+				return strings.TrimSpace(fmt.Sprint(item))
+			}
+			if nested := stringFromNestedMap(item, key); nested != "" {
+				return nested
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if nested := stringFromNestedMap(item, key); nested != "" {
+				return nested
+			}
+		}
+	}
+	return ""
 }
 
 func selectorKey(selector ActionSelector) string {

@@ -88,13 +88,14 @@ var (
 )
 
 type Config struct {
-	SchemaVersion string          `yaml:"schema_version"`
-	Record        RecordConfig    `yaml:"record"`
-	Replay        ReplayConfig    `yaml:"replay"`
-	Scrub         ScrubConfig     `yaml:"scrub"`
-	Fallback      FallbackConfig  `yaml:"fallback"`
-	Auth          AuthConfig      `yaml:"auth"`
-	Services      []ServiceConfig `yaml:"services"`
+	SchemaVersion  string               `yaml:"schema_version"`
+	Record         RecordConfig         `yaml:"record"`
+	Replay         ReplayConfig         `yaml:"replay"`
+	Scrub          ScrubConfig          `yaml:"scrub"`
+	Fallback       FallbackConfig       `yaml:"fallback"`
+	Auth           AuthConfig           `yaml:"auth"`
+	Classification ClassificationConfig `yaml:"classification"`
+	Services       []ServiceConfig      `yaml:"services"`
 }
 
 type RecordConfig struct {
@@ -153,6 +154,16 @@ type LLMSynthesisConfig struct {
 type AuthConfig struct {
 	DefaultMode  AuthMode            `yaml:"default_mode"`
 	ServiceModes map[string]AuthMode `yaml:"service_modes"`
+}
+
+type ClassificationConfig struct {
+	ToolOverrides []ToolClassificationOverride `yaml:"tool_overrides"`
+}
+
+type ToolClassificationOverride struct {
+	Tool       string `yaml:"tool"`
+	SideEffect string `yaml:"side_effect"`
+	Reason     string `yaml:"reason"`
 }
 
 type ServiceConfig struct {
@@ -305,6 +316,9 @@ func DefaultConfig() Config {
 		Auth: AuthConfig{
 			DefaultMode:  AuthModePermissive,
 			ServiceModes: map[string]AuthMode{},
+		},
+		Classification: ClassificationConfig{
+			ToolOverrides: []ToolClassificationOverride{},
 		},
 		Services: []ServiceConfig{},
 	}
@@ -491,9 +505,40 @@ func (c Config) Validate() error {
 		}
 	}
 
+	validateClassification(c.Classification, verr)
 	validateServiceMappings(c.Services, verr)
 
 	return verr.err()
+}
+
+func validateClassification(classification ClassificationConfig, verr *ValidationError) {
+	seenTools := map[string]bool{}
+	for idx, override := range classification.ToolOverrides {
+		prefix := fmt.Sprintf("classification.tool_overrides[%d]", idx)
+		tool := strings.TrimSpace(override.Tool)
+		if tool == "" {
+			verr.add("%s.tool is required", prefix)
+		} else if seenTools[strings.ToLower(tool)] {
+			verr.add("%s.tool duplicates tool override %q", prefix, tool)
+		}
+		seenTools[strings.ToLower(tool)] = true
+
+		sideEffect := strings.TrimSpace(override.SideEffect)
+		if sideEffect == "" {
+			verr.add("%s.side_effect is required", prefix)
+		} else if !isValidClassificationSideEffect(sideEffect) {
+			verr.add("%s.side_effect must be one of %q, %q, %q, %q, %q, %q", prefix, "read", "write", "destructive", "financial", "external_message", "unknown")
+		}
+	}
+}
+
+func isValidClassificationSideEffect(value string) bool {
+	switch value {
+	case "read", "write", "destructive", "financial", "external_message", "unknown":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateServiceMappings(services []ServiceConfig, verr *ValidationError) {

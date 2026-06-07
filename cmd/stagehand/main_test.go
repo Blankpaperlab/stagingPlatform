@@ -1882,6 +1882,21 @@ func TestRunContractGenerateRefusesOverwriteWithoutForce(t *testing.T) {
 	}
 }
 
+func TestClassificationOverridesFromConfig(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Classification.ToolOverrides = []config.ToolClassificationOverride{
+		{Tool: "normalize_customer", SideEffect: "write", Reason: "normalization writes CRM state"},
+	}
+
+	overrides := classificationOverridesFromConfig(cfg)
+	if len(overrides) != 1 {
+		t.Fatalf("len(overrides) = %d, want 1", len(overrides))
+	}
+	if overrides[0].Tool != "normalize_customer" || overrides[0].SideEffect != analysiscontracts.SideEffectWrite || overrides[0].Reason != "normalization writes CRM state" {
+		t.Fatalf("override = %#v, want converted config override", overrides[0])
+	}
+}
+
 func TestRunContractDiffRendersJSON(t *testing.T) {
 	workdir := t.TempDir()
 	configPath := filepath.Join(workdir, "stagehand.yml")

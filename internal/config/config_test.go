@@ -117,6 +117,71 @@ services:
 	}
 }
 
+func TestLoadConfigSupportsClassificationToolOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stagehand.yml")
+	content := `
+schema_version: v1alpha1
+classification:
+  tool_overrides:
+    - tool: update_ticket
+      side_effect: write
+      reason: support ticket updates are reviewed writes
+`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if len(cfg.Classification.ToolOverrides) != 1 {
+		t.Fatalf("len(Classification.ToolOverrides) = %d, want 1", len(cfg.Classification.ToolOverrides))
+	}
+	override := cfg.Classification.ToolOverrides[0]
+	if override.Tool != "update_ticket" || override.SideEffect != "write" || override.Reason == "" {
+		t.Fatalf("tool override = %#v, want configured override", override)
+	}
+}
+
+func TestLoadRejectsInvalidClassificationToolOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stagehand.yml")
+	content := `
+schema_version: v1alpha1
+classification:
+  tool_overrides:
+    - tool: update_ticket
+      side_effect: risky
+    - tool: update_ticket
+      side_effect: write
+    - side_effect: read
+`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() expected classification validation failure")
+	}
+
+	errText := err.Error()
+	for _, want := range []string{
+		"classification.tool_overrides[0].side_effect",
+		"classification.tool_overrides[1].tool duplicates",
+		"classification.tool_overrides[2].tool is required",
+	} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("validation error %q missing from %v", want, err)
+		}
+	}
+}
+
 func TestLoadRejectsInvalidServiceMappings(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stagehand.yml")

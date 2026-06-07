@@ -83,7 +83,8 @@ func runContractGenerate(args []string, stdout io.Writer, _ io.Writer) error {
 	}
 
 	contract, summary := analysiscontracts.GenerateFromRun(sourceRun, analysiscontracts.GenerateOptions{
-		AgentName: resolvedSession,
+		AgentName:               resolvedSession,
+		ClassificationOverrides: classificationOverridesFromConfig(cfg),
 	})
 	rendered := analysiscontracts.RenderYAML(contract, sourceRun.RunID, baseline.BaselineID)
 	if _, err := analysiscontracts.Parse(rendered); err != nil {
@@ -124,6 +125,18 @@ func runContractGenerate(args []string, stdout io.Writer, _ io.Writer) error {
 	fmt.Fprintf(&b, "\nReview %s before committing it.\n", filepath.ToSlash(resolvedOutput))
 	_, err = io.WriteString(stdout, b.String())
 	return err
+}
+
+func classificationOverridesFromConfig(cfg config.Config) []analysiscontracts.ClassificationOverride {
+	overrides := make([]analysiscontracts.ClassificationOverride, 0, len(cfg.Classification.ToolOverrides))
+	for _, override := range cfg.Classification.ToolOverrides {
+		overrides = append(overrides, analysiscontracts.ClassificationOverride{
+			Tool:       strings.TrimSpace(override.Tool),
+			SideEffect: analysiscontracts.SideEffect(strings.TrimSpace(override.SideEffect)),
+			Reason:     strings.TrimSpace(override.Reason),
+		})
+	}
+	return overrides
 }
 
 func runContractDiff(args []string, stdout io.Writer, _ io.Writer) error {

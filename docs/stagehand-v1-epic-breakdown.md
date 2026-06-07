@@ -1622,33 +1622,39 @@ AB5 adds `stagehand contract diff`, which compares a candidate run against a bas
 
 - Outcome: captured HTTP/API calls receive a default risk label.
 - To do:
-  - [ ] classify `GET`, `HEAD`, and safe reads as `read`
-  - [ ] classify `POST`, `PUT`, `PATCH` as `write`
-  - [ ] classify `DELETE` as `destructive`
-  - [ ] detect endpoint terms: `refund`, `charge`, `payment`, `invoice`, `payout`
-  - [ ] detect endpoint terms: `email`, `sms`, `message`, `notify`, `slack`
-  - [ ] detect endpoint terms: `delete`, `drop`, `remove`, `archive`, `disable`
-  - [ ] expose classifier reason in artifacts
+  - [x] classify `GET`, `HEAD`, and safe reads as `read`
+  - [x] classify `POST`, `PUT`, `PATCH` as `write`
+  - [x] classify `DELETE` as `destructive`
+  - [x] detect endpoint terms: `refund`, `charge`, `payment`, `invoice`, `payout`
+  - [x] detect endpoint terms: `email`, `sms`, `message`, `notify`, `slack`
+  - [x] detect endpoint terms: `delete`, `drop`, `remove`, `archive`, `disable`
+  - [x] expose classifier reason in artifacts
+
+AC1 adds a reusable HTTP/API classifier that returns both a default `side_effect` and a `classifier_reason`. Generated behavior contracts persist the reason beside each action so reviewers can see whether a label came from an HTTP method default, a safe model-service rule, or matched endpoint risk terms such as refunds, messages, or destructive verbs.
 
 ### Story AC2: Classify tool risk
 
 - Outcome: local/custom tools receive risk labels.
 - To do:
-  - [ ] use declared `side_effect` metadata from wrapped tools
-  - [ ] classify missing side-effect metadata as `unknown`
-  - [ ] infer basic risk from tool names
-  - [ ] classify tools such as `send_email`, `refund_customer`, `delete_user`, `update_ticket`
-  - [ ] allow config overrides
+  - [x] use declared `side_effect` metadata from wrapped tools
+  - [x] classify missing side-effect metadata as `unknown`
+  - [x] infer basic risk from tool names
+  - [x] classify tools such as `send_email`, `refund_customer`, `delete_user`, `update_ticket`
+  - [x] allow config overrides
+
+AC2 extends the behavior classifier to local/custom tool calls. Tool captures use declared `side_effect` metadata when present, infer risk from tool names for common read, write, external-message, financial, and destructive verbs, keep unrecognized tools as `unknown`, and let runtime config provide `classification.tool_overrides` for reviewed tool-specific risk labels.
 
 ### Story AC3: Classify database-like actions
 
 - Outcome: dangerous database behavior is surfaced clearly.
 - To do:
-  - [ ] detect SQL verbs in captured queries
-  - [ ] classify `SELECT` as read
-  - [ ] classify `INSERT`, `UPDATE`, `UPSERT` as write
-  - [ ] classify `DELETE`, `DROP`, `TRUNCATE`, `ALTER` as destructive
-  - [ ] include query snippets only after scrub rules are applied
+  - [x] detect SQL verbs in captured queries
+  - [x] classify `SELECT` as read
+  - [x] classify `INSERT`, `UPDATE`, `UPSERT` as write
+  - [x] classify `DELETE`, `DROP`, `TRUNCATE`, `ALTER` as destructive
+  - [x] include query snippets only after scrub rules are applied
+
+AC3 extends classification for database-like interactions. Captured Postgres actions inspect scrubbed query text from the operation or common request body fields such as `query`, `sql`, and `statement`, classify read/write/destructive SQL verbs, and include short query snippets in `classifier_reason` only when the interaction carries a scrub report.
 
 ### Story AC4: Risk score summary
 
@@ -1665,7 +1671,7 @@ AB5 adds `stagehand contract diff`, which compares a candidate run against a bas
 
 - [ ] HTTP/API actions are classified
 - [ ] tool actions are classified
-- [ ] database-like operations are classified
+- [x] database-like operations are classified
 - [ ] every review receives a risk score
 - [ ] users can override classifications
 
