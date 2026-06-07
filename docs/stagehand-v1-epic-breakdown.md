@@ -1551,13 +1551,15 @@ forbidden_actions:
 
 - Outcome: users can generate a first contract from an approved baseline run.
 - To do:
-  - [ ] add `stagehand contract generate --session <name>`
-  - [ ] read latest promoted baseline
-  - [ ] extract observed services, operations, tools, models, and side-effect metadata
-  - [ ] classify each action as read/write/destructive/financial/external/unknown
-  - [ ] write `stagehand.contract.yml`
-  - [ ] include comments showing what users should review
-  - [ ] print summary of generated contract
+  - [x] add `stagehand contract generate --session <name>`
+  - [x] read latest promoted baseline
+  - [x] extract observed services, operations, tools, models, and side-effect metadata
+  - [x] classify each action as read/write/destructive/financial/external/unknown
+  - [x] write `stagehand.contract.yml`
+  - [x] include comments showing what users should review
+  - [x] print summary of generated contract
+
+AB2 adds `stagehand contract generate --session <name>`, backed by `internal/analysis/contracts.GenerateFromRun`. It resolves the latest promoted baseline, materializes the source run, extracts observed API/tool actions and models, classifies side effects, writes commented `stagehand.contract.yml`, refuses overwrite without `--force`, validates the generated contract before writing, and prints a review summary.
 
 ### Story AB3: Review contract manually
 

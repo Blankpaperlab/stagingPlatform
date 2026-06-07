@@ -6,6 +6,14 @@ Current schema version: `v1alpha1`
 
 The Go source of truth is `internal/analysis/contracts/schema.go`.
 
+Generate a starter contract from the latest promoted baseline:
+
+```bash
+stagehand contract generate --session refund-agent
+```
+
+By default this writes `stagehand.contract.yml` and refuses to overwrite an existing file unless `--force` is passed.
+
 ## File Shape
 
 ```yaml
@@ -13,6 +21,8 @@ schema_version: v1alpha1
 
 agent:
   name: refund-agent
+  models:
+    - gpt-5.4
 
 allowed_actions:
   - service: openai
@@ -45,6 +55,7 @@ forbidden_actions:
 | -------------------- | -------- | ------------------------------------------ |
 | `schema_version`     | yes      | Must be `v1alpha1`                         |
 | `agent.name`         | yes      | Human-readable agent name                  |
+| `agent.models`       | no       | Models observed in the approved baseline   |
 | `allowed_actions`    | no       | Approved actions that can pass review      |
 | `restricted_actions` | no       | Approved actions with limits or approvals  |
 | `forbidden_actions`  | no       | Actions that should always fail review     |

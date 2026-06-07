@@ -74,7 +74,8 @@ type File struct {
 }
 
 type Agent struct {
-	Name string `yaml:"name"`
+	Name   string   `yaml:"name"`
+	Models []string `yaml:"models"`
 }
 
 type Action struct {
@@ -170,6 +171,7 @@ func (f File) Validate() error {
 	if strings.TrimSpace(f.Agent.Name) == "" {
 		verr.add("agent.name is required")
 	}
+	validateStringSet("agent.models", f.Agent.Models, verr)
 	if len(f.AllowedActions)+len(f.RestrictedActions)+len(f.ForbiddenActions) == 0 {
 		verr.add("at least one action is required")
 	}
@@ -305,6 +307,22 @@ func validateFallbackTiers(field string, tiers []FallbackTier, verr *ValidationE
 func validateMaxAmount(field string, value *float64, verr *ValidationError) {
 	if value != nil && *value < 0 {
 		verr.add("%s must be greater than or equal to 0", field)
+	}
+}
+
+func validateStringSet(field string, values []string, verr *ValidationError) {
+	seen := map[string]bool{}
+	for idx, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			verr.add("%s[%d] cannot be empty", field, idx)
+			continue
+		}
+		if seen[trimmed] {
+			verr.add("%s contains duplicate value %q", field, trimmed)
+			continue
+		}
+		seen[trimmed] = true
 	}
 }
 

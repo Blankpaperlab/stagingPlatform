@@ -74,6 +74,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runConformance(args[1:], stdout, stderr)
 	case "baseline":
 		return runBaseline(args[1:], stdout, stderr)
+	case "contract":
+		return runContract(args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", args[0], rootHelpText())
 	}
@@ -1071,6 +1073,7 @@ Commands:
   assert   Evaluate assertions against a stored run
   conformance Run simulator conformance cases
   baseline Promote and inspect baseline selections
+  contract Generate and inspect agent behavior contracts
 
 Global help:
   stagehand help

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	analysiscontracts "stagehand/internal/analysis/contracts"
 	analysisdiff "stagehand/internal/analysis/diff"
 	"stagehand/internal/config"
 	"stagehand/internal/recorder"
@@ -1640,6 +1641,111 @@ func TestRunBaselineShowResolvesLatestSessionBaseline(t *testing.T) {
 	}
 }
 
+func TestRunContractGenerateWritesContractFromLatestBaseline(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	contractPath := filepath.Join(workdir, "stagehand.contract.yml")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedContractSourceRun(t, sqliteStore, "contract-flow")
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_contract_001",
+		SessionName: "contract-flow",
+		SourceRunID: sourceRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Date(2026, time.June, 7, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"contract", "generate", "--session", "contract-flow", "--config", configPath, "--output", contractPath}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(contract generate) error = %v\nstderr=%s", err, stderr.String())
+	}
+
+	if !strings.Contains(stdout.String(), "Stagehand behavior contract generated") || !strings.Contains(stdout.String(), "Restricted actions: 1") {
+		t.Fatalf("stdout = %q, want generation summary", stdout.String())
+	}
+
+	raw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatalf("ReadFile(contract) error = %v", err)
+	}
+	if !strings.Contains(string(raw), "# Review side_effect") {
+		t.Fatalf("generated contract missing review comments:\n%s", string(raw))
+	}
+
+	contract, err := analysiscontracts.Load(contractPath)
+	if err != nil {
+		t.Fatalf("contracts.Load() error = %v\n%s", err, string(raw))
+	}
+	if contract.Agent.Name != "contract-flow" {
+		t.Fatalf("contract.Agent.Name = %q, want contract-flow", contract.Agent.Name)
+	}
+	if len(contract.Agent.Models) != 1 || contract.Agent.Models[0] != "gpt-5.4" {
+		t.Fatalf("contract.Agent.Models = %#v, want gpt-5.4", contract.Agent.Models)
+	}
+	if len(contract.AllowedActions) != 2 {
+		t.Fatalf("len(AllowedActions) = %d, want 2", len(contract.AllowedActions))
+	}
+	if len(contract.RestrictedActions) != 1 {
+		t.Fatalf("len(RestrictedActions) = %d, want 1", len(contract.RestrictedActions))
+	}
+	restricted := contract.RestrictedActions[0]
+	if restricted.Service != "stripe" || restricted.Operation != "POST /v1/refunds" || restricted.SideEffect != analysiscontracts.SideEffectFinancial || !restricted.RequiresApproval {
+		t.Fatalf("restricted action = %#v, want financial stripe refund requiring approval", restricted)
+	}
+	if restricted.MaxAmount == nil || *restricted.MaxAmount != 5000 {
+		t.Fatalf("restricted max amount = %#v, want 5000", restricted.MaxAmount)
+	}
+}
+
+func TestRunContractGenerateRefusesOverwriteWithoutForce(t *testing.T) {
+	workdir := t.TempDir()
+	configPath := filepath.Join(workdir, "stagehand.yml")
+	storagePath := filepath.Join(workdir, ".stagehand", "runs")
+	contractPath := filepath.Join(workdir, "stagehand.contract.yml")
+	writeFile(t, configPath, "schema_version: v1alpha1\nrecord:\n  storage_path: "+toSlash(storagePath)+"\n")
+	writeFile(t, contractPath, "existing: true\n")
+
+	sqliteStore, err := sqlitestore.OpenStore(context.Background(), filepath.Join(storagePath, "stagehand.db"))
+	if err != nil {
+		t.Fatalf("OpenStore() error = %v", err)
+	}
+	sourceRunID := seedContractSourceRun(t, sqliteStore, "contract-overwrite-flow")
+	if err := sqliteStore.PutBaseline(context.Background(), store.Baseline{
+		BaselineID:  "base_contract_overwrite",
+		SessionName: "contract-overwrite-flow",
+		SourceRunID: sourceRunID,
+		GitSHA:      "abc123",
+		CreatedAt:   time.Date(2026, time.June, 7, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("PutBaseline() error = %v", err)
+	}
+	if err := sqliteStore.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = run([]string{"contract", "generate", "--session", "contract-overwrite-flow", "--config", configPath, "--output", contractPath}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(contract generate overwrite) expected error")
+	}
+	if !strings.Contains(err.Error(), "refuses to overwrite") {
+		t.Fatalf("run(contract generate overwrite) error = %v, want overwrite protection", err)
+	}
+}
+
 func TestRunDeleteRunRemovesRunAndPreservesSessionSalt(t *testing.T) {
 	workdir := t.TempDir()
 	configPath := filepath.Join(workdir, "stagehand.yml")
@@ -2164,6 +2270,84 @@ func seedReplayRunAt(
 	return run.RunID
 }
 
+func seedContractSourceRun(t *testing.T, artifactStore store.ArtifactStore, session string) string {
+	t.Helper()
+
+	run, err := newRunRecordForMode(session, minimalConfig(), recorder.RunModeRecord)
+	if err != nil {
+		t.Fatalf("newRunRecordForMode() error = %v", err)
+	}
+	run.StartedAt = time.Now().UTC().Add(-time.Minute)
+	if err := artifactStore.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+
+	interactions := []recorder.Interaction{
+		{
+			RunID:         run.RunID,
+			InteractionID: "int_contract_openai",
+			Sequence:      1,
+			Service:       "openai",
+			Operation:     "chat.completions.create",
+			Protocol:      recorder.ProtocolHTTPS,
+			Request: recorder.Request{
+				URL:    "https://api.openai.com/v1/chat/completions",
+				Method: "POST",
+				Body: map[string]any{
+					"model": "gpt-5.4",
+				},
+			},
+			Events:      successfulEvents(),
+			ScrubReport: fixtureScrubReport(),
+		},
+		{
+			RunID:         run.RunID,
+			InteractionID: "int_contract_tool",
+			Sequence:      2,
+			Service:       "stagehand.tool",
+			Operation:     "lookup_customer",
+			Protocol:      recorder.ProtocolTool,
+			Request: recorder.Request{
+				URL:    "stagehand://tool/lookup_customer",
+				Method: "CALL",
+				Body: map[string]any{
+					"name":        "lookup_customer",
+					"side_effect": "read",
+				},
+			},
+			Events:      successfulEvents(),
+			ScrubReport: fixtureScrubReport(),
+		},
+		{
+			RunID:         run.RunID,
+			InteractionID: "int_contract_refund",
+			Sequence:      3,
+			Service:       "stripe",
+			Operation:     "POST /v1/refunds",
+			Protocol:      recorder.ProtocolHTTPS,
+			Request: recorder.Request{
+				URL:    "https://api.stripe.com/v1/refunds",
+				Method: "POST",
+				Body: map[string]any{
+					"amount": 5000,
+				},
+			},
+			Events:      successfulEvents(),
+			ScrubReport: fixtureScrubReport(),
+		},
+	}
+	for _, interaction := range interactions {
+		if err := artifactStore.WriteInteraction(context.Background(), interaction); err != nil {
+			t.Fatalf("WriteInteraction(%q) error = %v", interaction.InteractionID, err)
+		}
+	}
+	if err := finalizeRun(context.Background(), artifactStore, run, nil); err != nil {
+		t.Fatalf("finalizeRun() error = %v", err)
+	}
+
+	return run.RunID
+}
+
 func seedDiffRun(
 	t *testing.T,
 	artifactStore store.ArtifactStore,
@@ -2245,6 +2429,20 @@ func seedCorruptedReplayCandidate(
 	}
 	if err := artifactStore.UpdateRun(context.Background(), run); err != nil {
 		t.Fatalf("UpdateRun(corrupted) error = %v", err)
+	}
+}
+
+func successfulEvents() []recorder.Event {
+	return []recorder.Event{
+		{Sequence: 1, TMS: 0, SimTMS: 0, Type: recorder.EventTypeRequestSent},
+		{Sequence: 2, TMS: 1, SimTMS: 1, Type: recorder.EventTypeResponseReceived},
+	}
+}
+
+func fixtureScrubReport() recorder.ScrubReport {
+	return recorder.ScrubReport{
+		ScrubPolicyVersion: "v1",
+		SessionSaltID:      "salt_fixture",
 	}
 }
 
