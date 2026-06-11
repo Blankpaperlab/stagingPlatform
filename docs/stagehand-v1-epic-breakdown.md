@@ -1660,12 +1660,14 @@ AC3 extends classification for database-like interactions. Captured Postgres act
 
 - Outcome: every review has an overall risk level.
 - To do:
-  - [ ] define `LOW`, `MEDIUM`, `HIGH`, `BLOCKED`
-  - [ ] high risk when new financial/destructive/external actions appear
-  - [ ] medium risk when new write actions appear
-  - [ ] low risk for read-only changes
-  - [ ] blocked when contract violations exist
-  - [ ] explain why the score was assigned
+  - [x] define `LOW`, `MEDIUM`, `HIGH`, `BLOCKED`
+  - [x] high risk when new financial/destructive/external actions appear
+  - [x] medium risk when new write actions appear
+  - [x] low risk for read-only changes
+  - [x] blocked when contract violations exist
+  - [x] explain why the score was assigned
+
+`stagehand test`/`stagehand review` compute a `risk_level` (`low`/`medium`/`high`/`blocked`) via `analysiscontracts.ScoreRisk`, comparing the contract-level behavior diff between the baseline and replay run against the contract evaluation result. Contract violations always produce `blocked`; otherwise the highest-risk new action observed (financial/destructive/external_message > write > read-only/none) sets the level. Reasons explaining the assigned level are included in the JSON report (`risk_reasons`) and rendered in the terminal and markdown reports.
 
 ### Epic AC completion checklist
 

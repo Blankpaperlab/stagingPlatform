@@ -31,6 +31,8 @@ type testCommandReport struct {
 	DiffSummary        analysisdiff.Summary          `json:"diff_summary"`
 	AssertionSummary   assertionSummary              `json:"assertion_summary"`
 	ContractSummary    contractSummary               `json:"contract_summary"`
+	RiskLevel          analysiscontracts.RiskLevel   `json:"risk_level"`
+	RiskReasons        []string                      `json:"risk_reasons,omitempty"`
 	ContractPath       string                        `json:"contract_path,omitempty"`
 	ContractViolations []analysiscontracts.Violation `json:"contract_violations,omitempty"`
 	AssertionsPath     string                        `json:"assertions_path,omitempty"`
@@ -176,11 +178,13 @@ func runTestOrReview(mode string, args []string, stdout io.Writer, stderr io.Wri
 
 	contractReport := contractSummary{Status: "skipped"}
 	var contractViolations []analysiscontracts.Violation
+	var evaluationResult analysiscontracts.EvaluationResult
 	if contractFile != nil {
 		result, evalErr := analysiscontracts.Evaluate(replayRun, *contractFile)
 		if evalErr != nil {
 			return newCommandError(exitCodeConfiguration, fmt.Errorf("evaluate contract %q: %w", resolvedContractPath, evalErr))
 		}
+		evaluationResult = result
 		contractReport = contractSummary{
 			Status:     string(result.Status),
 			Total:      result.Summary.Total,
@@ -190,6 +194,12 @@ func runTestOrReview(mode string, args []string, stdout io.Writer, stderr io.Wri
 		}
 		contractViolations = append(contractViolations, result.Violations...)
 	}
+
+	contractDiff, err := analysiscontracts.DiffRuns(baseRun, replayRun)
+	if err != nil {
+		return newCommandError(exitCodeConfiguration, fmt.Errorf("compare contract behavior between baseline and replay: %w", err))
+	}
+	risk := analysiscontracts.ScoreRisk(contractDiff, evaluationResult)
 
 	status := "passed"
 	if diffResult.Summary().FailingChanges > 0 || assertionReport.Summary.Failed > 0 || contractReport.Total > 0 {
@@ -208,6 +218,8 @@ func runTestOrReview(mode string, args []string, stdout io.Writer, stderr io.Wri
 		DiffSummary:        diffResult.Summary(),
 		AssertionSummary:   assertionReport.Summary,
 		ContractSummary:    contractReport,
+		RiskLevel:          risk.Level,
+		RiskReasons:        risk.Reasons,
 		ContractViolations: contractViolations,
 		Warnings:           warnings,
 	}
@@ -304,6 +316,10 @@ func renderTestTerminal(w io.Writer, report testCommandReport, diffResult analys
 	fmt.Fprintf(&b, "Diff: %d failing, %d informational, %d total\n", report.DiffSummary.FailingChanges, report.DiffSummary.InformationalChanges, report.DiffSummary.TotalChanges)
 	fmt.Fprintf(&b, "Assertions: %d passed, %d failed, %d unsupported, %d total\n", report.AssertionSummary.Passed, report.AssertionSummary.Failed, report.AssertionSummary.Unsupported, report.AssertionSummary.Total)
 	fmt.Fprintf(&b, "Contract: %s, %d violation(s)\n", report.ContractSummary.Status, report.ContractSummary.Total)
+	fmt.Fprintf(&b, "Risk: %s\n", strings.ToUpper(string(report.RiskLevel)))
+	for _, reason := range report.RiskReasons {
+		fmt.Fprintf(&b, "  - %s\n", reason)
+	}
 	for _, warning := range report.Warnings {
 		fmt.Fprintf(&b, "Warning: %s\n", warning)
 	}
@@ -328,7 +344,15 @@ func renderTestMarkdown(report testCommandReport, diffResult analysisdiff.Result
 	fmt.Fprintf(&b, "- Session: `%s`\n", report.SessionName)
 	fmt.Fprintf(&b, "- Baseline: `%s` (`%s`)\n", report.BaselineID, report.BaselineRunID)
 	fmt.Fprintf(&b, "- Replay: `%s`\n", report.ReplayRunID)
+	fmt.Fprintf(&b, "- Risk: **%s**\n", strings.ToUpper(string(report.RiskLevel)))
 	fmt.Fprintf(&b, "- Generated: `%s`\n\n", time.Now().UTC().Format(time.RFC3339))
+	if len(report.RiskReasons) > 0 {
+		fmt.Fprintf(&b, "## Risk\n\n")
+		for _, reason := range report.RiskReasons {
+			fmt.Fprintf(&b, "- %s\n", reason)
+		}
+		fmt.Fprintf(&b, "\n")
+	}
 	if len(report.Warnings) > 0 {
 		fmt.Fprintf(&b, "## Warnings\n\n")
 		for _, warning := range report.Warnings {
