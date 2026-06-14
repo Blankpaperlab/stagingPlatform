@@ -31,6 +31,6 @@
     "test:typescript": "npm run -w @stagehand/sdk test"
   },
   "devDependencies": {
-    "prettier": "^3.5.3"
+    "prettier": "^3.8.4"
   }
 }
