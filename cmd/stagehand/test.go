@@ -15,9 +15,13 @@ import (
 	analysisassertions "stagehand/internal/analysis/assertions"
 	analysiscontracts "stagehand/internal/analysis/contracts"
 	analysisdiff "stagehand/internal/analysis/diff"
+	analysisgates "stagehand/internal/analysis/gates"
 	"stagehand/internal/config"
+	"stagehand/internal/recorder"
 	sqlitestore "stagehand/internal/store/sqlite"
 )
+
+const defaultGatesPath = "stagehand.gates.yml"
 
 type testCommandReport struct {
 	Mode               string                        `json:"mode"`
@@ -31,10 +35,13 @@ type testCommandReport struct {
 	DiffSummary        analysisdiff.Summary          `json:"diff_summary"`
 	AssertionSummary   assertionSummary              `json:"assertion_summary"`
 	ContractSummary    contractSummary               `json:"contract_summary"`
+	GateSummary        assertionSummary              `json:"gate_summary"`
 	RiskLevel          analysiscontracts.RiskLevel   `json:"risk_level"`
 	RiskReasons        []string                      `json:"risk_reasons,omitempty"`
 	ContractPath       string                        `json:"contract_path,omitempty"`
 	ContractViolations []analysiscontracts.Violation `json:"contract_violations,omitempty"`
+	GatesPath          string                        `json:"gates_path,omitempty"`
+	GateResults        []analysisgates.Result        `json:"gate_results,omitempty"`
 	AssertionsPath     string                        `json:"assertions_path,omitempty"`
 	ErrorInjection     string                        `json:"error_injection,omitempty"`
 	ReportJSONPath     string                        `json:"report_json_path"`
@@ -66,8 +73,10 @@ func runTestOrReview(mode string, args []string, stdout io.Writer, stderr io.Wri
 	configPath := flags.String("config", "", "Path to stagehand.yml")
 	assertionsPath := flags.String("assertions", "assertions.yml", "Path to assertions YAML")
 	contractPath := flags.String("contract", "", "Path to behavior contract YAML")
+	gatesPath := flags.String("gates", "", "Path to release gates YAML")
 	errorInjectionPath := flags.String("error-injection", "", "Path to deterministic error injection rules")
 	contractExplicit := flagProvided(args, "contract")
+	gatesExplicit := flagProvided(args, "gates")
 	if err := flags.Parse(args); err != nil {
 		return newCommandError(exitCodeConfiguration, fmt.Errorf("parse %s flags: %w\n\n%s", mode, err, testReviewHelpText(mode)))
 	}
@@ -100,6 +109,24 @@ func runTestOrReview(mode string, args []string, stdout io.Writer, stderr io.Wri
 				return newCommandError(exitCodeConfiguration, fmt.Errorf("load contract %q: %w", resolvedContractPath, loadErr))
 			}
 			contractFile = &file
+		}
+	}
+	resolvedGatesPath := strings.TrimSpace(*gatesPath)
+	if resolvedGatesPath == "" && fileExists(defaultGatesPath) {
+		resolvedGatesPath = defaultGatesPath
+	}
+	var gateFile *analysisgates.File
+	if resolvedGatesPath != "" {
+		if !fileExists(resolvedGatesPath) {
+			if gatesExplicit {
+				return newCommandError(exitCodeConfiguration, fmt.Errorf("load gates %q: file does not exist", resolvedGatesPath))
+			}
+		} else {
+			file, loadErr := analysisgates.Load(resolvedGatesPath)
+			if loadErr != nil {
+				return newCommandError(exitCodeConfiguration, fmt.Errorf("load gates %q: %w", resolvedGatesPath, loadErr))
+			}
+			gateFile = &file
 		}
 	}
 
@@ -201,8 +228,20 @@ func runTestOrReview(mode string, args []string, stdout io.Writer, stderr io.Wri
 	}
 	risk := analysiscontracts.ScoreRisk(contractDiff, evaluationResult)
 
+	gateReport := gateReport{
+		RunID:       replayRun.RunID,
+		SessionName: replayRun.SessionName,
+	}
+	if gateFile != nil {
+		result, evalErr := analysisgates.Evaluate(replayRun, *gateFile, analysisgates.EvaluationOptions{BaseRun: &baseRun})
+		if evalErr != nil {
+			return newCommandError(exitCodeConfiguration, fmt.Errorf("evaluate gates %q: %w", resolvedGatesPath, evalErr))
+		}
+		gateReport = newGateReport(replayRun, result)
+	}
+
 	status := "passed"
-	if diffResult.Summary().FailingChanges > 0 || assertionReport.Summary.Failed > 0 || contractReport.Total > 0 {
+	if diffResult.Summary().FailingChanges > 0 || assertionReport.Summary.Failed > 0 || contractReport.Total > 0 || gateReport.Summary.Failed > 0 || gateReport.Summary.Unsupported > 0 {
 		status = "failed"
 	}
 
@@ -218,9 +257,11 @@ func runTestOrReview(mode string, args []string, stdout io.Writer, stderr io.Wri
 		DiffSummary:        diffResult.Summary(),
 		AssertionSummary:   assertionReport.Summary,
 		ContractSummary:    contractReport,
+		GateSummary:        gateReport.Summary,
 		RiskLevel:          risk.Level,
 		RiskReasons:        risk.Reasons,
 		ContractViolations: contractViolations,
+		GateResults:        gateReport.Results,
 		Warnings:           warnings,
 	}
 	if resolvedAssertionsPath != "" && fileExists(resolvedAssertionsPath) {
@@ -229,15 +270,18 @@ func runTestOrReview(mode string, args []string, stdout io.Writer, stderr io.Wri
 	if contractFile != nil {
 		report.ContractPath = resolvedContractPath
 	}
+	if gateFile != nil {
+		report.GatesPath = resolvedGatesPath
+	}
 	if strings.TrimSpace(*errorInjectionPath) != "" {
 		report.ErrorInjection = strings.TrimSpace(*errorInjectionPath)
 	}
 	report.ReportJSONPath, report.ReportMarkdown = reportPaths(replayRun.SessionName, replayRun.RunID)
-	if err := writeTestReports(report, diffResult, assertionReport); err != nil {
+	if err := writeTestReports(report, diffResult, assertionReport, gateReport); err != nil {
 		return newCommandError(exitCodeConfiguration, err)
 	}
 
-	if err := renderTestTerminal(stdout, report, diffResult, assertionReport); err != nil {
+	if err := renderTestTerminal(stdout, report, diffResult, assertionReport, gateReport); err != nil {
 		return err
 	}
 	if contractReport.Total > 0 {
@@ -245,6 +289,9 @@ func runTestOrReview(mode string, args []string, stdout io.Writer, stderr io.Wri
 	}
 	if diffResult.Summary().FailingChanges > 0 {
 		return newCommandError(exitCodeBehaviorDiff, fmt.Errorf("stagehand %s failed: %d behavior diff(s)", mode, diffResult.Summary().FailingChanges))
+	}
+	if gateReport.Summary.Failed > 0 || gateReport.Summary.Unsupported > 0 {
+		return newCommandError(exitCodeAssertionFailure, fmt.Errorf("stagehand %s failed: %d release gate failure(s)", mode, gateReport.Summary.Failed+gateReport.Summary.Unsupported))
 	}
 	if assertionReport.Summary.Failed > 0 {
 		return newCommandError(exitCodeAssertionFailure, fmt.Errorf("stagehand %s failed: %d assertion failure(s)", mode, assertionReport.Summary.Failed))
@@ -288,7 +335,7 @@ func safeReportSlug(value string) string {
 	return slug
 }
 
-func writeTestReports(report testCommandReport, diffResult analysisdiff.Result, assertionReport assertionReport) error {
+func writeTestReports(report testCommandReport, diffResult analysisdiff.Result, assertionReport assertionReport, gateReport gateReport) error {
 	if err := os.MkdirAll(filepath.Dir(report.ReportJSONPath), 0o755); err != nil {
 		return fmt.Errorf("create test report directory: %w", err)
 	}
@@ -300,14 +347,14 @@ func writeTestReports(report testCommandReport, diffResult analysisdiff.Result, 
 	if err := os.WriteFile(report.ReportJSONPath, encoded, 0o644); err != nil {
 		return fmt.Errorf("write test JSON report %q: %w", report.ReportJSONPath, err)
 	}
-	markdown := renderTestMarkdown(report, diffResult, assertionReport)
+	markdown := renderTestMarkdown(report, diffResult, assertionReport, gateReport)
 	if err := os.WriteFile(report.ReportMarkdown, []byte(markdown), 0o644); err != nil {
 		return fmt.Errorf("write test markdown report %q: %w", report.ReportMarkdown, err)
 	}
 	return nil
 }
 
-func renderTestTerminal(w io.Writer, report testCommandReport, diffResult analysisdiff.Result, assertionReport assertionReport) error {
+func renderTestTerminal(w io.Writer, report testCommandReport, diffResult analysisdiff.Result, assertionReport assertionReport, gateReport gateReport) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Stagehand %s: %s\n", report.Mode, report.Status)
 	fmt.Fprintf(&b, "Session: %s\n", report.SessionName)
@@ -316,6 +363,7 @@ func renderTestTerminal(w io.Writer, report testCommandReport, diffResult analys
 	fmt.Fprintf(&b, "Diff: %d failing, %d informational, %d total\n", report.DiffSummary.FailingChanges, report.DiffSummary.InformationalChanges, report.DiffSummary.TotalChanges)
 	fmt.Fprintf(&b, "Assertions: %d passed, %d failed, %d unsupported, %d total\n", report.AssertionSummary.Passed, report.AssertionSummary.Failed, report.AssertionSummary.Unsupported, report.AssertionSummary.Total)
 	fmt.Fprintf(&b, "Contract: %s, %d violation(s)\n", report.ContractSummary.Status, report.ContractSummary.Total)
+	fmt.Fprintf(&b, "Release gates: %d passed, %d failed, %d unsupported, %d total\n", report.GateSummary.Passed, report.GateSummary.Failed, report.GateSummary.Unsupported, report.GateSummary.Total)
 	fmt.Fprintf(&b, "Risk: %s\n", strings.ToUpper(string(report.RiskLevel)))
 	for _, reason := range report.RiskReasons {
 		fmt.Fprintf(&b, "  - %s\n", reason)
@@ -329,6 +377,9 @@ func renderTestTerminal(w io.Writer, report testCommandReport, diffResult analys
 	if assertionReport.Summary.Total > 0 {
 		fmt.Fprintf(&b, "\n%s", renderAssertionTerminal(assertionReport))
 	}
+	if gateReport.Summary.Total > 0 {
+		fmt.Fprintf(&b, "\n%s", renderGateTerminal(gateReport))
+	}
 	if len(report.ContractViolations) > 0 {
 		fmt.Fprintf(&b, "\n%s", renderContractTerminal(report.ContractViolations))
 	}
@@ -337,7 +388,7 @@ func renderTestTerminal(w io.Writer, report testCommandReport, diffResult analys
 	return err
 }
 
-func renderTestMarkdown(report testCommandReport, diffResult analysisdiff.Result, assertionReport assertionReport) string {
+func renderTestMarkdown(report testCommandReport, diffResult analysisdiff.Result, assertionReport assertionReport, gateReport gateReport) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Stagehand %s Report\n\n", reportModeTitle(report.Mode))
 	fmt.Fprintf(&b, "- Status: **%s**\n", report.Status)
@@ -367,6 +418,16 @@ func renderTestMarkdown(report testCommandReport, diffResult analysisdiff.Result
 		fmt.Fprintf(&b, "Results: %d passed, %d failed, %d unsupported, %d total\n\n", assertionReport.Summary.Passed, assertionReport.Summary.Failed, assertionReport.Summary.Unsupported, assertionReport.Summary.Total)
 		for _, result := range assertionReport.Results {
 			fmt.Fprintf(&b, "- `%s` `%s` `%s`: %s\n", result.Status, result.Type, result.AssertionID, result.Message)
+		}
+	}
+	if gateReport.Summary.Total > 0 {
+		fmt.Fprintf(&b, "\n## Release Gates\n\n")
+		fmt.Fprintf(&b, "Results: %d passed, %d failed, %d unsupported, %d total\n\n", gateReport.Summary.Passed, gateReport.Summary.Failed, gateReport.Summary.Unsupported, gateReport.Summary.Total)
+		for _, result := range failedGateResultsFirst(gateReport.Results) {
+			fmt.Fprintf(&b, "- `%s` `%s`: %s\n", result.Status, result.GateName, result.Message)
+			for _, evidence := range conciseGateEvidence(result) {
+				fmt.Fprintf(&b, "  - %s\n", evidence)
+			}
 		}
 	}
 	if len(report.ContractViolations) > 0 {
@@ -407,8 +468,78 @@ Flags:
   --config string           Path to stagehand.yml (default: stagehand.yml)
   --assertions string       Path to assertions YAML (default: assertions.yml)
   --contract string         Path to behavior contract YAML (default: stagehand.contract.yml when present)
+  --gates string            Path to release gates YAML (default: stagehand.gates.yml when present)
   --error-injection string  Path to deterministic error injection rules
 `
+}
+
+type gateReport struct {
+	RunID       string                 `json:"run_id"`
+	SessionName string                 `json:"session_name"`
+	Summary     assertionSummary       `json:"summary"`
+	Results     []analysisgates.Result `json:"results"`
+}
+
+func newGateReport(run recorder.Run, result analysisgates.EvaluationResult) gateReport {
+	return gateReport{
+		RunID:       run.RunID,
+		SessionName: run.SessionName,
+		Summary: assertionSummary{
+			Total:       result.Summary.Total,
+			Passed:      result.Summary.Passed,
+			Failed:      result.Summary.Failed,
+			Unsupported: result.Summary.Unsupported,
+		},
+		Results: append([]analysisgates.Result(nil), result.Results...),
+	}
+}
+
+func renderGateTerminal(report gateReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Stagehand release gates: %s\n", report.RunID)
+	fmt.Fprintf(&b, "Session: %s\n", report.SessionName)
+	fmt.Fprintf(&b, "Results: %d passed, %d failed, %d unsupported, %d total\n", report.Summary.Passed, report.Summary.Failed, report.Summary.Unsupported, report.Summary.Total)
+	for _, result := range failedGateResultsFirst(report.Results) {
+		fmt.Fprintf(&b, "- %s %s: %s\n", result.Status, result.GateName, result.Message)
+		for _, evidence := range conciseGateEvidence(result) {
+			fmt.Fprintf(&b, "  evidence: %s\n", evidence)
+		}
+	}
+	return b.String()
+}
+
+func failedGateResultsFirst(results []analysisgates.Result) []analysisgates.Result {
+	ordered := make([]analysisgates.Result, 0, len(results))
+	for _, result := range results {
+		if result.Status != analysisassertions.ResultStatusPassed {
+			ordered = append(ordered, result)
+		}
+	}
+	for _, result := range results {
+		if result.Status == analysisassertions.ResultStatusPassed {
+			ordered = append(ordered, result)
+		}
+	}
+	return ordered
+}
+
+func conciseGateEvidence(result analysisgates.Result) []string {
+	evidence := result.Evidence.Violations
+	if len(evidence) == 0 {
+		evidence = result.Evidence.MatchedInteractions
+	}
+	if len(evidence) == 0 && result.Evidence.Before != nil && result.Evidence.After != nil {
+		return []string{fmt.Sprintf("before interaction=%s sequence=%d, after interaction=%s sequence=%d", result.Evidence.Before.InteractionID, result.Evidence.Before.Sequence, result.Evidence.After.InteractionID, result.Evidence.After.Sequence)}
+	}
+	lines := make([]string, 0, len(evidence))
+	for _, item := range evidence {
+		label := strings.TrimSpace(item.Service + " " + item.Operation)
+		if label == "" {
+			label = "interaction"
+		}
+		lines = append(lines, fmt.Sprintf("interaction=%s sequence=%d %s", item.InteractionID, item.Sequence, label))
+	}
+	return lines
 }
 
 func renderContractTerminal(violations []analysiscontracts.Violation) string {

@@ -196,11 +196,11 @@ func interactionHasApproval(interaction recorder.Interaction, action Action) boo
 			}
 		}
 	}
-	if containsApprovalEvidence(interaction.Request.Body) {
+	if HasApprovalEvidence(interaction.Request.Body) {
 		return true
 	}
 	for _, event := range interaction.Events {
-		if containsApprovalEvidence(event.Data) {
+		if HasApprovalEvidence(event.Data) {
 			return true
 		}
 	}
@@ -248,20 +248,20 @@ func valueAtPath(value any, path string) any {
 	return current
 }
 
-func containsApprovalEvidence(value any) bool {
+func HasApprovalEvidence(value any) bool {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, item := range typed {
 			if isApprovalKey(key) && truthy(item) {
 				return true
 			}
-			if containsApprovalEvidence(item) {
+			if HasApprovalEvidence(item) {
 				return true
 			}
 		}
 	case []any:
 		for _, item := range typed {
-			if containsApprovalEvidence(item) {
+			if HasApprovalEvidence(item) {
 				return true
 			}
 		}

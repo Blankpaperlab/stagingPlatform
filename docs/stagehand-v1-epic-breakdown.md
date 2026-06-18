@@ -1671,11 +1671,11 @@ AC3 extends classification for database-like interactions. Captured Postgres act
 
 ### Epic AC completion checklist
 
-- [ ] HTTP/API actions are classified
-- [ ] tool actions are classified
+- [x] HTTP/API actions are classified
+- [x] tool actions are classified
 - [x] database-like operations are classified
-- [ ] every review receives a risk score
-- [ ] users can override classifications
+- [x] every review receives a risk score
+- [x] users can override classifications
 
 ## Epic AD: Release Gates
 
@@ -1689,15 +1689,17 @@ AC3 extends classification for database-like interactions. Captured Postgres act
 
 - Outcome: users can write `stagehand.gates.yml`.
 - To do:
-  - [ ] define `release_gates` schema
-  - [ ] support `block_if`
-  - [ ] support `require_order`
-  - [ ] support `require_approval`
-  - [ ] support `max_amount`
-  - [ ] support `allowed_channels`
-  - [ ] support `allowed_domains`
-  - [ ] support `forbid_new_action`
-  - [ ] support `forbid_unknown_risk`
+  - [x] define `release_gates` schema
+  - [x] support `block_if`
+  - [x] support `require_order`
+  - [x] support `require_approval`
+  - [x] support `max_amount`
+  - [x] support `allowed_channels`
+  - [x] support `allowed_domains`
+  - [x] support `forbid_new_action`
+  - [x] support `forbid_unknown_risk`
+
+AD1 adds `internal/analysis/gates` and `docs/release-gate-schema.md`, which strictly parse, validate, and document `stagehand.gates.yml` with `schema_version: v1alpha1`, named release gates, action selectors, side-effect labels, blocking conditions, ordering requirements, approval requirements, amount ceilings, channel/domain allow lists, new-action bans, unknown-risk bans, and fixture-backed validation tests.
 
 Example:
 
@@ -1729,22 +1731,26 @@ release_gates:
 
 - Outcome: existing assertion execution powers the new gate layer.
 - To do:
-  - [ ] translate release gates into internal assertions
-  - [ ] preserve old assertion files as advanced API
-  - [ ] show gate names instead of raw assertion IDs in user-facing output
-  - [ ] include evidence from matched interactions
-  - [ ] keep failure output concise
+  - [x] translate release gates into internal assertions
+  - [x] preserve old assertion files as advanced API
+  - [x] show gate names instead of raw assertion IDs in user-facing output
+  - [x] include evidence from matched interactions
+  - [x] keep failure output concise
+
+AD2 maps `stagehand.gates.yml` into the existing assertion evaluator. Blocking gates compile to internal count assertions, ordering gates compile to ordering assertions, and `stagehand test` / `stagehand review` now load release gates alongside the advanced `assertions.yml` API. Gate output is reported separately with gate names and concise matched-interaction evidence.
 
 ### Story AD3: Add default starter gates
 
 - Outcome: first-time users get useful gates without writing YAML from scratch.
 - To do:
-  - [ ] generate starter gates in `stagehand init`
-  - [ ] include forbidden destructive DB action gate
-  - [ ] include external message approval gate
-  - [ ] include high-value financial action approval gate
-  - [ ] include unknown-risk action warning gate
-  - [ ] keep generated file short and commented
+  - [x] generate starter gates in `stagehand init`
+  - [x] include forbidden destructive DB action gate
+  - [x] include external message approval gate
+  - [x] include high-value financial action approval gate
+  - [x] include unknown-risk action warning gate
+  - [x] keep generated file short and commented
+
+AD3 adds `stagehand.gates.yml` to `stagehand init` starter files. The generated file includes short comments plus active starter gates for destructive Postgres actions, external messages without approval, financial actions over 5000 minor currency units without approval, and unknown-risk actions that need review.
 
 ### Story AD4: Gate result output
 
@@ -1758,9 +1764,9 @@ release_gates:
 
 ### Epic AD completion checklist
 
-- [ ] `stagehand.gates.yml` exists
-- [ ] release gates execute through existing assertion engine
-- [ ] default starter gates exist
+- [x] `stagehand.gates.yml` exists
+- [x] release gates execute through existing assertion engine
+- [x] default starter gates exist
 - [ ] gate failures appear clearly in local and PR reports
 
 ## Epic AE: Agent Release Review Command

@@ -1,0 +1,53 @@
+schema_version: v1alpha1
+
+release_gates:
+  - name: Refunds over $50 require approval
+    block_if:
+      service: stripe
+      operation: POST /v1/refunds
+      amount_gt: 5000
+      approval_missing: true
+
+  - name: Agent cannot send external customer messages
+    block_if:
+      side_effect: external_message
+      destination_type: external
+
+  - name: Customer lookup must happen before billing action
+    require_order:
+      before:
+        tool: lookup_customer
+      after:
+        service: billing-api
+
+  - name: Financial actions need human approval
+    require_approval:
+      side_effect: financial
+      amount_gt: 5000
+
+  - name: Refund ceiling
+    max_amount:
+      service: stripe
+      operation: POST /v1/refunds
+      amount: 5000
+
+  - name: Allowed customer message channels
+    allowed_channels:
+      side_effect: external_message
+      values:
+        - email
+        - sms
+
+  - name: Allowed notification domains
+    allowed_domains:
+      side_effect: external_message
+      values:
+        - example.com
+        - support.example.com
+
+  - name: No new financial actions
+    forbid_new_action:
+      side_effect: financial
+
+  - name: Unknown risk blocks release
+    forbid_unknown_risk: {}

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	analysiscontracts "stagehand/internal/analysis/contracts"
 	"stagehand/internal/recorder"
 )
 
@@ -64,30 +65,54 @@ type EntityLinkEvidence struct {
 	Right EntityEvidence
 }
 
+type Options struct {
+	BaseRun *recorder.Run
+}
+
+type evaluationContext struct {
+	BaseActionKeys map[string]bool
+}
+
 func Evaluate(run recorder.Run, file File) ([]Result, error) {
+	return EvaluateWithOptions(run, file, Options{})
+}
+
+func EvaluateWithOptions(run recorder.Run, file File, opts Options) ([]Result, error) {
 	if err := file.Validate(); err != nil {
 		return nil, err
 	}
 
+	ctx := newEvaluationContext(opts)
 	results := make([]Result, 0, len(file.Assertions))
 	for _, assertion := range file.Assertions {
-		results = append(results, evaluateAssertion(run, assertion))
+		results = append(results, evaluateAssertion(ctx, run, assertion))
 	}
 	return results, nil
 }
 
-func evaluateAssertion(run recorder.Run, assertion Assertion) Result {
+func newEvaluationContext(opts Options) evaluationContext {
+	ctx := evaluationContext{}
+	if opts.BaseRun != nil {
+		ctx.BaseActionKeys = map[string]bool{}
+		for _, interaction := range opts.BaseRun.Interactions {
+			ctx.BaseActionKeys[actionKey(interaction)] = true
+		}
+	}
+	return ctx
+}
+
+func evaluateAssertion(ctx evaluationContext, run recorder.Run, assertion Assertion) Result {
 	switch assertion.Type {
 	case TypeCount:
-		return evaluateCount(run, assertion)
+		return evaluateCount(ctx, run, assertion)
 	case TypeOrdering:
-		return evaluateOrdering(run, assertion)
+		return evaluateOrdering(ctx, run, assertion)
 	case TypePayloadField:
-		return evaluatePayloadField(run, assertion)
+		return evaluatePayloadField(ctx, run, assertion)
 	case TypeForbiddenOperation:
-		return evaluateForbiddenOperation(run, assertion)
+		return evaluateForbiddenOperation(ctx, run, assertion)
 	case TypeFallbackProhibition:
-		return evaluateFallbackProhibition(run, assertion)
+		return evaluateFallbackProhibition(ctx, run, assertion)
 	case TypeCrossService:
 		return evaluateCrossService(run, assertion)
 	default:
@@ -142,8 +167,8 @@ func evaluateCrossService(run recorder.Run, assertion Assertion) Result {
 	}
 }
 
-func evaluateCount(run recorder.Run, assertion Assertion) Result {
-	matches := matchingInteractions(run.Interactions, assertion.Match)
+func evaluateCount(ctx evaluationContext, run recorder.Run, assertion Assertion) Result {
+	matches := ctx.matchingInteractions(run.Interactions, assertion.Match)
 	count := len(matches)
 	expect := assertion.Expect.Count
 	passed := true
@@ -182,9 +207,9 @@ func evaluateCount(run recorder.Run, assertion Assertion) Result {
 	}
 }
 
-func evaluateOrdering(run recorder.Run, assertion Assertion) Result {
-	beforeMatches := matchingInteractions(run.Interactions, *assertion.Before)
-	afterMatches := matchingInteractions(run.Interactions, *assertion.After)
+func evaluateOrdering(ctx evaluationContext, run recorder.Run, assertion Assertion) Result {
+	beforeMatches := ctx.matchingInteractions(run.Interactions, *assertion.Before)
+	afterMatches := ctx.matchingInteractions(run.Interactions, *assertion.After)
 
 	var selectedBefore *recorder.Interaction
 	var selectedAfter *recorder.Interaction
@@ -233,8 +258,8 @@ func evaluateOrdering(run recorder.Run, assertion Assertion) Result {
 	}
 }
 
-func evaluatePayloadField(run recorder.Run, assertion Assertion) Result {
-	matches := matchingInteractions(run.Interactions, assertion.Match)
+func evaluatePayloadField(ctx evaluationContext, run recorder.Run, assertion Assertion) Result {
+	matches := ctx.matchingInteractions(run.Interactions, assertion.Match)
 	violations := make([]InteractionEvidence, 0)
 	var firstActual any
 	foundAny := false
@@ -285,8 +310,8 @@ func evaluatePayloadField(run recorder.Run, assertion Assertion) Result {
 	}
 }
 
-func evaluateForbiddenOperation(run recorder.Run, assertion Assertion) Result {
-	matches := matchingInteractions(run.Interactions, assertion.Match)
+func evaluateForbiddenOperation(ctx evaluationContext, run recorder.Run, assertion Assertion) Result {
+	matches := ctx.matchingInteractions(run.Interactions, assertion.Match)
 	if len(matches) > 0 {
 		return Result{
 			AssertionID: assertion.ID,
@@ -312,8 +337,8 @@ func evaluateForbiddenOperation(run recorder.Run, assertion Assertion) Result {
 	}
 }
 
-func evaluateFallbackProhibition(run recorder.Run, assertion Assertion) Result {
-	matches := matchingInteractions(run.Interactions, assertion.Match)
+func evaluateFallbackProhibition(ctx evaluationContext, run recorder.Run, assertion Assertion) Result {
+	matches := ctx.matchingInteractions(run.Interactions, assertion.Match)
 	disallowed := map[string]bool{}
 	for _, tier := range assertion.Expect.DisallowedTiers {
 		disallowed[strings.TrimSpace(tier)] = true
@@ -354,10 +379,10 @@ func evaluateFallbackProhibition(run recorder.Run, assertion Assertion) Result {
 	}
 }
 
-func matchingInteractions(interactions []recorder.Interaction, match Match) []recorder.Interaction {
+func (ctx evaluationContext) matchingInteractions(interactions []recorder.Interaction, match Match) []recorder.Interaction {
 	matches := make([]recorder.Interaction, 0, len(interactions))
 	for _, interaction := range interactions {
-		if !interactionMatches(interaction, match) {
+		if !ctx.interactionMatches(interaction, match) {
 			continue
 		}
 		matches = append(matches, interaction)
@@ -365,7 +390,7 @@ func matchingInteractions(interactions []recorder.Interaction, match Match) []re
 	return matches
 }
 
-func interactionMatches(interaction recorder.Interaction, match Match) bool {
+func (ctx evaluationContext) interactionMatches(interaction recorder.Interaction, match Match) bool {
 	match = normalizeToolMatch(match)
 	if match.Service != "" && interaction.Service != match.Service {
 		return false
@@ -381,6 +406,48 @@ func interactionMatches(interaction recorder.Interaction, match Match) bool {
 	}
 	if match.EventType != "" && !interactionHasEventType(interaction, match.EventType) {
 		return false
+	}
+	if match.SideEffect != "" && string(analysiscontracts.ClassifyInteraction(interaction).SideEffect) != match.SideEffect {
+		return false
+	}
+	if match.UnknownRisk != nil {
+		isUnknown := analysiscontracts.ClassifyInteraction(interaction).SideEffect == analysiscontracts.SideEffectUnknown
+		if isUnknown != *match.UnknownRisk {
+			return false
+		}
+	}
+	if match.AmountGT != nil {
+		amount, ok := analysiscontracts.ObservedAmount(interaction.Request.Body)
+		if !ok || amount <= *match.AmountGT {
+			return false
+		}
+	}
+	if match.ApprovalMissing != nil {
+		missing := !interactionHasApprovalEvidence(interaction)
+		if missing != *match.ApprovalMissing {
+			return false
+		}
+	}
+	if match.DestinationType != "" && observedString(interaction, "destination_type", "destinationType") != match.DestinationType {
+		return false
+	}
+	if match.Channel != "" && observedString(interaction, "channel") != match.Channel {
+		return false
+	}
+	if len(match.ChannelNotIn) > 0 && stringInSet(observedString(interaction, "channel"), match.ChannelNotIn) {
+		return false
+	}
+	if match.Domain != "" && observedDomain(interaction) != match.Domain {
+		return false
+	}
+	if len(match.DomainNotIn) > 0 && stringInSet(observedDomain(interaction), match.DomainNotIn) {
+		return false
+	}
+	if match.NewAction != nil {
+		isNew := !ctx.BaseActionKeys[actionKey(interaction)]
+		if isNew != *match.NewAction {
+			return false
+		}
 	}
 	return true
 }
@@ -402,6 +469,126 @@ func interactionHasEventType(interaction recorder.Interaction, eventType string)
 		}
 	}
 	return false
+}
+
+func interactionHasApprovalEvidence(interaction recorder.Interaction) bool {
+	if analysiscontracts.HasApprovalEvidence(interaction.Request.Body) {
+		return true
+	}
+	for _, event := range interaction.Events {
+		if analysiscontracts.HasApprovalEvidence(event.Data) {
+			return true
+		}
+	}
+	return false
+}
+
+func observedString(interaction recorder.Interaction, keys ...string) string {
+	for _, key := range keys {
+		if value := nestedStringField(interaction.Request.Body, key); value != "" {
+			return value
+		}
+	}
+	for _, event := range interaction.Events {
+		for _, key := range keys {
+			if value := nestedStringField(event.Data, key); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+// nestedStringField returns the first non-empty scalar stored under key,
+// searching nested maps and slices. Tool-call payloads nest their arguments
+// under "arguments" (and results under "result"), so a shallow top-level lookup
+// would miss channel/domain/destination fields recorded by the SDKs. This
+// mirrors how ObservedAmount/HasApprovalEvidence descend into nested payloads.
+func nestedStringField(value any, key string) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for itemKey, item := range typed {
+			if !strings.EqualFold(itemKey, key) {
+				continue
+			}
+			switch item.(type) {
+			case map[string]any, []any:
+				// Composite value under a matching key; recurse below instead.
+			default:
+				if found := stringFromAny(item); found != "" {
+					return found
+				}
+			}
+		}
+		for _, item := range typed {
+			if found := nestedStringField(item, key); found != "" {
+				return found
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if found := nestedStringField(item, key); found != "" {
+				return found
+			}
+		}
+	}
+	return ""
+}
+
+func observedDomain(interaction recorder.Interaction) string {
+	if value := observedString(interaction, "domain", "destination_domain", "destinationDomain"); value != "" {
+		return value
+	}
+	return hostFromURL(interaction.Request.URL)
+}
+
+func hostFromURL(rawURL string) string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return ""
+	}
+	if idx := strings.Index(trimmed, "://"); idx != -1 {
+		trimmed = trimmed[idx+3:]
+	}
+	if idx := strings.IndexAny(trimmed, "/?#"); idx != -1 {
+		trimmed = trimmed[:idx]
+	}
+	if _, host, ok := strings.Cut(trimmed, "@"); ok {
+		trimmed = host
+	}
+	if host, _, ok := strings.Cut(trimmed, ":"); ok {
+		trimmed = host
+	}
+	return strings.ToLower(strings.TrimSpace(trimmed))
+}
+
+func stringFromAny(value any) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func stringInSet(value string, set []string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	for _, item := range set {
+		if strings.ToLower(strings.TrimSpace(item)) == value {
+			return true
+		}
+	}
+	return false
+}
+
+func actionKey(interaction recorder.Interaction) string {
+	service := interaction.Service
+	operation := interaction.Operation
+	if strings.TrimSpace(service) == "stagehand.tool" {
+		return "tool:" + operation
+	}
+	return "service:" + service + "\noperation:" + operation
 }
 
 func interactionEvidenceList(interactions []recorder.Interaction) []InteractionEvidence {

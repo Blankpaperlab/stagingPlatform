@@ -1,0 +1,5 @@
+schema_version: v0
+
+release_gates:
+  - name: Unknown risk blocks release
+    forbid_unknown_risk: {}

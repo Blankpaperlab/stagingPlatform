@@ -1,0 +1,11 @@
+schema_version: v1alpha1
+
+release_gates:
+  - name: Gate with multiple clauses
+    block_if:
+      side_effect: external_message
+    require_order:
+      before:
+        tool: lookup_customer
+      after:
+        service: billing-api

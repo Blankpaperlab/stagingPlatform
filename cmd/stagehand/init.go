@@ -29,7 +29,7 @@ func runInit(args []string, stdout io.Writer, _ io.Writer) error {
 
 	configPath := flags.String("config", defaultRuntimeConfigPath, "Path to write stagehand.yml")
 	force := flags.Bool("force", false, "Overwrite existing Stagehand scaffold files")
-	starterFiles := flags.Bool("starter-files", true, "Write starter assertions.yml and error-injection.yml")
+	starterFiles := flags.Bool("starter-files", true, "Write starter assertions.yml, stagehand.gates.yml, and error-injection.yml")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse init flags: %w\n\n%s", err, initHelpText())
 	}
@@ -70,6 +70,9 @@ func runInit(args []string, stdout io.Writer, _ io.Writer) error {
 	}
 	if *starterFiles {
 		if err := writeInitFile("assertions.yml", starterAssertionsYAML(), *force); err != nil {
+			return err
+		}
+		if err := writeInitFile(defaultGatesPath, starterGatesYAML(), *force); err != nil {
 			return err
 		}
 		if err := writeInitFile("error-injection.yml", starterErrorInjectionYAML(), *force); err != nil {
@@ -297,6 +300,7 @@ func renderInitSummary(w io.Writer, configPath, recommended string, info initPro
 	fmt.Fprintf(&b, "- .stagehand/generated\n")
 	if starterFiles {
 		fmt.Fprintf(&b, "- assertions.yml\n")
+		fmt.Fprintf(&b, "- %s\n", defaultGatesPath)
 		fmt.Fprintf(&b, "- error-injection.yml\n")
 	}
 	if len(info.ProjectTypes) > 0 || len(info.Integrations) > 0 || len(info.Commands) > 0 {
@@ -451,6 +455,33 @@ error_injection:
 `
 }
 
+func starterGatesYAML() string {
+	return `schema_version: v1alpha1
+
+release_gates:
+  # Edit service if your database is not recorded as postgres.
+  - name: Block destructive database actions
+    block_if:
+      service: postgres
+      side_effect: destructive
+
+  # External customer messages must carry approval evidence.
+  - name: External messages require approval
+    require_approval:
+      side_effect: external_message
+
+  # Amounts are minor currency units, so 5000 means $50.00 for USD.
+  - name: High-value financial actions require approval
+    require_approval:
+      side_effect: financial
+      amount_gt: 5000
+
+  # Review unknown-risk actions before approving a release.
+  - name: Review unknown-risk actions
+    forbid_unknown_risk: {}
+`
+}
+
 func initHelpText() string {
 	return `Usage:
   stagehand init [--config path] [--force] [--starter-files=false]
@@ -458,7 +489,7 @@ func initHelpText() string {
 Flags:
   --config string          Path to write stagehand.yml (default: stagehand.yml)
   --force                  Overwrite existing Stagehand scaffold files
-  --starter-files bool     Write starter assertions.yml and error-injection.yml (default: true)
+  --starter-files bool     Write starter assertions.yml, stagehand.gates.yml, and error-injection.yml (default: true)
 `
 }
 

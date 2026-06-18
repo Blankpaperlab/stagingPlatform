@@ -79,7 +79,7 @@ func GenerateFromRun(run recorder.Run, opts GenerateOptions) (File, GenerateSumm
 		}
 		sortFallbackTiers(accumulator.action.AllowedFallbackTiers)
 
-		if amount, ok := observedAmount(interaction.Request.Body); ok {
+		if amount, ok := ObservedAmount(interaction.Request.Body); ok {
 			if accumulator.action.MaxAmount == nil || amount > *accumulator.action.MaxAmount {
 				accumulator.action.MaxAmount = &amount
 			}
@@ -630,7 +630,7 @@ func collectModels(value any, models map[string]bool) {
 	}
 }
 
-func observedAmount(value any) (float64, bool) {
+func ObservedAmount(value any) (float64, bool) {
 	return findNumericField(value, "amount")
 }
 

@@ -14,6 +14,7 @@ import (
 
 	analysiscontracts "stagehand/internal/analysis/contracts"
 	analysisdiff "stagehand/internal/analysis/diff"
+	analysisgates "stagehand/internal/analysis/gates"
 	"stagehand/internal/config"
 	"stagehand/internal/recorder"
 	"stagehand/internal/store"
@@ -108,6 +109,7 @@ func TestRunInitCreatesScaffoldDetectsProjectAndPrintsNextCommand(t *testing.T) 
 		filepath.Join(".stagehand", "reports"),
 		filepath.Join(".stagehand", "generated"),
 		"assertions.yml",
+		defaultGatesPath,
 		"error-injection.yml",
 	} {
 		if _, err := os.Stat(filepath.Join(workdir, path)); err != nil {
@@ -128,6 +130,10 @@ func TestRunInitCreatesScaffoldDetectsProjectAndPrintsNextCommand(t *testing.T) 
 	injectionText, err := os.ReadFile(filepath.Join(workdir, "error-injection.yml"))
 	if err != nil {
 		t.Fatalf("read generated error-injection.yml: %v", err)
+	}
+	gatesText, err := os.ReadFile(filepath.Join(workdir, defaultGatesPath))
+	if err != nil {
+		t.Fatalf("read generated %s: %v", defaultGatesPath, err)
 	}
 	for _, want := range []string{
 		"name: internal-crm",
@@ -158,6 +164,23 @@ func TestRunInitCreatesScaffoldDetectsProjectAndPrintsNextCommand(t *testing.T) 
 	} {
 		if !strings.Contains(string(injectionText), want) {
 			t.Fatalf("error-injection.yml = %q, want %q", string(injectionText), want)
+		}
+	}
+	if _, err := analysisgates.Parse(gatesText); err != nil {
+		t.Fatalf("generated %s did not validate: %v", defaultGatesPath, err)
+	}
+	for _, want := range []string{
+		"Block destructive database actions",
+		"side_effect: destructive",
+		"External messages require approval",
+		"side_effect: external_message",
+		"High-value financial actions require approval",
+		"amount_gt: 5000",
+		"Review unknown-risk actions",
+		"forbid_unknown_risk",
+	} {
+		if !strings.Contains(string(gatesText), want) {
+			t.Fatalf("%s = %q, want %q", defaultGatesPath, string(gatesText), want)
 		}
 	}
 
@@ -211,6 +234,9 @@ func TestRunInitRefusesExistingConfigUnlessForce(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(workdir, "assertions.yml")); !os.IsNotExist(err) {
 		t.Fatalf("assertions.yml exists after --starter-files=false, err=%v", err)
 	}
+	if _, err := os.Stat(filepath.Join(workdir, defaultGatesPath)); !os.IsNotExist(err) {
+		t.Fatalf("%s exists after --starter-files=false, err=%v", defaultGatesPath, err)
+	}
 }
 
 func TestRunInitDetectsPythonEntrypointWhenNoNodeScriptExists(t *testing.T) {
@@ -242,6 +268,9 @@ support-agent = "support.agent:main"
 	}
 	if _, err := os.Stat(filepath.Join(workdir, "assertions.yml")); !os.IsNotExist(err) {
 		t.Fatalf("assertions.yml exists after --starter-files=false, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, defaultGatesPath)); !os.IsNotExist(err) {
+		t.Fatalf("%s exists after --starter-files=false, err=%v", defaultGatesPath, err)
 	}
 }
 

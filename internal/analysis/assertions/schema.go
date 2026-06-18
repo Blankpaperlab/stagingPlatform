@@ -63,12 +63,22 @@ type Assertion struct {
 }
 
 type Match struct {
-	Service       string `yaml:"service"`
-	Operation     string `yaml:"operation"`
-	Tool          string `yaml:"tool"`
-	InteractionID string `yaml:"interaction_id"`
-	EventType     string `yaml:"event_type"`
-	FallbackTier  string `yaml:"fallback_tier"`
+	Service         string   `yaml:"service"`
+	Operation       string   `yaml:"operation"`
+	Tool            string   `yaml:"tool"`
+	InteractionID   string   `yaml:"interaction_id"`
+	EventType       string   `yaml:"event_type"`
+	FallbackTier    string   `yaml:"fallback_tier"`
+	SideEffect      string   `yaml:"side_effect"`
+	DestinationType string   `yaml:"destination_type"`
+	AmountGT        *float64 `yaml:"amount_gt"`
+	ApprovalMissing *bool    `yaml:"approval_missing"`
+	Channel         string   `yaml:"channel"`
+	ChannelNotIn    []string `yaml:"channel_not_in"`
+	Domain          string   `yaml:"domain"`
+	DomainNotIn     []string `yaml:"domain_not_in"`
+	NewAction       *bool    `yaml:"new_action"`
+	UnknownRisk     *bool    `yaml:"unknown_risk"`
 }
 
 type EntityRef struct {
@@ -313,6 +323,9 @@ func validateMatch(prefix string, match Match, verr *ValidationError) {
 	if strings.TrimSpace(match.Tool) != "" && (strings.TrimSpace(match.Service) != "" || strings.TrimSpace(match.Operation) != "") {
 		verr.add("%s.tool cannot be combined with service or operation", prefix)
 	}
+	validateNonNegativeFloat(prefix+".amount_gt", match.AmountGT, verr)
+	validateStringSet(prefix+".channel_not_in", match.ChannelNotIn, verr)
+	validateStringSet(prefix+".domain_not_in", match.DomainNotIn, verr)
 }
 
 func validateEntityRef(prefix string, ref EntityRef, verr *ValidationError) {
@@ -335,6 +348,28 @@ func validateEntityRef(prefix string, ref EntityRef, verr *ValidationError) {
 func validateNonNegativeInt(path string, value *int, verr *ValidationError) {
 	if value != nil && *value < 0 {
 		verr.add("%s must be greater than or equal to 0", path)
+	}
+}
+
+func validateNonNegativeFloat(path string, value *float64, verr *ValidationError) {
+	if value != nil && *value < 0 {
+		verr.add("%s must be greater than or equal to 0", path)
+	}
+}
+
+func validateStringSet(field string, values []string, verr *ValidationError) {
+	seen := map[string]bool{}
+	for idx, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			verr.add("%s[%d] cannot be empty", field, idx)
+			continue
+		}
+		if seen[trimmed] {
+			verr.add("%s contains duplicate value %q", field, trimmed)
+			continue
+		}
+		seen[trimmed] = true
 	}
 }
 
@@ -362,7 +397,17 @@ func hasMatch(match Match) bool {
 		strings.TrimSpace(match.Tool) != "" ||
 		strings.TrimSpace(match.InteractionID) != "" ||
 		strings.TrimSpace(match.EventType) != "" ||
-		strings.TrimSpace(match.FallbackTier) != ""
+		strings.TrimSpace(match.FallbackTier) != "" ||
+		strings.TrimSpace(match.SideEffect) != "" ||
+		strings.TrimSpace(match.DestinationType) != "" ||
+		match.AmountGT != nil ||
+		match.ApprovalMissing != nil ||
+		strings.TrimSpace(match.Channel) != "" ||
+		len(match.ChannelNotIn) > 0 ||
+		strings.TrimSpace(match.Domain) != "" ||
+		len(match.DomainNotIn) > 0 ||
+		match.NewAction != nil ||
+		match.UnknownRisk != nil
 }
 
 func hasCountExpectation(expect CountExpectation) bool {
