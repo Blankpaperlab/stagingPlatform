@@ -24,7 +24,7 @@
     "test": "npm run build && node --test dist/index.test.js"
   },
   "devDependencies": {
-    "@types/node": "^22.15.3",
+    "@types/node": "^26.0.1",
     "typescript": "^5.8.3"
   },
   "dependencies": {
